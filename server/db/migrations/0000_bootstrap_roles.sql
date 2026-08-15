@@ -1,0 +1,31 @@
+-- =============================================================================
+-- 0000 · Bootstrap roles — self-hosted only, not part of the Supabase set
+-- =============================================================================
+-- On Supabase, `anon` and `authenticated` are platform-provisioned Postgres
+-- roles that PostgREST connects as depending on whether a request carries a
+-- valid JWT. Every migration ported from supabase/migrations/ grants access
+-- to `authenticated` (15 files) — rather than rewrite all of them, this
+-- migration recreates the same two roles here, and the custom Node API
+-- connects AS `authenticated` for every request that has a verified Keycloak
+-- JWT, setting `app.user_id` via SET LOCAL before running the actual query
+-- (see core.current_user_id() in 0003). This is a faithful port of the same
+-- security model: the connecting Postgres role is identical for every user,
+-- and RLS is what actually scopes access per-user, exactly as it did with
+-- PostgREST.
+--
+-- `anon` only needs to exist so the `revoke all on schema raw_logic from
+-- anon, authenticated` style statements don't error — nothing in the custom
+-- API ever actually connects as anon (there's no equivalent of an
+-- unauthenticated PostgREST request; endpoints that don't need a login
+-- don't touch the database as this role at all).
+
+-- `authenticated` needs LOGIN to exist as a role Postgres will accept SET
+-- ROLE into, but nothing ever connects directly AS authenticated with a
+-- password — the Node API talks to PostgREST over HTTP with a Keycloak JWT,
+-- and PostgREST's `authenticator` role does SET ROLE authenticated per
+-- request (see fn_postgrest_pre_request), which only needs role membership,
+-- never this password. Treat it as inert; rotate on the server with
+-- `ALTER ROLE authenticated WITH PASSWORD '...'` if it's ever regenerated —
+-- this file's value does not need to match live for anything to work.
+create role anon nologin;
+create role authenticated login password 'CHANGE_ME_this_password_is_never_actually_used';

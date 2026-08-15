@@ -1,0 +1,13 @@
+node_modules
+.next
+.vercel
+.env*
+tsconfig.tsbuildinfo
+
+# Supabase CLI's local cache (project ref, pooler url, tool versions) —
+# machine-local state that regenerates, not source.
+supabase/.temp
+
+# local dev server logs
+dev-out.log
+dev-err.log

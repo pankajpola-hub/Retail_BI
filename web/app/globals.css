@@ -1,0 +1,91 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Token system carried over verbatim from the screen mockups (see the
+ * ebo-mock.html artifact from the design review) so the built app and the
+ * approved mock never visually drift. Add new tokens here first, then
+ * reference them from tailwind.config.ts — never hardcode a hex value in a
+ * component.
+ */
+:root {
+  --ground: #f5f7f4;
+  --surface: #ffffff;
+  --surface-2: #edf1ec;
+  --line: #d9e0da;
+  --line-soft: #e7ece6;
+  --ink: #131c18;
+  --ink-2: #41504a;
+  --ink-3: #6e7d76;
+  --accent: #0b6e63;
+  --accent-soft: #ddede9;
+  --accent-ink: #07524a;
+  --good: #2e7d5b;
+  --good-soft: #dff0e6;
+  --warn: #a8700a;
+  --warn-soft: #f7ebd2;
+  --crit: #b93a2e;
+  --crit-soft: #f8e3e0;
+
+  --font-mono: ui-monospace, "Cascadia Mono", "Consolas", "SF Mono", monospace;
+  --font-sans: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+}
+
+/*
+ * Dark mode is an EXPLICIT user choice via the header toggle, which sets
+ * data-theme="dark" on <html>. It is deliberately NOT wired to
+ * `prefers-color-scheme`: an earlier version did that and the app flipped
+ * to dark for anyone whose OS was in dark mode, without asking — which is
+ * what looked wrong against the light reference design. Default stays light
+ * unless the user opts in; the choice persists in localStorage.
+ */
+:root[data-theme="dark"] {
+  --ground: #0e1512;
+  --surface: #151e1a;
+  --surface-2: #1c2622;
+  --line: #2a3833;
+  --line-soft: #212d28;
+  --ink: #e4ebe7;
+  --ink-2: #a9b8b1;
+  --ink-3: #7c8b85;
+  --accent: #4fbfb0;
+  --accent-soft: #12312d;
+  --accent-ink: #8ad8cc;
+  --good: #5cbe8b;
+  --good-soft: #14301f;
+  --warn: #dfa63a;
+  --warn-soft: #33260c;
+  --crit: #e4796b;
+  --crit-soft: #381914;
+}
+
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+
+.font-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Driven by components/ui/TopProgressBar.tsx. A sweeping bar rather than a
+   width-grows-to-100% bar — we have no real progress fraction to report
+   (Next 14 doesn't expose navigation progress), so a sweep more honestly
+   communicates "something is happening" than a fake percentage would. */
+@keyframes top-progress {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(50%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+.animate-top-progress {
+  animation: top-progress 1s ease-in-out infinite;
+}

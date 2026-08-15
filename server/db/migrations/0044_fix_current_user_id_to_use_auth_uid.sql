@@ -1,0 +1,75 @@
+-- =============================================================================
+-- 0044 · core.current_user_id() -> auth.uid()   [SUPABASE-CLOUD ONLY — DO NOT
+--        APPLY TO THE SELF-HOSTED PRODUCTION DATABASE]
+-- =============================================================================
+-- !! RETRACTED / DANGEROUS IF MISAPPLIED. Written on a false premise. !!
+--
+-- This was authored believing production ran the Supabase cloud project
+-- (klnyurlxwioyjitwlwvx), on the strength of a `vercel env pull` that
+-- returned DATA_BACKEND="" — the pull returns EMPTY STRINGS for encrypted
+-- vars rather than their real values, so that reading was worthless.
+-- Production actually runs the SELF-HOSTED stack (DATA_BACKEND=selfhosted:
+-- Keycloak + PostgREST + self-hosted Postgres) — proven since: the live login
+-- failure returned Keycloak's verbatim "Account is not fully set up", and the
+-- real user/profile/store data was found on the self-hosted PostgREST, under
+-- a DIFFERENT user id than the Supabase one.
+--
+-- On the self-hosted database auth.uid() DOES NOT EXIST — it is a Supabase
+-- built-in. Applying this file there would replace a working
+-- core.current_user_id() with one that errors on every call, taking down the
+-- ENTIRE RBAC layer (core.fn_user_role, core.fn_user_store_ids, and every RLS
+-- policy built on them) for every user at once. The self-hosted definition in
+-- 0003 (reading the app.user_id GUC set per-request by the PostgREST layer)
+-- is the correct one there and must be left alone.
+--
+-- This was applied ONLY to the legacy Supabase cloud project, which
+-- production does not use, so it caused no live impact. Kept (rather than
+-- deleted) so the reasoning is on record. If the self-hosted migration
+-- history is ever reconciled against this folder, SKIP this file.
+--
+-- Original (now-known-wrong) rationale follows.
+-- =============================================================================
+-- core.current_user_id() (0003) was written as a self-hosted-stack shim:
+-- reads a `app.user_id` Postgres session GUC that a custom self-hosted API
+-- layer was supposed to SET LOCAL before every query. That self-hosted
+-- service layer was never actually wired up (confirmed earlier this session:
+-- SELFHOSTED_KEYCLOAK_SERVICE_CLIENT_SECRET is unset), and production
+-- genuinely runs the Supabase backend (DATA_BACKEND unset in Vercel prod —
+-- confirmed via `vercel env pull`), where nothing ever sets that GUC. So on
+-- the actual live database, core.current_user_id() has always returned NULL
+-- for every request — and PGRST202 confirmed it doesn't even exist in
+-- PostgREST's schema cache at all as of this session, meaning any RLS policy
+-- or function calling it (core.fn_user_role(), core.fn_user_store_ids(),
+-- core.profiles' own `profiles_self_read` policy, core.user_store_access's
+-- policies, core.user_page_overrides — the whole RBAC layer built on top of
+-- it) has been silently broken this entire time on production.
+--
+-- Concretely: a real, correctly-provisioned user's own SELECT against
+-- core.profiles fails its RLS check (the function it depends on doesn't
+-- exist), the app's resolveCallerProfile() only destructures `data` and
+-- silently drops the error, so a fully valid user gets redirected to
+-- "/login?error=not_provisioned" — indistinguishable, from the app's view,
+-- from actually having no profile row. This is almost certainly the real
+-- cause of a currently-locked-out super_admin account.
+--
+-- Fix: redefine core.current_user_id() to read the real Supabase session via
+-- auth.uid() (Postgres built-in on Supabase, backed by the request's JWT).
+-- Every dependent function/policy is written in terms of
+-- core.current_user_id() rather than auth.uid() directly, so fixing it here
+-- once fixes the whole chain without touching any policy DDL individually.
+--
+-- NOTE for a future self-hosted migration: this makes core.current_user_id()
+-- Supabase-specific — auth.uid() doesn't exist on plain self-hosted Postgres.
+-- Whoever actually wires up the self-hosted stack needs to make this
+-- function branch on lib/data/backend.ts's DATA_BACKEND equivalent (there's
+-- no clean way to detect "which backend" from inside SQL itself, so that
+-- likely means two different function bodies deployed to two different
+-- databases, not one portable function) — out of scope for this fix, which
+-- targets the actual live incident.
+create or replace function core.current_user_id()
+returns uuid
+language sql
+stable
+as $$
+  select auth.uid();
+$$;

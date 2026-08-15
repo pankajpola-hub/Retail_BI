@@ -1,0 +1,8 @@
+# Local-only test upload artifacts — the app writes here in older/dev
+# configs; nothing under this path is source. See web/.gitignore for the
+# app's own build/dependency ignores.
+storage/
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db
