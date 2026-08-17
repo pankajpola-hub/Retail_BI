@@ -4,9 +4,10 @@ import { getObjectBuffer } from "@/lib/storage/minio";
 import { parseSaleWorkbook } from "@/lib/erpReports/parseSaleWorkbook";
 import { parseStockWorkbook } from "@/lib/erpReports/parseStockWorkbook";
 import { parseSchemeWorkbook } from "@/lib/erpReports/parseSchemeWorkbook";
+import { parseMasterWorkbook } from "@/lib/erpReports/parseMasterWorkbook";
 
 type UploadRow = {
-  report_type: "sale" | "stock" | "scheme";
+  report_type: "sale" | "stock" | "scheme" | "master";
   storage_path: string;
   file_name: string;
 };
@@ -85,6 +86,31 @@ export async function POST(_request: Request, { params }: { params: { id: string
           errorRows: errorRows.length,
           totalClosingStock,
           sampleErrors: errorRows.slice(0, 20).map((r) => ({ rowNumber: r.rowNumber, error: r.error })),
+          sample: rows.slice(0, 5),
+        },
+      });
+    }
+
+    if (upload.report_type === "master") {
+      // Master files vary in shape, so the preview carries two extra things
+      // the other three don't need: the resolved header mapping (which of
+      // YOUR columns became which field) and how many duplicate item codes
+      // collapsed. Row-level "errors" here are only ever blank item codes,
+      // reported in the same {rowNumber, error} shape the UI already renders.
+      const { rows, sheetName, headerMapping, headersFound, totalRowsRead, duplicatesCollapsed, skipped } =
+        parseMasterWorkbook(arrayBuffer);
+      return NextResponse.json({
+        ok: true,
+        data: {
+          reportType: "master",
+          sheetName,
+          totalRows: totalRowsRead,
+          validRows: rows.length,
+          errorRows: skipped.length,
+          duplicatesCollapsed,
+          headerMapping,
+          headersFound,
+          sampleErrors: skipped.slice(0, 20).map((s) => ({ rowNumber: s.rowNumber, error: s.reason })),
           sample: rows.slice(0, 5),
         },
       });

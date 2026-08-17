@@ -49,6 +49,8 @@ export type Dict = {
   navStockDetails: string;
   navReplenishment: string;
   navSaleStockMix: string;
+  navWorkspace: string;
+  navConfigurations: string;
   signOut: string;
 
   // login
@@ -121,6 +123,18 @@ export type Dict = {
   integrationsTitle: string;
   integrationsSubtitle: string;
 
+  // configurations (admin)
+  configurationsTitle: string;
+  configurationsSubtitle: string;
+  configFreshDiscSourceLabel: string;
+  configFreshDiscSourceHint: string;
+  configFreshDiscSourceRatio: string;
+  configFreshDiscSourceRatioHint: string;
+  configFreshDiscSourceScheme: string;
+  configFreshDiscSourceSchemeHint: string;
+  configSaveButton: string;
+  configSavedNotice: string;
+
   // misc page titles
   myStoreTitle: string;
   campaignsTitle: string;
@@ -137,6 +151,8 @@ const en: Dict = {
   navStockDetails: "Stock Details",
   navReplenishment: "Replenishment",
   navSaleStockMix: "Sale vs Stock Mix",
+  navWorkspace: "Workspace",
+  navConfigurations: "Configurations",
   signOut: "Sign out",
 
   signIn: "Sign in",
@@ -207,6 +223,19 @@ const en: Dict = {
   integrationsSubtitle:
     "Connection details for external systems. Stored, not yet used — no part of this app connects to Logic ERP with these credentials today. Super Admin only.",
 
+  configurationsTitle: "Configurations",
+  configurationsSubtitle:
+    "App-wide settings, editable by Super Admin only. More settings will be added here as later phases ship.",
+  configFreshDiscSourceLabel: "Fresh / Discounted classification source",
+  configFreshDiscSourceHint:
+    "Decides how every sale line on the Targets Fresh/Discounted tracker and audit report is classified. Changing this changes numbers already on screen for every user — pick deliberately.",
+  configFreshDiscSourceRatio: "Discount ratio (current default)",
+  configFreshDiscSourceRatioHint: "Discounted when the line's discount is 49.5% or more of its gross amount.",
+  configFreshDiscSourceScheme: "Scheme master",
+  configFreshDiscSourceSchemeHint: "Discounted when the item's barcode is flagged in the uploaded Scheme report.",
+  configSaveButton: "Save",
+  configSavedNotice: "Saved.",
+
   myStoreTitle: "My store",
   campaignsTitle: "Campaigns",
 };
@@ -222,6 +251,8 @@ const hi: Dict = {
   navStockDetails: "Stock Details",
   navReplenishment: "Replenishment",
   navSaleStockMix: "Sale vs Stock Mix",
+  navWorkspace: "Workspace",
+  navConfigurations: "Configurations",
   signOut: "Sign Out",
 
   signIn: "Sign In करें",
@@ -292,6 +323,18 @@ const hi: Dict = {
   integrationsSubtitle:
     "बाहरी Systems की Connection Details। अभी सिर्फ Store की गई हैं, इस्तेमाल में नहीं — इस App का कोई हिस्सा अभी इन Credentials से Logic ERP से नहीं जुड़ता। सिर्फ Super Admin के लिए।",
 
+  configurationsTitle: "Configurations",
+  configurationsSubtitle: "App की Settings, सिर्फ Super Admin बदल सकते हैं। आगे और Settings यहाँ जुड़ेंगी।",
+  configFreshDiscSourceLabel: "Fresh / Discounted तय करने का Source",
+  configFreshDiscSourceHint:
+    "Targets के Fresh/Discounted Tracker और Audit Report में हर Sale Line इसी से तय होती है। इसे बदलने से हर User को दिख रहे Numbers बदल जाएंगे — सोच-समझकर बदलें।",
+  configFreshDiscSourceRatio: "Discount Ratio (अभी का Default)",
+  configFreshDiscSourceRatioHint: "जब Line का Discount, Gross Amount के 49.5% या ज़्यादा हो तो Discounted।",
+  configFreshDiscSourceScheme: "Scheme Master",
+  configFreshDiscSourceSchemeHint: "जब Item का Barcode Upload किए गए Scheme Report में Flag हो तो Discounted।",
+  configSaveButton: "Save करें",
+  configSavedNotice: "Save हो गया।",
+
   myStoreTitle: "मेरा Store",
   campaignsTitle: "Campaigns",
 };
@@ -307,6 +350,8 @@ const mr: Dict = {
   navStockDetails: "Stock Details",
   navReplenishment: "Replenishment",
   navSaleStockMix: "Sale vs Stock Mix",
+  navWorkspace: "Workspace",
+  navConfigurations: "Configurations",
   signOut: "Sign Out",
 
   signIn: "Sign In करा",
@@ -376,6 +421,18 @@ const mr: Dict = {
   integrationsTitle: "Integrations",
   integrationsSubtitle:
     "बाहेरील Systems च्या Connection Details. सध्या फक्त Store केलेल्या आहेत, वापरात नाहीत — या App चा कोणताही भाग सध्या या Credentials नी Logic ERP शी जोडलेला नाही. फक्त Super Admin साठी.",
+
+  configurationsTitle: "Configurations",
+  configurationsSubtitle: "App च्या Settings, फक्त Super Admin बदलू शकतात. पुढे आणखी Settings इथे येतील.",
+  configFreshDiscSourceLabel: "Fresh / Discounted ठरवण्याचा Source",
+  configFreshDiscSourceHint:
+    "Targets च्या Fresh/Discounted Tracker आणि Audit Report मधली प्रत्येक Sale Line यावरून ठरते. हे बदलल्यास प्रत्येक User ला दिसणारे Numbers बदलतील — विचारपूर्वक बदला.",
+  configFreshDiscSourceRatio: "Discount Ratio (सध्याचा Default)",
+  configFreshDiscSourceRatioHint: "जेव्हा Line चा Discount, Gross Amount च्या 49.5% किंवा जास्त असतो तेव्हा Discounted.",
+  configFreshDiscSourceScheme: "Scheme Master",
+  configFreshDiscSourceSchemeHint: "जेव्हा Item चा Barcode Upload केलेल्या Scheme Report मध्ये Flag असतो तेव्हा Discounted.",
+  configSaveButton: "Save करा",
+  configSavedNotice: "Save झालं.",
 
   myStoreTitle: "माझं Store",
   campaignsTitle: "Campaigns",

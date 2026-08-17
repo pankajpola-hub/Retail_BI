@@ -4,11 +4,13 @@ import { getObjectBuffer } from "@/lib/storage/minio";
 import { parseSaleWorkbook } from "@/lib/erpReports/parseSaleWorkbook";
 import { parseStockWorkbook } from "@/lib/erpReports/parseStockWorkbook";
 import { parseSchemeWorkbook } from "@/lib/erpReports/parseSchemeWorkbook";
+import { parseMasterWorkbook } from "@/lib/erpReports/parseMasterWorkbook";
 import { cleanupOlderUploads } from "@/lib/erpReports/retention";
 
 type UploadRow = {
-  report_type: "sale" | "stock" | "scheme";
+  report_type: "sale" | "stock" | "scheme" | "master";
   storage_path: string;
+  file_name: string; // recorded as raw_logic.item_master.source_file on a master commit
 };
 
 /**
@@ -37,7 +39,7 @@ export async function POST(_request: Request, { params }: { params: { id: string
   const { data: upload } = await supabase
     .schema("ops")
     .from<UploadRow>("erp_report_uploads")
-    .select("report_type, storage_path")
+    .select("report_type, storage_path, file_name")
     .eq("id", params.id)
     .maybeSingle();
 
@@ -148,6 +150,55 @@ export async function POST(_request: Request, { params }: { params: { id: string
       return NextResponse.json({
         ok: true,
         data: { reportType: "stock", committedRows: data, skippedRows: rows.length - valid.length },
+      });
+    }
+
+    if (upload.report_type === "master") {
+      // The parser has already deduplicated by item_code (last one wins) and
+      // dropped blank-item-code rows, so every row here is committable.
+      const { rows, skipped, duplicatesCollapsed } = parseMasterWorkbook(arrayBuffer);
+      const payload = rows.map((r) => ({
+        item_code: r.itemCode,
+        item_name: r.itemName,
+        shade_name: r.shadeName,
+        pack_size: r.packSize,
+        category: r.category,
+        subcategory: r.subcategory,
+        season: r.season,
+        market_segment: r.marketSegment,
+        gender: r.gender,
+        size_group: r.sizeGroup,
+        mrp: r.mrp,
+      }));
+
+      // Same door as every other branch: the user-scoped client plus a
+      // SECURITY DEFINER function (migration 0054) that does the whole UPSERT
+      // in one statement inside its own transaction. Unlike the other three
+      // this one returns jsonb, because inserted-vs-updated is the useful
+      // signal on a master file.
+      const { data, error } = await supabase
+        .schema("ops")
+        .rpc<{ inserted: number; updated: number; total: number }>("fn_process_master_upload", {
+          p_upload_id: params.id,
+          p_rows: payload,
+          p_source_file: upload.file_name,
+        });
+
+      if (error) {
+        await markFailed(error.message);
+        return NextResponse.json({ ok: false, error: { code: "commit_failed", message: error.message } }, { status: 400 });
+      }
+
+      return NextResponse.json({
+        ok: true,
+        data: {
+          reportType: "master",
+          committedRows: data?.total ?? 0,
+          insertedRows: data?.inserted ?? 0,
+          updatedRows: data?.updated ?? 0,
+          duplicatesCollapsed,
+          skippedRows: skipped.length,
+        },
       });
     }
 

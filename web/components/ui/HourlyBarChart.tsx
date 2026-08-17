@@ -1,3 +1,7 @@
+"use client";
+
+import { BarChart } from "@tremor/react";
+
 type HourPoint = { hour: number; value: number };
 
 const HOUR_LABEL = (h: number) => {
@@ -6,10 +10,14 @@ const HOUR_LABEL = (h: number) => {
   return `${h12}${period}`;
 };
 
+const inr = (v: number) => `₹${Math.round(v).toLocaleString("en-IN")}`;
+
 /**
- * Server-rendered SVG bar chart, no client JS. Defaults to 9am–12am
- * (startHour=9, endHour=23) rather than the full 24 — stores aren't open
- * overnight, so hours 0–8 were just dead space on the chart.
+ * Real chart library (Tremor/Recharts) as of 2026-08-15, replacing a
+ * hand-rolled SVG bar chart — see TrendChart.tsx for the full rationale.
+ * Same external contract as before (points/ariaLabel/startHour/endHour),
+ * zero caller changes needed. Still defaults to 9am-12am — stores aren't
+ * open overnight, so hours 0-8 stay dead space either way.
  */
 export function HourlyBarChart({
   points,
@@ -22,45 +30,23 @@ export function HourlyBarChart({
   startHour?: number;
   endHour?: number;
 }) {
-  const width = 700;
-  const height = 140;
-  const padBottom = 22;
   const byHour = new Map(points.map((p) => [p.hour, p.value]));
   const hours = Array.from({ length: endHour - startHour + 1 }, (_, i) => startHour + i);
-  const max = Math.max(...hours.map((h) => byHour.get(h) ?? 0), 1);
-  const barWidth = width / hours.length;
+  const data = hours.map((h) => ({ hour: HOUR_LABEL(h), "Net sales": byHour.get(h) ?? 0 }));
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height} role="img" aria-label={ariaLabel}>
-      <line x1="0" y1={height - padBottom} x2={width} y2={height - padBottom} stroke="var(--line-soft)" />
-      {hours.map((h, i) => {
-        const v = byHour.get(h) ?? 0;
-        const barHeight = (v / max) * (height - padBottom - 8);
-        return (
-          <g key={h}>
-            <rect
-              x={i * barWidth + 1.5}
-              y={height - padBottom - barHeight}
-              width={barWidth - 3}
-              height={barHeight}
-              fill="var(--accent)"
-              opacity={v > 0 ? 0.85 : 0.15}
-            />
-            {i % 2 === 0 && (
-              <text
-                x={i * barWidth + barWidth / 2}
-                y={height - 6}
-                fontSize="9"
-                fill="var(--ink-3)"
-                fontFamily="ui-monospace,monospace"
-                textAnchor="middle"
-              >
-                {HOUR_LABEL(h)}
-              </text>
-            )}
-          </g>
-        );
-      })}
-    </svg>
+    <div role="img" aria-label={ariaLabel}>
+      <BarChart
+        className="h-36"
+        data={data}
+        index="hour"
+        categories={["Net sales"]}
+        colors={["emerald"]}
+        valueFormatter={inr}
+        showLegend={false}
+        showAnimation
+        yAxisWidth={56}
+      />
+    </div>
   );
 }

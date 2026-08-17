@@ -7,9 +7,10 @@ const REPORT_LABELS: Record<string, string> = {
   sale: "Sale report",
   stock: "Stock report",
   scheme: "Scheme report",
+  master: "Master (item attributes)",
 };
 
-export function UploadReportForm({ reportType }: { reportType: "sale" | "stock" | "scheme" }) {
+export function UploadReportForm({ reportType }: { reportType: "sale" | "stock" | "scheme" | "master" }) {
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<

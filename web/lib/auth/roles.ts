@@ -129,7 +129,9 @@ export type PageKey =
   | "targets"
   | "users"
   | "integrations"
-  | "data-upload";
+  | "data-upload"
+  | "workspace"
+  | "configurations";
 
 export const PAGE_KEYS: PageKey[] = [
   "network",
@@ -140,6 +142,8 @@ export const PAGE_KEYS: PageKey[] = [
   "users",
   "integrations",
   "data-upload",
+  "workspace",
+  "configurations",
 ];
 
 export const PAGE_LABELS: Record<PageKey, string> = {
@@ -151,6 +155,8 @@ export const PAGE_LABELS: Record<PageKey, string> = {
   users: "Users",
   integrations: "Integrations",
   "data-upload": "Data Upload",
+  workspace: "Workspace",
+  configurations: "Configurations",
 };
 
 // Role defaults mirrored from each route group's requireRole() call /
@@ -181,6 +187,18 @@ export const PAGE_ROLE_DEFAULTS: Record<PageKey, AppRole[]> = {
   users: ["super_admin"],
   integrations: ["super_admin"],
   "data-upload": ["ho_admin", "super_admin"],
+  // Personal workspaces only (Phase 5) — every role that lands on /network
+  // can build their own, same breadth as network itself. Each workspace is
+  // owner-scoped at the RLS layer (workspace.workspaces owner_id =
+  // core.current_user_id()), so widening this list only ever grants access
+  // to a role's OWN future workspaces, never anyone else's.
+  workspace: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"],
+  // Admin-only settings surface (0057/0058) — same posture as users/
+  // integrations. Everything it holds today (the Fresh/EOSS classification
+  // source) affects every role's dashboards, but only super_admin may change
+  // it; store/sales roles have no access at all unless a future per-user
+  // override widens it, same override mechanism as every other page here.
+  configurations: ["super_admin"],
 };
 
 /**

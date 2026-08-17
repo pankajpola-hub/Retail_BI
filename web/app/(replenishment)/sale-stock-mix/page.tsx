@@ -1,6 +1,11 @@
+import { Suspense } from "react";
 import { createClient } from "@/lib/data/client";
+import type { DataClient } from "@/lib/data/client";
 import { requirePageAccess } from "@/lib/auth/roles";
 import { RowsPerPageSelect } from "@/components/ui/RowsPerPageSelect";
+import { KpiGridSkeleton, TableSkeleton } from "@/components/ui/Skeleton";
+import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
+import { time } from "@/lib/perf/timing";
 import { computeSaleStockMix, MIX_STATUS_META, type MixStatus, type SalesPeriodDays } from "@/lib/replenishment/mix";
 
 export const dynamic = "force-dynamic";
@@ -33,27 +38,48 @@ function KpiCard({ label, value, tone }: { label: string; value: string; tone?: 
 
 const PERIOD_OPTIONS: SalesPeriodDays[] = [7, 30, 60, 90];
 
-export default async function SaleStockMixPage({
+type MixSearchParams = {
+  store?: string;
+  style?: string;
+  color?: string;
+  period?: string;
+  status?: string;
+  page?: string;
+  perPage?: string;
+};
+
+function SaleStockMixSkeleton() {
+  return (
+    <>
+      <KpiGridSkeleton count={5} />
+      <div className="mt-6">
+        <TableSkeleton rows={8} cols={9} />
+      </div>
+    </>
+  );
+}
+
+/**
+ * Same shape as ReplenishmentContent — one expensive computeSaleStockMix()
+ * call feeds the KPIs, filter form (needs storeList) and the whole table, so
+ * this is one Suspense boundary rather than several. The shell (title,
+ * intro) above it renders instantly.
+ */
+async function SaleStockMixContent({
+  supabase,
   searchParams,
 }: {
-  searchParams: {
-    store?: string;
-    style?: string;
-    color?: string;
-    period?: string;
-    status?: string;
-    page?: string;
-    perPage?: string;
-  };
+  supabase: DataClient;
+  searchParams: MixSearchParams;
 }) {
-  await requirePageAccess("replenishment");
-  const supabase = await createClient();
-
   const storeId = searchParams.store ?? "";
   const periodParam = Number(searchParams.period) as SalesPeriodDays;
   const salesPeriodDays: SalesPeriodDays = PERIOD_OPTIONS.includes(periodParam) ? periodParam : 30;
 
-  const { storeList, rows, totalSales, totalStock } = await computeSaleStockMix(supabase, { storeId, salesPeriodDays });
+  const { storeList, rows, totalSales, totalStock } = await time(
+    "sale-stock-mix:compute",
+    computeSaleStockMix(supabase, { storeId, salesPeriodDays })
+  );
 
   const styleQ = (searchParams.style ?? "").trim().toLowerCase();
   const colorQ = (searchParams.color ?? "").trim().toLowerCase();
@@ -102,17 +128,8 @@ export default async function SaleStockMixPage({
   }
 
   return (
-    <main className="py-6">
-      <h1 className="font-serif text-2xl">Sale Mix vs Stock Mix</h1>
-      <p className="mt-1 max-w-3xl text-[12.5px] text-ink-3">
-        By <strong>Style No. + Color</strong>: what share of recent sales does this style-color earn, versus what
-        share of current stock it&apos;s holding? A style-color selling faster than its stock share suggests
-        allocation is warranted; one holding more stock than it sells suggests the opposite. This is one input into
-        the Replenishment page&apos;s allocation recommendations — the two are meant to be read together, not as
-        competing answers.
-      </p>
-
-      <div className="mt-4 grid grid-cols-2 gap-px border border-line-soft bg-line-soft sm:grid-cols-3 lg:grid-cols-5">
+    <>
+      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <KpiCard label="High priority" value={fmt(counts.high_priority)} tone={counts.high_priority > 0 ? "crit" : undefined} />
         <KpiCard label="Allocation opportunities" value={fmt(counts.opportunity)} tone={counts.opportunity > 0 ? "good" : undefined} />
         <KpiCard label="Balanced" value={fmt(counts.balanced)} />
@@ -218,7 +235,8 @@ export default async function SaleStockMixPage({
               <th className="px-2 py-2">Color</th>
               <th className="px-2 py-2 text-right">Sales</th>
               <th className="px-2 py-2 text-right">Sale Mix</th>
-              <th className="px-2 py-2 text-right">SOH</th>
+              <th className="px-2 py-2 text-right">Store SOH</th>
+              <th className="px-2 py-2 text-right">WH SOH</th>
               <th className="px-2 py-2 text-right">Stock Mix</th>
               <th className="px-2 py-2 text-right">Mix Gap</th>
               <th className="px-2 py-2">Status</th>
@@ -228,7 +246,7 @@ export default async function SaleStockMixPage({
           <tbody>
             {pageRows.length === 0 ? (
               <tr>
-                <td colSpan={9} className="px-2 py-4 text-center text-ink-3">
+                <td colSpan={10} className="px-2 py-4 text-center text-ink-3">
                   No style-colors match these filters.
                 </td>
               </tr>
@@ -247,6 +265,7 @@ export default async function SaleStockMixPage({
                     <td className="px-2 py-2 text-right font-mono">{fmt(r.sales)}</td>
                     <td className="px-2 py-2 text-right font-mono">{pct(r.saleMixPct)}</td>
                     <td className="px-2 py-2 text-right font-mono">{fmt(r.soh)}</td>
+                    <td className="px-2 py-2 text-right font-mono">{fmt(r.warehouseAvailable)}</td>
                     <td className="px-2 py-2 text-right font-mono">{pct(r.stockMixPct)}</td>
                     <td
                       className={`px-2 py-2 text-right font-mono font-semibold ${
@@ -307,6 +326,34 @@ export default async function SaleStockMixPage({
           </a>
         </div>
       )}
+    </>
+  );
+}
+
+export default async function SaleStockMixPage({
+  searchParams,
+}: {
+  searchParams: MixSearchParams;
+}) {
+  await requirePageAccess("replenishment");
+  const supabase = await createClient();
+
+  return (
+    <main className="py-6">
+      <h1 className="font-serif text-2xl">Sale Mix vs Stock Mix</h1>
+      <p className="mt-1 max-w-3xl text-[12.5px] text-ink-3">
+        By <strong>Style No. + Color</strong>: what share of recent sales does this style-color earn, versus what
+        share of current stock it&apos;s holding? A style-color selling faster than its stock share suggests
+        allocation is warranted; one holding more stock than it sells suggests the opposite. This is one input into
+        the Replenishment page&apos;s allocation recommendations — the two are meant to be read together, not as
+        competing answers.
+      </p>
+
+      <SectionErrorBoundary label="Sale Mix vs Stock Mix">
+        <Suspense fallback={<SaleStockMixSkeleton />}>
+          <SaleStockMixContent supabase={supabase} searchParams={searchParams} />
+        </Suspense>
+      </SectionErrorBoundary>
     </main>
   );
 }

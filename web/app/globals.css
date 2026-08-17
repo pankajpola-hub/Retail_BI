@@ -10,27 +10,44 @@
  * component.
  */
 :root {
-  --ground: #f5f7f4;
+  /* Shopify Admin-inspired palette (2026-08-15 redesign) — ground is the
+     admin's characteristic light neutral gray (not white), surfaces are
+     white cards, accent is Shopify's own green. Token NAMES are unchanged
+     from the original mock so every component that already references
+     var(--accent) etc. via tailwind.config.ts repaints automatically. */
+  --ground: #f1f2f4;
   --surface: #ffffff;
-  --surface-2: #edf1ec;
-  --line: #d9e0da;
-  --line-soft: #e7ece6;
-  --ink: #131c18;
-  --ink-2: #41504a;
-  --ink-3: #6e7d76;
-  --accent: #0b6e63;
-  --accent-soft: #ddede9;
-  --accent-ink: #07524a;
-  --good: #2e7d5b;
-  --good-soft: #dff0e6;
-  --warn: #a8700a;
-  --warn-soft: #f7ebd2;
-  --crit: #b93a2e;
-  --crit-soft: #f8e3e0;
+  --surface-2: #f6f6f7;
+  --line: #c9cccf;
+  --line-soft: #e3e4e6;
+  --ink: #1a1c1d;
+  --ink-2: #4a4e50;
+  --ink-3: #6d7175;
+  --accent: #008060;
+  --accent-soft: #e3f3ef;
+  --accent-ink: #004c3f;
+  --good: #008060;
+  --good-soft: #e3f3ef;
+  --warn: #966300;
+  --warn-soft: #fff4e0;
+  --crit: #d82c0d;
+  --crit-soft: #fbeae9;
 
-  --font-mono: ui-monospace, "Cascadia Mono", "Consolas", "SF Mono", monospace;
-  --font-sans: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --sidebar-bg: #ffffff;
+  --sidebar-active-bg: #f1f1f1;
+  --sidebar-ink: #4a4e50;
+  --sidebar-ink-active: #1a1c1d;
+  --topbar-bg: #000000;
+  --topbar-ink: #e3e3e3;
+
+  /* --font-serif/--font-sans/--font-mono are NOT defined here — 2026-08-15,
+     see lib/fonts.ts. They previously were, but --font-serif was aliased
+     to the exact same stack as --font-sans (a real bug: 18 files style
+     headings `font-serif` and every one silently rendered as plain system
+     text). next/font/google now defines these three custom properties
+     directly on <html> (app/layout.tsx) — real typefaces, self-hosted at
+     build time, no runtime Google Fonts request. This is now the only
+     definition; do not re-add hardcoded system-stack fallbacks here. */
 }
 
 /*
@@ -59,16 +76,42 @@
   --warn-soft: #33260c;
   --crit: #e4796b;
   --crit-soft: #381914;
+
+  --sidebar-bg: #151e1a;
+  --sidebar-active-bg: #12312d;
+  --sidebar-ink: #a9b8b1;
+  --sidebar-ink-active: #8ad8cc;
 }
 
 body {
   background: var(--ground);
   color: var(--ink);
   font-family: var(--font-sans);
+  font-size: 14.5px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
 }
 
 .font-tabular {
   font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Type-rhythm pass, 2026-08-15 — real fonts landed (lib/fonts.ts) but the
+ * app still read dense/utilitarian: no shared heading treatment, no
+ * baseline line-height (elements fell back to the browser default,
+ * inconsistent against 40+ files' worth of arbitrary text-[Npx]
+ * utilities). Two deliberately GLOBAL fixes rather than a page-by-page
+ * rewrite of every file's utility classes — .font-serif is already the
+ * shared class all 18 page headings use, so tuning it once here reaches
+ * every page instantly, the same leverage principle used throughout this
+ * project (fix the shared token/component, not each call site).
+ */
+.font-serif {
+  font-weight: 500;
+  letter-spacing: -0.011em;
+  line-height: 1.2;
+  text-wrap: balance;
 }
 
 /* Driven by components/ui/TopProgressBar.tsx. A sweeping bar rather than a

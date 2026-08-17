@@ -1,4 +1,6 @@
+import { Suspense } from "react";
 import { createClient } from "@/lib/data/client";
+import type { DataClient } from "@/lib/data/client";
 import { requirePageAccess } from "@/lib/auth/roles";
 import { StoreFilter, MultiSelectFilter } from "@/components/ui/StoreFilter";
 import { MonthlyTargetForm } from "./monthly-target-form";
@@ -6,6 +8,9 @@ import { BulkUploadForm } from "./bulk-upload-form";
 import { UploadTargetsForm } from "./upload-form";
 import { getDict } from "@/lib/i18n/server";
 import { RemarkCell } from "./remark-cell";
+import { TableSkeleton } from "@/components/ui/Skeleton";
+import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
+import { time, timeAll } from "@/lib/perf/timing";
 
 export const dynamic = "force-dynamic";
 
@@ -145,52 +150,49 @@ function CategoryTracker({
   );
 }
 
-export default async function TargetsPage({
+function TrackerSkeleton() {
+  return (
+    <>
+      <div className="mt-8 flex flex-wrap items-baseline justify-between gap-3">
+        <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
+          Monthly Fresh / Discounted tracker
+        </span>
+      </div>
+      <div className="mt-2 grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <TableSkeleton rows={6} cols={6} />
+        <TableSkeleton rows={6} cols={6} />
+      </div>
+    </>
+  );
+}
+
+/**
+ * Gender/Category option lists → tracker rows is a genuine sequential
+ * dependency (the URL's ?gender/?category values are validated against the
+ * fetched option lists before being passed to the RPC — see parseMulti
+ * below), so unlike Network/Stock-Details this section keeps ONE internal
+ * await-then-await rather than a Promise.all. What it DOES gain from being
+ * its own Suspense boundary: it no longer blocks the page shell (title,
+ * target-entry forms) or the Uploaded Files section below, which have zero
+ * dependency on any of this.
+ */
+async function TrackerSection({
+  supabase,
+  storeList,
+  storeId,
+  month,
   searchParams,
+  canSetTargets,
+  canWriteRemarks,
 }: {
-  searchParams: {
-    store?: string;
-    month?: string;
-    gender?: string;
-    category?: string;
-  };
+  supabase: DataClient;
+  storeList: StoreRow[];
+  storeId: string;
+  month: string;
+  searchParams: { gender?: string; category?: string };
+  canSetTargets: boolean;
+  canWriteRemarks: boolean;
 }) {
-  // requirePageAccess (migration 0035) layers a per-user override on top of
-  // the role default — (ho)/layout.tsx's gate is coarse (it also hosts
-  // /network, a different page_key), so the "targets" page_key check has to
-  // happen here instead.
-  //
-  // 0032 widened PAGE_ROLE_DEFAULTS.targets to include ebo_manager so store
-  // staff can reach this page and write daily Remarks — canSetTargets below
-  // (monthly Fresh/Discounted targets, bulk upload) deliberately stays
-  // narrower, unchanged from before. canWriteRemarks is the new, wider gate:
-  // anyone who can view this page can write a remark for a store they have
-  // access to (ops.daily_target_remarks' own RLS is the real backstop that
-  // scopes an ebo_manager's writes to their own store, same
-  // core.fn_user_store_ids() pattern used everywhere else).
-  const user = await requirePageAccess("targets");
-  const canSetTargets = user.role === "ho_admin" || user.role === "super_admin";
-  const canWriteRemarks = true;
-  const supabase = await createClient();
-  const t = await getDict();
-
-  const today = new Date().toISOString().slice(0, 10);
-  const currentMonth = today.slice(0, 7);
-
-  const { data: stores } = await supabase
-    .schema("core")
-    .from<StoreRow>("stores")
-    .select("store_id, store_name")
-    .order("store_id");
-  // BO-004 (Phoenix Palassio, Lucknow) is discontinued — kept visible only on
-  // /network for historical reference, hidden from every other store filter.
-  const storeList = (stores ?? []).filter((s) => s.store_id !== "BO-004");
-
-  const storeId =
-    searchParams.store && storeList.some((s) => s.store_id === searchParams.store)
-      ? searchParams.store
-      : (storeList[0]?.store_id ?? "");
-  const month = searchParams.month && /^\d{4}-\d{2}$/.test(searchParams.month) ? searchParams.month : currentMonth;
   const periodMonth = `${month}-01`;
 
   // Gender/Category filter option lists. Gender comes from the
@@ -207,10 +209,10 @@ export default async function TargetsPage({
   // for no behavioral gain. Both remaining filters are multi-select: the URL
   // param is a comma-separated list; missing = default (see parseMulti
   // below), present-but-empty = explicitly cleared to "no filter".
-  const [{ data: genderOptions }, { data: categoryOptions }] = await Promise.all([
+  const [{ data: genderOptions }, { data: categoryOptions }] = await timeAll("targets:options", [
     supabase.schema("sales").from<{ gender: string }>("vw_item_gender_options").select("gender"),
     supabase.schema("sales").from<{ category: string }>("vw_sale_category_options").select("category"),
-  ]);
+  ] as const);
   const genderList = (genderOptions ?? []).map((r) => r.gender).filter(Boolean);
   const categoryList = (categoryOptions ?? []).map((r) => r.category).filter(Boolean);
 
@@ -239,19 +241,15 @@ export default async function TargetsPage({
   // output as the view). It still returns one row per day of the month —
   // the filtering happens inside the SQL aggregation, not by pulling every
   // line to this page and summing in JS.
-  // trackerRows and imports are independent queries (imports doesn't depend
-  // on storeId/month/gender/subcategory at all) — fetched in parallel rather
-  // than one after another, same pattern as the gender/subcategory options
-  // above.
   // Remarks (0032) — one row per day this store/month has a saved comment.
   // Independent of the tracker RPC (ops.daily_target_remarks isn't joined
-  // into ops.fn_monthly_fresh_disc_tracker at all), fetched in the same
-  // Promise.all batch. nextMonth computed in JS (not SQL) for an exclusive
-  // upper bound, same reasoning as the audit-report route.
+  // into ops.fn_monthly_fresh_disc_tracker at all), fetched in parallel with
+  // it. nextMonth computed in JS (not SQL) for an exclusive upper bound,
+  // same reasoning as the audit-report route.
   const [yStr, mStr] = month.split("-");
   const nextMonth = new Date(Date.UTC(Number(yStr), Number(mStr), 1)).toISOString().slice(0, 10);
 
-  const [{ data: trackerRows }, { data: imports }, { data: remarkRows }] = await Promise.all([
+  const [{ data: trackerRows }, { data: remarkRows }] = await timeAll("targets:tracker", [
     storeId
       ? supabase.schema("ops").rpc<TrackerRow[]>("fn_monthly_fresh_disc_tracker", {
           p_store_id: storeId,
@@ -261,11 +259,6 @@ export default async function TargetsPage({
           p_categories: categories.length > 0 ? categories : null,
         })
       : Promise.resolve({ data: null }),
-    supabase
-      .schema("ops")
-      .from<ImportRow>("incentive_target_imports")
-      .select("id, file_name, uploaded_at, status")
-      .order("uploaded_at", { ascending: false }),
     storeId
       ? supabase
           .schema("ops")
@@ -275,7 +268,7 @@ export default async function TargetsPage({
           .gte("date", periodMonth)
           .lt("date", nextMonth)
       : Promise.resolve({ data: null }),
-  ]);
+  ] as const);
 
   const rows = (trackerRows ?? []) as TrackerRow[];
   const monthlyFreshTarget = rows[0]?.fresh_target_qty ?? 0;
@@ -288,22 +281,7 @@ export default async function TargetsPage({
   }
 
   return (
-    <main className="py-6">
-      <h1 className="font-serif text-2xl">{t.targetsTitle}</h1>
-      <p className="mt-1 max-w-2xl text-[12.5px] text-ink-3">{t.targetsSubtitle}</p>
-
-      {canSetTargets && (
-        <div className="mt-5 flex flex-col gap-4">
-          <MonthlyTargetForm
-            key={storeId}
-            stores={storeList}
-            defaultStoreId={storeId}
-            defaultMonth={month}
-          />
-          <BulkUploadForm />
-        </div>
-      )}
-
+    <>
       <div className="mt-8 flex flex-wrap items-baseline justify-between gap-3">
         <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
           Monthly Fresh / Discounted tracker
@@ -415,7 +393,30 @@ export default async function TargetsPage({
           </div>
         </div>
       )}
+    </>
+  );
+}
 
+/**
+ * Independent of everything above — imports has zero dependency on
+ * storeId/month/gender/category, so it was already wasted critical-path
+ * time sharing a Promise.all with the tracker query. As its own Suspense
+ * boundary it renders as soon as its own single query resolves, regardless
+ * of how long the tracker/options chain above takes.
+ */
+async function UploadedFilesSection({ supabase }: { supabase: DataClient }) {
+  const t = await getDict();
+  const { data: imports } = await time(
+    "targets:imports",
+    supabase
+      .schema("ops")
+      .from<ImportRow>("incentive_target_imports")
+      .select("id, file_name, uploaded_at, status")
+      .order("uploaded_at", { ascending: false })
+  );
+
+  return (
+    <>
       <h2 className="mt-10 text-[11px] font-semibold uppercase tracking-wide text-ink-3">{t.incentiveTargetsTitle}</h2>
       <p className="mt-1 max-w-2xl text-[12.5px] text-ink-3">{t.incentiveTargetsSubtitle}</p>
 
@@ -437,6 +438,102 @@ export default async function TargetsPage({
           </li>
         )) ?? <li className="px-3 py-2 text-sm text-ink-3">{t.noFilesUploadedYet}</li>}
       </ul>
+    </>
+  );
+}
+
+function UploadedFilesSkeleton() {
+  return (
+    <div className="mt-10">
+      <TableSkeleton rows={4} cols={3} />
+    </div>
+  );
+}
+
+export default async function TargetsPage({
+  searchParams,
+}: {
+  searchParams: {
+    store?: string;
+    month?: string;
+    gender?: string;
+    category?: string;
+  };
+}) {
+  // requirePageAccess (migration 0035) layers a per-user override on top of
+  // the role default — (ho)/layout.tsx's gate is coarse (it also hosts
+  // /network, a different page_key), so the "targets" page_key check has to
+  // happen here instead.
+  //
+  // 0032 widened PAGE_ROLE_DEFAULTS.targets to include ebo_manager so store
+  // staff can reach this page and write daily Remarks — canSetTargets below
+  // (monthly Fresh/Discounted targets, bulk upload) deliberately stays
+  // narrower, unchanged from before. canWriteRemarks is the new, wider gate:
+  // anyone who can view this page can write a remark for a store they have
+  // access to (ops.daily_target_remarks' own RLS is the real backstop that
+  // scopes an ebo_manager's writes to their own store, same
+  // core.fn_user_store_ids() pattern used everywhere else).
+  const user = await requirePageAccess("targets");
+  const canSetTargets = user.role === "ho_admin" || user.role === "super_admin";
+  const canWriteRemarks = true;
+  const supabase = await createClient();
+  const t = await getDict();
+
+  const today = new Date().toISOString().slice(0, 10);
+  const currentMonth = today.slice(0, 7);
+
+  // Small, fast — needed for the header/filter/forms immediately.
+  const { data: stores } = await supabase
+    .schema("core")
+    .from<StoreRow>("stores")
+    .select("store_id, store_name")
+    .order("store_id");
+  // BO-004 (Phoenix Palassio, Lucknow) is discontinued — kept visible only on
+  // /network for historical reference, hidden from every other store filter.
+  const storeList = (stores ?? []).filter((s) => s.store_id !== "BO-004");
+
+  const storeId =
+    searchParams.store && storeList.some((s) => s.store_id === searchParams.store)
+      ? searchParams.store
+      : (storeList[0]?.store_id ?? "");
+  const month = searchParams.month && /^\d{4}-\d{2}$/.test(searchParams.month) ? searchParams.month : currentMonth;
+
+  return (
+    <main className="py-6">
+      <h1 className="font-serif text-2xl">{t.targetsTitle}</h1>
+      <p className="mt-1 max-w-2xl text-[12.5px] text-ink-3">{t.targetsSubtitle}</p>
+
+      {canSetTargets && (
+        <div className="mt-5 flex flex-col gap-4">
+          <MonthlyTargetForm
+            key={storeId}
+            stores={storeList}
+            defaultStoreId={storeId}
+            defaultMonth={month}
+          />
+          <BulkUploadForm />
+        </div>
+      )}
+
+      <SectionErrorBoundary label="Monthly tracker">
+        <Suspense fallback={<TrackerSkeleton />}>
+          <TrackerSection
+            supabase={supabase}
+            storeList={storeList}
+            storeId={storeId}
+            month={month}
+            searchParams={searchParams}
+            canSetTargets={canSetTargets}
+            canWriteRemarks={canWriteRemarks}
+          />
+        </Suspense>
+      </SectionErrorBoundary>
+
+      <SectionErrorBoundary label="Uploaded files">
+        <Suspense fallback={<UploadedFilesSkeleton />}>
+          <UploadedFilesSection supabase={supabase} />
+        </Suspense>
+      </SectionErrorBoundary>
     </main>
   );
 }

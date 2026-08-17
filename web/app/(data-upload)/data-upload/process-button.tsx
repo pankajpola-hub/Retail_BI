@@ -1,16 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type PreviewData = {
-  reportType: "sale" | "stock" | "scheme";
+  reportType: "sale" | "stock" | "scheme" | "master";
   totalRows: number;
   validRows: number;
   errorRows: number;
   sampleErrors: { rowNumber: number; error: string }[];
   totalClosingStock?: number;
   withScheme?: number;
+  /**
+   * Master only. Unlike the Sale/Stock reports, whose headers are fixed, the
+   * item master is matched by fuzzy column aliases — so the ONE thing worth
+   * showing before committing is which of the user's columns the parser
+   * decided each field came from. A silently wrong mapping (e.g. "size"
+   * landing on size_group when they meant a size label) is invisible in a
+   * row count but obvious here.
+   */
+  headerMapping?: Record<string, string>;
+  headersFound?: string[];
+  duplicatesCollapsed?: number;
 };
 
 type State =
@@ -117,7 +128,40 @@ export function ProcessButton({ uploadId }: { uploadId: string }) {
               <dd>{data.withScheme.toLocaleString("en-IN")}</dd>
             </>
           )}
+          {data.reportType === "master" && data.duplicatesCollapsed != null && (
+            <>
+              <dt className="text-ink-3">Duplicate item codes collapsed</dt>
+              <dd>{data.duplicatesCollapsed.toLocaleString("en-IN")}</dd>
+            </>
+          )}
         </dl>
+
+        {/*
+          Master only: show the resolved column mapping. Row counts cannot
+          reveal a mis-mapped column — the file parses "successfully" either
+          way — so this table is the actual check before committing.
+        */}
+        {data.reportType === "master" && data.headerMapping && (
+          <div className="mt-3">
+            <p className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
+              Column mapping — check this before committing
+            </p>
+            <dl className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 border-l-2 border-line-soft bg-canvas-2 px-3 py-2 text-[12px]">
+              {Object.entries(data.headerMapping).map(([field, column]) => (
+                <Fragment key={field}>
+                  <dt className="text-ink-3">{field}</dt>
+                  <dd className="font-mono text-[11.5px]">{column}</dd>
+                </Fragment>
+              ))}
+            </dl>
+            {data.headersFound && data.headersFound.length > 0 && (
+              <p className="mt-1.5 text-[11px] text-ink-3">
+                Unmapped columns are ignored. All headers read:{" "}
+                <span className="font-mono">{data.headersFound.join(", ")}</span>
+              </p>
+            )}
+          </div>
+        )}
 
         {data.reportType === "stock" && (
           <p className="mt-3 border-l-2 border-line-soft bg-canvas-2 px-3 py-2 text-[12px] text-ink-3">

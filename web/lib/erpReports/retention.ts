@@ -28,7 +28,7 @@ import { removeObjectFile } from "@/lib/storage/minio";
  */
 export async function cleanupOlderUploads(
   supabase: DataClient,
-  reportType: "sale" | "stock" | "scheme",
+  reportType: "sale" | "stock" | "scheme" | "master",
   keepId: string
 ): Promise<void> {
   try {

@@ -1,0 +1,344 @@
+import type { DataClient, QueryChain } from "@/lib/data/client";
+import { KpiCard } from "@/components/ui/KpiCard";
+import { TrendChart } from "@/components/ui/TrendChart";
+import { HourlyBarChart } from "@/components/ui/HourlyBarChart";
+import {
+  computeSalesTotals,
+  computeLeague,
+  computeSchemeRows,
+  computeTrendPoints,
+  computeHourlyPoints,
+  buildWeekSeries,
+  HOUR_START,
+  HOUR_END,
+  type DailyRow,
+  type WeeklyRow,
+  type SchemeDailyRow,
+  type HourlyRow,
+} from "@/lib/sales/aggregate";
+import { timeAll } from "@/lib/perf/timing";
+import { StoreLeagueDrilldown } from "@/app/(workspace)/workspace/StoreLeagueDrilldown";
+import type { MetricDefinition, DimensionDefinition } from "@/lib/workspace/semantic";
+import { planQueries, buildQuery, isSatisfiable, type QueryRequirement, type DimensionPredicate } from "@/lib/workspace/queryPlanner";
+
+/**
+ * Phase 5 — the first components rendered FROM saved workspace config
+ * instead of hand-written page JSX. Reuses the exact fetch shape and the
+ * exact shared aggregate functions (lib/sales/aggregate.ts) the Network
+ * page's SalesSection uses (Phase 1), so a value shown here and the same
+ * value shown on /network can never disagree.
+ *
+ * Query-planner usage is SPLIT, deliberately. Three of the four fetches
+ * below (daily / scheme / hourly) go through the Phase 4 planner
+ * (lib/workspace/queryPlanner.ts); the WEEKLY one stays hand-written.
+ *
+ * The three that are planned are each single-view, single-grain, exact-match
+ * cases — one metric id resolves to one view and one column, no
+ * re-derivation, nothing ambiguous for the planner to get wrong. Routing
+ * them through it also narrows the select list from `*` to named columns,
+ * which is the point at 100+ stores.
+ *
+ * The WEEKLY fetch cannot be planned yet, and the reason is a real modelling
+ * gap rather than laziness: workspace.metric_definitions gives each metric
+ * exactly ONE source_view, but net_sales / gross_sales / discount_value /
+ * sale_bills / sale_quantity genuinely exist at BOTH the daily and weekly
+ * grain with the same meaning, and are catalogued against the daily view. A
+ * requirement naming them would therefore resolve to vw_ebo_sales_daily —
+ * the wrong view for a week series. Expressing "this metric exists at these
+ * grains, roll up via this view" is the next real Phase 4 design step; until
+ * it exists, planning the weekly fetch would silently query the wrong grain.
+ *
+ * Related and now fixed: migration 0050 repointed atv/upt/discount_pct from
+ * the daily view to the weekly one. ATV in particular was catalogued against
+ * sales.vw_ebo_sales_daily.atv, whose numerator is sale-bills-only, while
+ * every page renders the WEEKLY definition whose numerator nets off returns
+ * (0005:106 vs 0005:133). Those two agree only when a scope has no return
+ * bills — which is exactly why the parity fixture never caught it. See that
+ * migration's header for the full account.
+ *
+ * All 6 components below share ONE Promise.all fetch (same as
+ * SalesSection) — the Workspace page calls fetchSalesComponentData() ONCE
+ * per render regardless of how many of these 6 the user has added, then
+ * hands the same resolved data to whichever ones are present.
+ */
+
+export type SalesComponentScope = {
+  supabase: DataClient;
+  storeIds: string[];
+  from: string;
+  to: string;
+  weeklyStart: string;
+  /**
+   * The workspace.metric_definitions rows this module plans against, keyed by
+   * id — fetched by the CALLER alongside its own registry read so the
+   * semantic-layer lookup shares that round trip instead of adding one.
+   * A missing id degrades that one fetch to its hand-written form rather
+   * than failing the page; see plannedOrFallback().
+   */
+  metricsById: Map<string, MetricDefinition>;
+  /** workspace.dimension_definitions rows, for resolving Phase 6 governed filters. Same caller-fetches-it rationale as metricsById. */
+  dimensionsById: Map<string, DimensionDefinition>;
+  /**
+   * Phase 6 governed filters beyond store/date, as saved on the workspace.
+   * Applied by the planner where the dimension resolves to a column on the
+   * queried view; a filter that cannot be applied fails the component loudly
+   * rather than rendering unfiltered data (see plannedOrFallback).
+   */
+  dimensionFilters: DimensionPredicate[];
+};
+
+/** Metric ids this module needs from the semantic layer. The caller fetches exactly these. */
+export const PLANNED_METRIC_IDS = ["net_sales", "scheme_quantity", "scheme_net_sales", "hourly_net_sales"] as const;
+
+export type SalesComponentData = ReturnType<typeof deriveSalesComponentData>;
+
+/**
+ * Plan `requirement` and execute it — or, if the semantic layer can't cover
+ * it, run `fallback` instead. A missing metric row (a stack without
+ * migration 0048/0050 applied) degrades that ONE fetch to the hand-written
+ * query it used before rather than failing the page, matching this page's
+ * existing per-component failure posture.
+ *
+ * A requirement that resolves to more than one physical query would mean a
+ * multi-view fetch, which none of the callers here intend — treated as
+ * unplannable and sent to the fallback rather than silently running only the
+ * first query.
+ */
+function plannedOrFallback<T>(
+  supabase: DataClient,
+  metricsById: Map<string, MetricDefinition>,
+  dimensionsById: Map<string, DimensionDefinition>,
+  requirement: QueryRequirement,
+  fallback: () => PromiseLike<{ data: T[] | null }>
+): PromiseLike<{ data: T[] | null }> {
+  const available = new Map<string, MetricDefinition>();
+  for (const id of requirement.metricIds) {
+    const metric = metricsById.get(id);
+    if (!metric) return fallback();
+    available.set(id, metric);
+  }
+  const planned = planQueries([requirement], available, dimensionsById);
+  // isSatisfiable() covers unplannable metrics AND dimension filters that
+  // resolved to no column on this view. The latter matters most: a dropped
+  // filter would render unfiltered rows as though they were filtered, so an
+  // unsatisfiable plan must never fall through to the hand-written query
+  // either — that query doesn't know about the filter at all.
+  if (planned.length !== 1) return fallback();
+  const [only] = planned;
+  if (only!.unappliedDimensionIds.length > 0) {
+    throw new Error(
+      `Workspace filter(s) [${only!.unappliedDimensionIds.join(", ")}] cannot be applied to ${only!.sourceView}. ` +
+        `Refusing to render this component with unfiltered data.`
+    );
+  }
+  if (!isSatisfiable(only!)) return fallback();
+  return buildQuery<T>(supabase, only!);
+}
+
+async function fetchRaw(scope: SalesComponentScope) {
+  const { supabase, storeIds, from, to, weeklyStart, metricsById, dimensionsById, dimensionFilters } = scope;
+  const applyStore = <T extends { eq: (c: string, v: string) => T; in: (c: string, v: string[]) => T }>(q: T): T => {
+    if (storeIds.length === 0) return q;
+    if (storeIds.length === 1) return q.eq("store_id", storeIds[0]!);
+    return q.in("store_id", storeIds);
+  };
+  const period = { from, to };
+  // One filters object shared by all three planned requirements, so a
+  // governed filter can never be applied to one component and forgotten on
+  // another within the same render.
+  const filters = { storeIds, dimensions: dimensionFilters };
+
+  // The weekly fetch below is hand-written and therefore knows nothing about
+  // governed dimension filters. If one is active that the weekly view cannot
+  // express, the KPI grid / league table / week series would silently render
+  // UNFILTERED numbers next to a correctly-filtered scheme or hourly chart —
+  // the same class of "two things on one screen disagree" bug the semantic
+  // layer exists to prevent. Fail loudly instead.
+  //
+  // In practice this cannot fire today: nothing in the UI can save a filter
+  // other than store/date yet, so dimensionFilters is always empty. It is a
+  // tripwire for whoever ships the governed-filter UI — at that point either
+  // the weekly fetch gets planned too (needs the multi-grain metric work
+  // described in this file's header) or weekly-backed components must opt out
+  // of dimensions they cannot honour.
+  const weeklyUnsupported = dimensionFilters
+    .filter((f) => f.values.length > 0)
+    .filter((f) => dimensionsById.get(f.dimensionId)?.sourceView !== "sales.vw_ebo_sales_weekly")
+    .map((f) => f.dimensionId);
+  if (weeklyUnsupported.length > 0) {
+    throw new Error(
+      `Workspace filter(s) [${weeklyUnsupported.join(", ")}] cannot be applied to sales.vw_ebo_sales_weekly, ` +
+        `which backs the KPI grid, store league and weekly table. Refusing to render those with unfiltered data.`
+    );
+  }
+
+  const [{ data: daily }, { data: weeks }, { data: schemeDaily }, { data: hourly }] = await timeAll(
+    "workspace:sales-components",
+    [
+      plannedOrFallback<DailyRow>(
+        supabase,
+        metricsById,
+        dimensionsById,
+        ({ componentId: "sales_trend_chart", metricIds: ["net_sales"], period, comparison: "none", filters }),
+        () =>
+          applyStore(
+            supabase.schema("sales").from<DailyRow>("vw_ebo_sales_daily").select("store_id,bill_date,net_sales").gte("bill_date", from).lte("bill_date", to).order("bill_date") as unknown as QueryChain<DailyRow>
+          )
+      ),
+      // NOT planned — see this file's header (metric_definitions can only
+      // name one grain per metric, and these are catalogued at the daily one).
+      applyStore(supabase.schema("sales").from<WeeklyRow>("vw_ebo_sales_weekly").select("*").gte("week_start", weeklyStart).lte("week_start", to).order("week_start") as unknown as QueryChain<WeeklyRow>),
+      plannedOrFallback<SchemeDailyRow>(
+        supabase,
+        metricsById,
+        dimensionsById,
+        // scheme_group is the grouping key computeSchemeRows() reduces on —
+        // a column of vw_ebo_scheme_daily (0005:172), not a metric.
+        ({ componentId: "scheme_penetration", metricIds: ["scheme_quantity", "scheme_net_sales"], period, comparison: "none", filters, extraColumns: ["scheme_group"] }),
+        () =>
+          applyStore(supabase.schema("sales").from<SchemeDailyRow>("vw_ebo_scheme_daily").select("*").gte("bill_date", from).lte("bill_date", to) as unknown as QueryChain<SchemeDailyRow>)
+      ),
+      plannedOrFallback<HourlyRow>(
+        supabase,
+        metricsById,
+        dimensionsById,
+        // bill_hour is the bucket key computeHourlyPoints() reduces on
+        // (0017:32), not a metric.
+        ({ componentId: "hourly_sales_chart", metricIds: ["hourly_net_sales"], period, comparison: "none", filters, extraColumns: ["bill_hour"] }),
+        () =>
+          applyStore(supabase.schema("sales").from<HourlyRow>("vw_ebo_sales_hourly").select("*").gte("bill_date", from).lte("bill_date", to) as unknown as QueryChain<HourlyRow>)
+      ),
+    ] as const
+  );
+
+  return { daily, weeks, schemeDaily, hourly };
+}
+
+function deriveSalesComponentData(
+  raw: Awaited<ReturnType<typeof fetchRaw>>,
+  storeNames: Map<string, string>,
+  from: string,
+  to: string
+) {
+  const totals = computeSalesTotals(raw.weeks, from);
+  const league = computeLeague(totals.weekRows, totals.storesInView, storeNames);
+  const { schemeRows, schemeMaxQty } = computeSchemeRows(raw.schemeDaily);
+  const trendPoints = computeTrendPoints(raw.daily);
+  const hourlyPoints = computeHourlyPoints(raw.hourly);
+  return { totals, league, schemeRows, schemeMaxQty, trendPoints, hourlyPoints, storeNames, periodFrom: from, periodTo: to };
+}
+
+export async function fetchSalesComponentData(scope: SalesComponentScope, storeNames: Map<string, string>) {
+  const raw = await fetchRaw(scope);
+  return deriveSalesComponentData(raw, storeNames, scope.from, scope.to);
+}
+
+const INR = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
+
+export function SalesKpiGrid({ data }: { data: SalesComponentData }) {
+  const { totalNetSales, totalGrossSales, discountPct, totalDiscount, totalSaleBills, totalSaleQty, salesPerUnit, networkAtv, networkUpt } = data.totals;
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      <KpiCard label="Net sales" value={INR(totalNetSales)} sub={`gross ${INR(totalGrossSales)}`} />
+      <KpiCard label="Discount" value={discountPct !== null ? `${discountPct.toFixed(1)}%` : "—"} sub={INR(totalDiscount) + " given"} />
+      <KpiCard label="Sale bills" value={String(totalSaleBills)} />
+      <KpiCard label="Units sold" value={String(totalSaleQty)} sub={salesPerUnit !== null ? `${INR(salesPerUnit)}/unit` : undefined} />
+      <KpiCard label="ATV" value={networkAtv !== null ? INR(networkAtv) : "—"} />
+      <KpiCard label="UPT" value={networkUpt !== null ? networkUpt.toFixed(2) : "—"} />
+    </div>
+  );
+}
+
+export function WeeklySalesTable({ data }: { data: SalesComponentData }) {
+  const { weekRows, storesInView } = data.totals;
+  const weekLabel = (n: number) => `RW${String(n).padStart(2, "0")}`;
+  const tables = [
+    ...storesInView.map((sid) => ({ title: data.storeNames.get(sid) ?? sid, rows: buildWeekSeries(weekRows, sid) })),
+    ...(storesInView.length > 1 ? [{ title: "Network total", rows: buildWeekSeries(weekRows, null) }] : []),
+  ];
+  return (
+    <div className="grid grid-cols-1 gap-4 overflow-y-auto">
+      {tables.map((t) => (
+        <div key={t.title} className="border border-line-soft">
+          <div className="border-b border-line-soft bg-surface-2 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-ink-2">{t.title}</div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-line-soft text-left text-[10px] uppercase tracking-wide text-ink-3">
+                <th className="px-3 py-2">Week</th>
+                <th className="px-3 py-2 text-right">Net sales</th>
+                <th className="px-3 py-2 text-right">WOW</th>
+              </tr>
+            </thead>
+            <tbody>
+              {t.rows.map((row) => (
+                <tr key={row.weekStart} className="border-b border-line-soft last:border-0">
+                  <td className="px-3 py-1.5 font-semibold">{weekLabel(row.retailWeek)}</td>
+                  <td className="px-3 py-1.5 text-right font-mono">{INR(row.net)}</td>
+                  <td className={`px-3 py-1.5 text-right font-mono ${row.netChangePct === null ? "text-ink-3" : row.netChangePct >= 0 ? "text-good" : "text-crit"}`}>
+                    {row.netChangePct !== null ? `${row.netChangePct >= 0 ? "+" : ""}${row.netChangePct.toFixed(1)}%` : "—"}
+                  </td>
+                </tr>
+              ))}
+              {t.rows.length === 0 && (
+                <tr>
+                  <td colSpan={3} className="px-3 py-4 text-center text-sm text-ink-3">No weeks in range.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function SalesTrendChart({ data }: { data: SalesComponentData }) {
+  return data.trendPoints.length > 0 ? (
+    <TrendChart points={data.trendPoints} ariaLabel="Daily net sales across the network" />
+  ) : (
+    <p className="py-10 text-center text-sm text-ink-3">No sales data in this window.</p>
+  );
+}
+
+export function HourlySalesChart({ data }: { data: SalesComponentData }) {
+  return data.hourlyPoints.length > 0 ? (
+    <HourlyBarChart points={data.hourlyPoints} ariaLabel="Net sales by hour of day, 9am to midnight" startHour={HOUR_START} endHour={HOUR_END} />
+  ) : (
+    <p className="py-10 text-center text-sm text-ink-3">No bill-time data in this window.</p>
+  );
+}
+
+export function StoreLeagueTable({ data }: { data: SalesComponentData }) {
+  // Phase 8 — clicking a row opens a focus panel with that store's own daily
+  // trend, fetched on demand (getStoreDrilldownTrend, lib/workspace/drilldown.ts)
+  // only when opened, never as part of this page's initial render. The static
+  // league summary itself stays exactly as it was — only the added click
+  // affordance and its lazy detail query are new.
+  return <StoreLeagueDrilldown league={data.league} from={data.periodFrom} to={data.periodTo} />;
+}
+
+export function SchemePenetration({ data }: { data: SalesComponentData }) {
+  return (
+    <div className="flex flex-col gap-2 overflow-y-auto">
+      {data.schemeRows.map(([group, v]) => (
+        <div key={group} className="grid grid-cols-[120px_1fr_auto] items-center gap-3 text-[12.5px]">
+          <span className="truncate">{group}</span>
+          <span className="h-4 overflow-hidden bg-surface-2">
+            <span className="block h-full bg-accent" style={{ width: `${Math.max(2, (v.qty / data.schemeMaxQty) * 100)}%` }} />
+          </span>
+          <span className="whitespace-nowrap font-mono text-ink-2">{v.qty} units</span>
+        </div>
+      ))}
+      {data.schemeRows.length === 0 && <p className="text-sm text-ink-3">No scheme data in this window.</p>}
+    </div>
+  );
+}
+
+export const SALES_COMPONENT_RENDERERS: Record<string, (props: { data: SalesComponentData }) => JSX.Element> = {
+  sales_kpi_grid: SalesKpiGrid,
+  weekly_sales_table: WeeklySalesTable,
+  sales_trend_chart: SalesTrendChart,
+  hourly_sales_chart: HourlySalesChart,
+  store_league_table: StoreLeagueTable,
+  scheme_penetration: SchemePenetration,
+};

@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 type UploadRow = {
   id: string;
-  report_type: "sale" | "stock" | "scheme";
+  report_type: "sale" | "stock" | "scheme" | "master";
   file_name: string;
   uploaded_at: string;
   status: string;
@@ -18,12 +18,14 @@ type UploadRow = {
 
 function ReportSection({
   title,
+  helperText,
   type,
   uploads,
   fiscalYears,
   t,
 }: {
   title: string;
+  helperText?: string;
   type: UploadRow["report_type"];
   uploads: UploadRow[];
   fiscalYears: string[];
@@ -34,6 +36,7 @@ function ReportSection({
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-[11px] font-semibold uppercase tracking-wide text-ink-3">{title}</h2>
       </div>
+      {helperText ? <p className="mt-1 max-w-2xl text-[12.5px] text-ink-3">{helperText}</p> : null}
       <div className="mt-3">
         <UploadReportForm reportType={type} />
       </div>
@@ -75,10 +78,19 @@ export default async function DataUploadPage() {
   const supabase = await createClient();
   const t = await getDict();
 
-  const SECTIONS: { type: UploadRow["report_type"]; title: string }[] = [
+  const SECTIONS: { type: UploadRow["report_type"]; title: string; helperText?: string }[] = [
     { type: "sale", title: t.saleReportTitle },
     { type: "stock", title: t.stockReportTitle },
     { type: "scheme", title: t.schemeReportTitle },
+    // Literal title/helper rather than a `t.` key: lib/i18n/translations.ts is
+    // being edited concurrently for other work, so this section deliberately
+    // doesn't add a key to it. Worth moving to the dictionary later.
+    {
+      type: "master",
+      title: "Master",
+      helperText:
+        "Fills product attributes (category, gender, subcategory, season, size) matched by item code, for items whose sale export didn't carry them.",
+    },
   ];
 
   const [{ data }, { data: fyRows }] = await Promise.all([
@@ -109,6 +121,7 @@ export default async function DataUploadPage() {
         <ReportSection
           key={s.type}
           title={s.title}
+          helperText={s.helperText}
           type={s.type}
           uploads={uploads.filter((u) => u.report_type === s.type)}
           fiscalYears={fiscalYears}

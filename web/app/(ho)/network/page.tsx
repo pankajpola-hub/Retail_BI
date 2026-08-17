@@ -1,4 +1,6 @@
+import { Suspense } from "react";
 import { createClient } from "@/lib/data/client";
+import type { DataClient, QueryChain } from "@/lib/data/client";
 import { requirePageAccess } from "@/lib/auth/roles";
 import { KpiCard } from "@/components/ui/KpiCard";
 import { Pill } from "@/components/ui/Pill";
@@ -6,6 +8,19 @@ import { TrendChart } from "@/components/ui/TrendChart";
 import { HourlyBarChart } from "@/components/ui/HourlyBarChart";
 import { DateRangePicker } from "@/components/ui/DateRangePicker";
 import { MultiSelectFilter } from "@/components/ui/StoreFilter";
+import { KpiGridSkeleton, ChartSkeleton, TableSkeleton, MatrixSkeleton, SectionLabelSkeleton } from "@/components/ui/Skeleton";
+import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
+import { timeAll } from "@/lib/perf/timing";
+import {
+  computeSalesTotals,
+  computeLeague,
+  computeSchemeRows,
+  computeTrendPoints,
+  computeHourlyPoints,
+  buildWeekSeries as buildWeekSeriesShared,
+  HOUR_START,
+  HOUR_END,
+} from "@/lib/sales/aggregate";
 
 export const dynamic = "force-dynamic";
 
@@ -40,9 +55,12 @@ type HourlyRow = { bill_hour: number | null; net_sales: number | string };
 type CompletenessRow = { store_id: string | null; date: string; has_footfall: boolean };
 
 const INR = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
-const DAY_LABEL = (iso: string) =>
-  new Date(iso + "T00:00:00").toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
 const isoDate = (d: Date) => d.toISOString().slice(0, 10);
+
+type ApplyStore = <T extends { eq: (col: string, val: string) => T; in: (col: string, vals: string[]) => T }>(
+  q: T,
+  col?: string
+) => T;
 
 type Quadrant = "healthy" | "conversion_opportunity" | "marketing_opportunity" | "critical";
 
@@ -358,78 +376,48 @@ function TrafficSalesCell({
   );
 }
 
-export default async function NetworkPage({
-  searchParams,
+// ---------------------------------------------------------------------------
+// computeSalesTotals / computeLeague / computeSchemeRows now live in
+// lib/sales/aggregate.ts (Phase 5) — imported above — so the Workspace
+// Builder's dynamically-rendered Sales components call the exact same
+// functions this page does, rather than a second hand-synced copy.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Sales & Trends — independently streamed section.
+//
+// Fetches only what THIS section renders (5 of the page's original 10
+// queries) so it can pop in as soon as its own data is ready, without
+// waiting on footfall/conversion queries that have nothing to do with it.
+// ---------------------------------------------------------------------------
+async function SalesSection({
+  supabase,
+  applyStore,
+  from,
+  to,
+  weeklyStart,
+  storeNames,
 }: {
-  searchParams: { from?: string; to?: string; store?: string }; // store: comma-separated store_ids, multi-select (0038)
+  supabase: DataClient;
+  applyStore: ApplyStore;
+  from: string;
+  to: string;
+  weeklyStart: Date;
+  storeNames: Map<string, string>;
 }) {
-  // requirePageAccess (migration 0035) layers a per-user override on top of
-  // the role default — (ho)/layout.tsx's gate is coarse (it also hosts
-  // /targets, a different page_key), so the "network" page_key check has to
-  // happen here instead. This page previously had no per-page gate of its
-  // own (only the layout's), so this is a new check, not a swap.
-  await requirePageAccess("network");
-
-  const supabase = await createClient();
-
-  const today = new Date();
-  const defaultFrom = new Date(today);
-  defaultFrom.setDate(defaultFrom.getDate() - 27);
-  const from = searchParams.from ?? isoDate(defaultFrom);
-  const to = searchParams.to ?? isoDate(today);
-
-  // Store filter — multi-select (comma-separated store_ids in the URL).
-  // Narrowing only — every view below already filters to the caller's
-  // permitted stores via core.fn_user_store_ids(), so this can never widen
-  // what a user sees, only focus it. Empty = no filter ("all stores").
-  const storeFilters = (searchParams.store ?? "").split(",").filter(Boolean);
-  const applyStore = <T extends { eq: (col: string, val: string) => T; in: (col: string, vals: string[]) => T }>(
-    q: T,
-    col = "store_id"
-  ): T => {
-    if (storeFilters.length === 0) return q;
-    if (storeFilters.length === 1) return q.eq(col, storeFilters[0] as string);
-    return q.in(col, storeFilters);
-  };
-
-  // Weekly window needs to reach back one extra week before `from` so WOW
-  // can compare the week before the range starts, not just weeks inside it.
-  const weeklyStart = new Date(from);
-  weeklyStart.setDate(weeklyStart.getDate() - 7);
-
-  // Previous period, same length, immediately before `from` — what the
-  // footfall x conversion matrix compares each store's trend against. A
-  // period-over-period comparison (not a fixed "last week"), so it tracks
-  // whatever range the date picker has selected.
-  const periodDays = Math.round((new Date(to).getTime() - new Date(from).getTime()) / 86400000) + 1;
-  const prevTo = new Date(from);
-  prevTo.setDate(prevTo.getDate() - 1);
-  const prevFrom = new Date(prevTo);
-  prevFrom.setDate(prevFrom.getDate() - (periodDays - 1));
-
   const [
     { data: daily, error: dailyErr },
     { data: weeks, error: weeklyErr },
     { data: schemeDaily },
-    { data: stores },
-    { data: conversion },
-    { data: prevConversion },
-    { data: actionSummary },
     { data: agentDaily },
     { data: hourly },
-    { data: completeness },
-  ] = await Promise.all([
-    applyStore(supabase.schema("sales").from<DailyRow>("vw_ebo_sales_daily").select("*").gte("bill_date", from).lte("bill_date", to).order("bill_date")),
-    applyStore(supabase.schema("sales").from<WeeklyRow>("vw_ebo_sales_weekly").select("*").gte("week_start", isoDate(weeklyStart)).lte("week_start", to).order("week_start")),
-    applyStore(supabase.schema("sales").from<SchemeDailyRow>("vw_ebo_scheme_daily").select("*").gte("bill_date", from).lte("bill_date", to)),
-    supabase.schema("core").from<StoreRow>("stores").select("store_id, store_name, city").order("store_id"),
-    applyStore(supabase.schema("ops").from<ConversionRow>("vw_ebo_conversion_daily").select("store_id, bill_date, footfall, sale_bills, net_sales").gte("bill_date", from).lte("bill_date", to)),
-    applyStore(supabase.schema("ops").from<ConversionRow>("vw_ebo_conversion_daily").select("store_id, bill_date, footfall, sale_bills, net_sales").gte("bill_date", isoDate(prevFrom)).lte("bill_date", isoDate(prevTo))),
-    supabase.schema("ops").from<ActionSummary>("vw_action_queue_summary").select("*").maybeSingle(),
-    applyStore(supabase.schema("sales").from<AgentDailyRow>("vw_ebo_agent_daily").select("*").gte("bill_date", from).lte("bill_date", to)),
-    applyStore(supabase.schema("sales").from<HourlyRow>("vw_ebo_sales_hourly").select("*").gte("bill_date", from).lte("bill_date", to)),
-    applyStore(supabase.schema("ops").from<CompletenessRow>("vw_footfall_completeness").select("store_id, date, has_footfall").gte("date", from).lte("date", to)),
-  ]);
+  ] = await timeAll("network:sales", [
+    applyStore(supabase.schema("sales").from<DailyRow>("vw_ebo_sales_daily").select("*").gte("bill_date", from).lte("bill_date", to).order("bill_date") as unknown as QueryChain<DailyRow>),
+    applyStore(supabase.schema("sales").from<WeeklyRow>("vw_ebo_sales_weekly").select("*").gte("week_start", isoDate(weeklyStart)).lte("week_start", to).order("week_start") as unknown as QueryChain<WeeklyRow>),
+    applyStore(supabase.schema("sales").from<SchemeDailyRow>("vw_ebo_scheme_daily").select("*").gte("bill_date", from).lte("bill_date", to) as unknown as QueryChain<SchemeDailyRow>),
+    applyStore(supabase.schema("sales").from<AgentDailyRow>("vw_ebo_agent_daily").select("*").gte("bill_date", from).lte("bill_date", to) as unknown as QueryChain<AgentDailyRow>),
+    applyStore(supabase.schema("sales").from<HourlyRow>("vw_ebo_sales_hourly").select("*").gte("bill_date", from).lte("bill_date", to) as unknown as QueryChain<HourlyRow>),
+  ] as const);
 
   if (dailyErr || weeklyErr) {
     return (
@@ -439,85 +427,35 @@ export default async function NetworkPage({
     );
   }
 
-  const storeNames = new Map((stores ?? []).map((s) => [s.store_id, s.store_name]));
-
   // --- Network KPI totals from the weekly view — see 0005's comments on
   // why ATV/UPT must come from SALE-bills-only figures, not daily's
   // net_sales/net_quantity (which include returns). ---
-  const weekRows = (weeks ?? []).filter((w) => w.week_start && w.week_start >= from);
-  const totalNetSales = weekRows.reduce((s, w) => s + Number(w.net_sales), 0);
-  const totalGrossSales = weekRows.reduce((s, w) => s + Number(w.gross_sales), 0);
-  const totalDiscount = weekRows.reduce((s, w) => s + Number(w.discount), 0);
-  const totalSaleBills = weekRows.reduce((s, w) => s + Number(w.sale_bills), 0);
-  const totalSaleQty = weekRows.reduce((s, w) => s + Number(w.sale_quantity), 0);
-  const networkAtv = totalSaleBills > 0 ? totalNetSales / totalSaleBills : null;
-  const networkUpt = totalSaleBills > 0 ? totalSaleQty / totalSaleBills : null;
-  const discountPct = totalGrossSales > 0 ? (totalDiscount / totalGrossSales) * 100 : null;
-  const salesPerUnit = totalSaleQty > 0 ? totalNetSales / totalSaleQty : null;
-
-  // WOW: last two complete weeks touching the selected range.
-  const completeWeeksByStart = new Map<string, number>();
-  for (const w of (weeks ?? []).filter((w) => w.is_complete_week && w.week_start)) {
-    const key = w.week_start as string;
-    completeWeeksByStart.set(key, (completeWeeksByStart.get(key) ?? 0) + Number(w.net_sales));
-  }
-  const sortedCompleteWeeks = [...completeWeeksByStart.entries()].sort(([a], [b]) => a.localeCompare(b));
-  const lastTwo = sortedCompleteWeeks.slice(-2);
-  const wow =
-    lastTwo.length === 2 && lastTwo[0] && lastTwo[1] && lastTwo[0][1] > 0
-      ? ((lastTwo[1][1] - lastTwo[0][1]) / lastTwo[0][1]) * 100
-      : null;
+  const {
+    weekRows,
+    totalNetSales,
+    totalGrossSales,
+    totalDiscount,
+    totalSaleBills,
+    totalSaleQty,
+    networkAtv,
+    networkUpt,
+    discountPct,
+    salesPerUnit,
+    storesInView,
+  } = computeSalesTotals(weeks, from);
 
   // --- Week-wise sales value & qty. One table per store plus a network
   // total, rather than stores side by side — WOW% is only meaningful when
   // computed WITHIN a store's own series, so each table carries its own
   // growth/degrowth column. Side-by-side columns shared a single WOW,
   // which described the network and told you nothing about either store. ---
-  // A store with rows in weekRows but zero actual sales in the selected
-  // range (e.g. a discontinued store like Phoenix Palassio outside its
-  // active period) doesn't get its own table/league row — an all-zero
-  // block is noise, not a real absence-of-data case worth surfacing.
-  const storesInView = [...new Set(weekRows.map((w) => w.store_id).filter((s): s is string => !!s))]
-    .filter((sid) => weekRows.some((w) => w.store_id === sid && (Number(w.net_sales) > 0 || Number(w.sale_quantity) > 0)))
-    .sort();
-
-  type WeekRow = {
-    retailWeek: number;
-    weekStart: string;
-    net: number;
-    qty: number;
-    netChangePct: number | null;
-    qtyChangePct: number | null;
-  };
-
-  // Build one week series for a given store id, or for the whole network
-  // when storeId is null.
-  function buildWeekSeries(storeId: string | null): WeekRow[] {
-    const acc = new Map<string, { retailWeek: number; weekStart: string; net: number; qty: number }>();
-    for (const w of weekRows) {
-      if (!w.week_start || w.retail_week === null || !w.store_id) continue;
-      if (storeId !== null && w.store_id !== storeId) continue;
-      const cur = acc.get(w.week_start) ?? { retailWeek: w.retail_week, weekStart: w.week_start, net: 0, qty: 0 };
-      cur.net += Number(w.net_sales);
-      cur.qty += Number(w.sale_quantity);
-      acc.set(w.week_start, cur);
-    }
-    const sorted = [...acc.values()].sort((a, b) => a.weekStart.localeCompare(b.weekStart));
-    return sorted.map((row, i) => {
-      const prev = sorted[i - 1];
-      return {
-        ...row,
-        netChangePct: prev && prev.net > 0 ? ((row.net - prev.net) / prev.net) * 100 : null,
-        qtyChangePct: prev && prev.qty > 0 ? ((row.qty - prev.qty) / prev.qty) * 100 : null,
-      };
-    });
-  }
+  type WeekRow = ReturnType<typeof buildWeekSeriesShared>[number];
 
   // When only one store is in view its series IS the network total, so the
   // duplicate table is skipped.
   const weekTables: { title: string; rows: WeekRow[] }[] = [
-    ...storesInView.map((sid) => ({ title: storeNames.get(sid) ?? sid, rows: buildWeekSeries(sid) })),
-    ...(storesInView.length > 1 ? [{ title: "Network total", rows: buildWeekSeries(null) }] : []),
+    ...storesInView.map((sid) => ({ title: storeNames.get(sid) ?? sid, rows: buildWeekSeriesShared(weekRows, sid) })),
+    ...(storesInView.length > 1 ? [{ title: "Network total", rows: buildWeekSeriesShared(weekRows, null) }] : []),
   ];
 
   const weekLabel = (n: number) => `RW${String(n).padStart(2, "0")}`;
@@ -529,177 +467,14 @@ export default async function NetworkPage({
     return `${fmt(start)} – ${fmt(end)}`;
   };
 
-  // --- Footfall / conversion KPIs ---
-  const convRows = (conversion ?? []).filter((c) => c.footfall !== null);
-  const totalFootfall = convRows.reduce((s, c) => s + Number(c.footfall), 0);
-  const conversionPct = totalFootfall > 0 ? (totalSaleBills / totalFootfall) * 100 : null;
-  const salesPerFootfall = totalFootfall > 0 ? totalNetSales / totalFootfall : null;
-  const footfallDaysCovered = convRows.length;
-  const totalDaysInRange = new Set((daily ?? []).map((d) => `${d.store_id}-${d.bill_date}`)).size;
-
-  // --- Footfall x conversion matrix: per-store trend, this period vs the
-  // immediately preceding period of equal length. A store only gets placed
-  // on the grid if BOTH periods have footfall entered for it — otherwise
-  // there's no trend to compute, and it's listed separately rather than
-  // guessed. ---
-  type PeriodTotals = { footfall: number; bills: number; net: number };
-  function sumByStore(rows: typeof conversion): Map<string, PeriodTotals> {
-    const out = new Map<string, PeriodTotals>();
-    for (const r of rows ?? []) {
-      if (!r.store_id || r.footfall === null) continue;
-      const cur = out.get(r.store_id) ?? { footfall: 0, bills: 0, net: 0 };
-      cur.footfall += Number(r.footfall);
-      cur.bills += Number(r.sale_bills);
-      cur.net += Number(r.net_sales);
-      out.set(r.store_id, cur);
-    }
-    return out;
-  }
-  const curByStore = sumByStore(conversion);
-  const prevByStore = sumByStore(prevConversion);
-
-  const matrixEntries: MatrixEntry[] = [];
-  const matrixInsufficientData: string[] = [];
-
-  for (const storeId of storeNames.keys()) {
-    const curr = curByStore.get(storeId);
-    const prev = prevByStore.get(storeId);
-    if (!curr || !prev || curr.footfall === 0 || prev.footfall === 0) {
-      matrixInsufficientData.push(storeNames.get(storeId) ?? storeId);
-      continue;
-    }
-    const convNow = (curr.bills / curr.footfall) * 100;
-    const convPrev = (prev.bills / prev.footfall) * 100;
-    const footfallChangePct = ((curr.footfall - prev.footfall) / prev.footfall) * 100;
-    const conversionChangePts = convNow - convPrev;
-    const salesChangePct = prev.net > 0 ? ((curr.net - prev.net) / prev.net) * 100 : null;
-
-    matrixEntries.push({
-      storeId,
-      name: storeNames.get(storeId) ?? storeId,
-      footfallNow: curr.footfall,
-      footfallPrev: prev.footfall,
-      footfallChangePct,
-      conversionNow: convNow,
-      conversionPrev: convPrev,
-      conversionChangePts,
-      salesNow: curr.net,
-      salesPrev: prev.net,
-      salesChangePct,
-      ...assess(footfallChangePct, conversionChangePts, salesChangePct),
-    });
-  }
-
-  // --- Footfall data completeness (spec §4/§37) — conversion figures above
-  // are only as trustworthy as the footfall behind them, so this is shown
-  // next to them rather than buried in a separate data-quality page. ---
-  const completenessRows = completeness ?? [];
-  const expectedStoreDays = completenessRows.length;
-  const enteredStoreDays = completenessRows.filter((r) => r.has_footfall).length;
-  const completenessPct = expectedStoreDays > 0 ? (enteredStoreDays / expectedStoreDays) * 100 : null;
-  const missingToday = completenessRows.filter((r) => r.date === isoDate(today) && !r.has_footfall).length;
-
-  // --- Per-store sales driver analysis + opportunity sizing (spec §14/§18/§19/§32).
-  //
-  // Two things this deliberately does NOT do:
-  //  1. No YOY anywhere — footfall history is seeded test data, not real
-  //     counts, so a YOY figure would be arithmetic on invented numbers.
-  //     Everything here is period-over-period against the equally-sized
-  //     window immediately before the selected range.
-  //  2. Traffic and conversion opportunity are NEVER summed (spec §20).
-  //     They overlap — fixing traffic at today's conversion, and fixing
-  //     conversion at today's traffic, both count the same incremental
-  //     bills. `combinedOpportunity` is computed as the single
-  //     both-levers-at-benchmark figure, which is what actually bounds the
-  //     upside.
-  // primaryIssue / recommendation are NOT recomputed here — they come from
-  // assess() via matrixEntries, so this table and the matrix above can never
-  // disagree about a store.
-  const storeDiagnosis = matrixEntries.map((m) => {
-    const curr = curByStore.get(m.storeId)!;
-    const prev = prevByStore.get(m.storeId)!;
-    const atvNow = curr.bills > 0 ? curr.net / curr.bills : 0;
-    const atvPrev = prev.bills > 0 ? prev.net / prev.bills : 0;
-    const atvChangePct = atvPrev > 0 ? ((atvNow - atvPrev) / atvPrev) * 100 : null;
-    const convNow = m.conversionNow;
-
-    // Benchmark = this store's own previous period. Peer/similar-store
-    // benchmarking (spec §17/§39) needs store size/age/type attributes that
-    // core.stores doesn't carry yet — deliberately not faked with a network
-    // average, which would punish a small store for not matching a big one.
-    const benchmarkFootfall = prev.footfall;
-    const benchmarkConv = (prev.bills / prev.footfall) * 100;
-
-    const trafficGap = Math.max(0, benchmarkFootfall - curr.footfall);
-    const trafficOpportunity = trafficGap * (convNow / 100) * atvNow;
-
-    const convGapPts = Math.max(0, benchmarkConv - convNow);
-    const conversionOpportunity = curr.footfall * (convGapPts / 100) * atvNow;
-
-    // Both levers at benchmark, minus actual — the non-additive ceiling.
-    const combinedOpportunity = Math.max(
-      0,
-      benchmarkFootfall * (Math.max(convNow, benchmarkConv) / 100) * atvNow - curr.net
-    );
-
-    return {
-      ...m,
-      atvChangePct,
-      salesPerVisitor: curr.footfall > 0 ? curr.net / curr.footfall : null,
-      nonConverting: curr.footfall - curr.bills,
-      trafficOpportunity,
-      conversionOpportunity,
-      combinedOpportunity,
-    };
-  });
-
   // --- Trend chart ---
-  const dailyByDate = new Map<string, number>();
-  for (const d of daily ?? []) {
-    if (!d.bill_date) continue;
-    dailyByDate.set(d.bill_date, (dailyByDate.get(d.bill_date) ?? 0) + Number(d.net_sales));
-  }
-  const trendPoints = [...dailyByDate.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, value]) => ({ label: DAY_LABEL(date), value }));
+  const trendPoints = computeTrendPoints(daily);
 
   // --- Store league ---
-  const byStore = new Map<string, { net: number; gross: number; discount: number; bills: number; qty: number }>();
-  for (const w of weekRows) {
-    if (!w.store_id) continue;
-    const cur = byStore.get(w.store_id) ?? { net: 0, gross: 0, discount: 0, bills: 0, qty: 0 };
-    cur.net += Number(w.net_sales);
-    cur.gross += Number(w.gross_sales);
-    cur.discount += Number(w.discount);
-    cur.bills += Number(w.sale_bills);
-    cur.qty += Number(w.sale_quantity);
-    byStore.set(w.store_id, cur);
-  }
-  const league = [...byStore.entries()]
-    .filter(([storeId]) => storesInView.includes(storeId))
-    .map(([storeId, v]) => ({
-      storeId,
-      name: storeNames.get(storeId) ?? storeId,
-      net: v.net,
-      bills: v.bills,
-      qty: v.qty,
-      atv: v.bills > 0 ? v.net / v.bills : null,
-      upt: v.bills > 0 ? v.qty / v.bills : null,
-      discountPct: v.gross > 0 ? (v.discount / v.gross) * 100 : null,
-    }))
-    .sort((a, b) => b.net - a.net);
+  const league = computeLeague(weekRows, storesInView, storeNames);
 
   // --- Scheme penetration, by quantity (not line count) ---
-  const bySchemeGroup = new Map<string, { qty: number; net: number }>();
-  for (const s of schemeDaily ?? []) {
-    const key = s.scheme_group ?? "NO SCHEME";
-    const cur = bySchemeGroup.get(key) ?? { qty: 0, net: 0 };
-    cur.qty += Number(s.quantity ?? 0);
-    cur.net += Number(s.net_sales ?? 0);
-    bySchemeGroup.set(key, cur);
-  }
-  const schemeRows = [...bySchemeGroup.entries()].sort(([, a], [, b]) => b.net - a.net);
-  const schemeMaxQty = Math.max(...schemeRows.map(([, v]) => v.qty), 1);
+  const { schemeRows, schemeMaxQty } = computeSchemeRows(schemeDaily);
 
   // --- Agent-wise sales — strip the "001 - " / "003 - " branch-code prefix
   // for display (the raw agent_name keeps it, since it's occasionally the
@@ -720,79 +495,12 @@ export default async function NetworkPage({
   const agentRows = [...byAgent.values()].sort((a, b) => b.net - a.net).slice(0, 12);
 
   // --- Hour-of-day, business hours only (9am-12am — stores aren't open overnight) ---
-  const HOUR_START = 9;
-  const HOUR_END = 23;
-  const byHour = new Map<number, number>();
-  for (const h of hourly ?? []) {
-    if (h.bill_hour === null || h.bill_hour < HOUR_START || h.bill_hour > HOUR_END) continue;
-    byHour.set(h.bill_hour, (byHour.get(h.bill_hour) ?? 0) + Number(h.net_sales));
-  }
-  const hourlyPoints = [...byHour.entries()].map(([hour, value]) => ({ hour, value }));
-
-  // --- Extra KPIs + rule-based "what to do about it" suggestions, all
-  // computed from data already loaded above (league, schemeRows,
-  // storeDiagnosis) — no external AI call, so this is instant and free.
-  // Placed above Week-wise sales per the ask: a reader should see "here's
-  // what's happening and what to do" before the raw weekly numbers.
-  const topStore = league[0] ?? null;
-  const bottomStore = league.length > 1 ? league[league.length - 1] : null;
-  const totalSchemeQty = schemeRows.reduce((s, [, v]) => s + v.qty, 0);
-  const noSchemeQty = schemeRows.find(([k]) => k === "NO SCHEME")?.[1].qty ?? 0;
-  const schemePenetrationPct = totalSchemeQty > 0 ? ((totalSchemeQty - noSchemeQty) / totalSchemeQty) * 100 : null;
-
-  const severity: Record<string, number> = { crit: 3, warn: 2, neutral: 1, good: 0 };
-  const flaggedStores = [...storeDiagnosis]
-    .filter((s) => s.tone === "crit" || s.tone === "warn")
-    .sort((a, b) => (severity[b.tone] ?? 0) - (severity[a.tone] ?? 0))
-    .slice(0, 3);
-
-  const insights: string[] = [];
-  if (wow !== null && wow < -5) {
-    insights.push(`Network sales are down ${Math.abs(wow).toFixed(1)}% week-over-week — worth a closer look before next week.`);
-  }
-  if (discountPct !== null && discountPct > 25) {
-    insights.push(`Discount is ${discountPct.toFixed(1)}% of gross sales — check whether markdowns are being used more than planned.`);
-  }
-  if (schemePenetrationPct !== null && schemePenetrationPct > 60) {
-    insights.push(`${schemePenetrationPct.toFixed(0)}% of units sold this period were on a scheme — a heavy reliance on discounting to move stock.`);
-  }
-  if (topStore && bottomStore && topStore.storeId !== bottomStore.storeId && topStore.net > 0) {
-    const gapPct = ((topStore.net - bottomStore.net) / topStore.net) * 100;
-    if (gapPct > 40) {
-      insights.push(`${topStore.name} is outselling ${bottomStore.name} by ${gapPct.toFixed(0)}% — worth studying what ${topStore.name} is doing differently.`);
-    }
-  }
-  for (const s of flaggedStores) {
-    insights.push(`${s.name}: ${s.headline} — ${s.recommendation}.`);
-  }
+  const hourlyPoints = computeHourlyPoints(hourly);
 
   return (
-    <main className="py-6">
-      <div className="flex items-baseline justify-between">
-        <h1 className="font-serif text-2xl">Executive dashboard</h1>
-        <div className="flex items-center gap-2">
-          <MultiSelectFilter
-            paramName="store"
-            options={(stores ?? []).map((s) => s.store_id)}
-            labels={Object.fromEntries((stores ?? []).map((s) => [s.store_id, s.store_name]))}
-            selected={storeFilters}
-            allLabel="All stores"
-          />
-          <DateRangePicker from={from} to={to} />
-        </div>
-      </div>
-
-      {actionSummary && (actionSummary.open_count ?? 0) > 0 && (
-        <p className="mt-3 border-l-2 border-warn bg-warn-soft px-3 py-2 text-sm text-ink-2">
-          {actionSummary.open_count} open action{actionSummary.open_count === 1 ? "" : "s"} in the queue
-          {(actionSummary.closed_unmeasured_count ?? 0) > 0
-            ? ` · ${actionSummary.closed_unmeasured_count} closed without a measured result`
-            : ""}
-        </p>
-      )}
-
+    <>
       <span className="mt-6 block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Sales</span>
-      <div className="mt-2 grid grid-cols-2 gap-px border border-line-soft bg-line-soft sm:grid-cols-3 lg:grid-cols-6">
+      <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <KpiCard label="Net sales" value={INR(totalNetSales)} sub={`gross ${INR(totalGrossSales)}`} />
         <KpiCard
           label="Discount"
@@ -804,118 +512,6 @@ export default async function NetworkPage({
         <KpiCard label="ATV" value={networkAtv !== null ? INR(networkAtv) : "—"} />
         <KpiCard label="UPT" value={networkUpt !== null ? networkUpt.toFixed(2) : "—"} />
       </div>
-
-      <span className="mt-6 block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
-        Footfall &amp; growth
-      </span>
-      <div className="mt-2 grid grid-cols-2 gap-px border border-line-soft bg-line-soft sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard
-          label="Footfall"
-          value={footfallDaysCovered > 0 ? String(totalFootfall) : "—"}
-          sub={footfallDaysCovered < totalDaysInRange ? `${footfallDaysCovered}/${totalDaysInRange} days entered` : "all days entered"}
-          tone={footfallDaysCovered === 0 ? "muted" : "default"}
-        />
-        <KpiCard
-          label="Conversion"
-          value={conversionPct !== null ? `${conversionPct.toFixed(1)}%` : "—"}
-          tone={conversionPct === null ? "muted" : "default"}
-        />
-        <KpiCard
-          label="Sales per footfall"
-          value={salesPerFootfall !== null ? INR(salesPerFootfall) : "—"}
-          tone={salesPerFootfall === null ? "muted" : "default"}
-        />
-        <KpiCard
-          label="WOW"
-          value={wow !== null ? `${wow >= 0 ? "+" : ""}${wow.toFixed(1)}%` : "—"}
-          sub={wow === null ? "need 2 complete weeks" : "last complete week"}
-          tone={wow === null ? "muted" : "default"}
-        />
-      </div>
-
-      <div className="mt-2 grid grid-cols-2 gap-px border border-line-soft bg-line-soft sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard
-          label="Non-converting visits"
-          value={totalFootfall > 0 ? String(totalFootfall - totalSaleBills) : "—"}
-          sub="footfall − bills"
-          tone={totalFootfall === 0 ? "muted" : "default"}
-        />
-        <KpiCard
-          label="Footfall data completeness"
-          value={completenessPct !== null ? `${completenessPct.toFixed(0)}%` : "—"}
-          sub={`${enteredStoreDays} of ${expectedStoreDays} store-days`}
-          tone={completenessPct !== null && completenessPct < 90 ? "muted" : "default"}
-        />
-        <KpiCard
-          label="Missing today"
-          value={String(missingToday)}
-          sub={missingToday === 0 ? "all stores entered" : "stores not entered"}
-          tone={missingToday > 0 ? "muted" : "default"}
-        />
-        <KpiCard
-          label="Stores with traffic issues"
-          value={String(
-            // Falling footfall AND not otherwise doing fine — a store whose
-            // footfall dipped while sales still grew isn't a problem to chase.
-            storeDiagnosis.filter((s) => s.footfallChangePct < 0 && s.tone !== "good").length
-          )}
-          sub="footfall down & flagged"
-        />
-      </div>
-
-      {completenessPct !== null && completenessPct < 90 && (
-        <p className="mt-3 border-l-2 border-warn bg-warn-soft px-3 py-2 text-sm text-ink-2">
-          Footfall is missing for {expectedStoreDays - enteredStoreDays} store-day
-          {expectedStoreDays - enteredStoreDays === 1 ? "" : "s"} in this range — conversion and
-          sales-per-visitor below are computed only on days that have footfall, so treat them as
-          indicative rather than exact.
-        </p>
-      )}
-
-      <span className="mt-6 block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
-        More KPIs
-      </span>
-      <div className="mt-2 grid grid-cols-2 gap-px border border-line-soft bg-line-soft sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard
-          label="Top store"
-          value={topStore ? topStore.name : "—"}
-          sub={topStore ? INR(topStore.net) : undefined}
-        />
-        <KpiCard
-          label="Weakest store"
-          value={bottomStore ? bottomStore.name : "—"}
-          sub={bottomStore ? INR(bottomStore.net) : undefined}
-          tone={bottomStore ? "muted" : "default"}
-        />
-        <KpiCard
-          label="Scheme penetration"
-          value={schemePenetrationPct !== null ? `${schemePenetrationPct.toFixed(0)}%` : "—"}
-          sub="units sold on a scheme"
-          tone={schemePenetrationPct === null ? "muted" : "default"}
-        />
-        <KpiCard
-          label="Stores flagged"
-          value={String(flaggedStores.length)}
-          sub="need attention this period"
-          tone={flaggedStores.length > 0 ? "muted" : "default"}
-        />
-      </div>
-
-      {insights.length > 0 && (
-        <div className="mt-4 border-l-2 border-accent bg-accent-soft px-4 py-3">
-          <span className="text-[10.5px] font-semibold uppercase tracking-wide text-accent-ink">
-            Suggested actions
-          </span>
-          <ul className="mt-2 space-y-1.5 text-[13px] text-ink-2">
-            {insights.map((line, i) => (
-              <li key={i} className="flex gap-2">
-                <span className="text-accent">•</span>
-                <span>{line}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
 
       <div className="mt-8">
         <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
@@ -1140,6 +736,358 @@ export default async function NetworkPage({
           </div>
         </div>
       </div>
+    </>
+  );
+}
+
+function SalesSectionSkeleton() {
+  return (
+    <>
+      <SectionLabelSkeleton />
+      <KpiGridSkeleton count={6} />
+      <div className="mt-8">
+        <SectionLabelSkeleton />
+        <div className="mt-2 grid grid-cols-1 gap-5 xl:grid-cols-2">
+          <TableSkeleton rows={4} cols={6} />
+          <TableSkeleton rows={4} cols={6} />
+        </div>
+      </div>
+      <div className="mt-8 grid grid-cols-1 gap-8 lg:grid-cols-2">
+        <div>
+          <ChartSkeleton height={160} />
+          <ChartSkeleton height={140} />
+        </div>
+        <TableSkeleton rows={6} cols={7} />
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Footfall, Diagnosis & Opportunity — independently streamed section.
+//
+// Fetches its own conversion/completeness queries plus THREE queries
+// (daily, weeks, schemeDaily) that are also fetched by SalesSection above —
+// a deliberate, disclosed duplication. Those three are the cheapest queries
+// on the page (small, pre-aggregated views), and duplicating them is what
+// lets "More KPIs"/"Suggested actions" (which need BOTH sales-side figures
+// like WOW/discount% AND footfall-side figures like flagged stores) render
+// as one section that streams independently of Sales & Trends, instead of
+// either blocking on it or silently going stale. See docs/HANDOFF or the
+// Phase 1 blueprint note on this trade-off before "fixing" the duplication.
+// ---------------------------------------------------------------------------
+async function FootfallSection({
+  supabase,
+  applyStore,
+  from,
+  to,
+  weeklyStart,
+  prevFrom,
+  prevTo,
+  storeNames,
+  today,
+}: {
+  supabase: DataClient;
+  applyStore: ApplyStore;
+  from: string;
+  to: string;
+  weeklyStart: Date;
+  prevFrom: Date;
+  prevTo: Date;
+  storeNames: Map<string, string>;
+  today: Date;
+}) {
+  const [
+    { data: conversion },
+    { data: prevConversion },
+    { data: completeness },
+    { data: daily },
+    { data: weeks },
+    { data: schemeDaily },
+  ] = await timeAll("network:footfall", [
+    applyStore(supabase.schema("ops").from<ConversionRow>("vw_ebo_conversion_daily").select("store_id, bill_date, footfall, sale_bills, net_sales").gte("bill_date", from).lte("bill_date", to) as unknown as QueryChain<ConversionRow>),
+    applyStore(supabase.schema("ops").from<ConversionRow>("vw_ebo_conversion_daily").select("store_id, bill_date, footfall, sale_bills, net_sales").gte("bill_date", isoDate(prevFrom)).lte("bill_date", isoDate(prevTo)) as unknown as QueryChain<ConversionRow>),
+    applyStore(supabase.schema("ops").from<CompletenessRow>("vw_footfall_completeness").select("store_id, date, has_footfall").gte("date", from).lte("date", to) as unknown as QueryChain<CompletenessRow>),
+    applyStore(supabase.schema("sales").from<DailyRow>("vw_ebo_sales_daily").select("*").gte("bill_date", from).lte("bill_date", to).order("bill_date") as unknown as QueryChain<DailyRow>),
+    applyStore(supabase.schema("sales").from<WeeklyRow>("vw_ebo_sales_weekly").select("*").gte("week_start", isoDate(weeklyStart)).lte("week_start", to).order("week_start") as unknown as QueryChain<WeeklyRow>),
+    applyStore(supabase.schema("sales").from<SchemeDailyRow>("vw_ebo_scheme_daily").select("*").gte("bill_date", from).lte("bill_date", to) as unknown as QueryChain<SchemeDailyRow>),
+  ] as const);
+
+  // --- Footfall / conversion KPIs ---
+  const convRows = (conversion ?? []).filter((c) => c.footfall !== null);
+  const totalFootfall = convRows.reduce((s, c) => s + Number(c.footfall), 0);
+
+  const { totalSaleBills, totalNetSales, wow, discountPct, storesInView, weekRows } = computeSalesTotals(weeks, from);
+  const conversionPct = totalFootfall > 0 ? (totalSaleBills / totalFootfall) * 100 : null;
+  const salesPerFootfall = totalFootfall > 0 ? totalNetSales / totalFootfall : null;
+  const footfallDaysCovered = convRows.length;
+  const totalDaysInRange = new Set((daily ?? []).map((d) => `${d.store_id}-${d.bill_date}`)).size;
+
+  // --- Footfall x conversion matrix: per-store trend, this period vs the
+  // immediately preceding period of equal length. A store only gets placed
+  // on the grid if BOTH periods have footfall entered for it — otherwise
+  // there's no trend to compute, and it's listed separately rather than
+  // guessed. ---
+  type PeriodTotals = { footfall: number; bills: number; net: number };
+  function sumByStore(rows: typeof conversion): Map<string, PeriodTotals> {
+    const out = new Map<string, PeriodTotals>();
+    for (const r of rows ?? []) {
+      if (!r.store_id || r.footfall === null) continue;
+      const cur = out.get(r.store_id) ?? { footfall: 0, bills: 0, net: 0 };
+      cur.footfall += Number(r.footfall);
+      cur.bills += Number(r.sale_bills);
+      cur.net += Number(r.net_sales);
+      out.set(r.store_id, cur);
+    }
+    return out;
+  }
+  const curByStore = sumByStore(conversion);
+  const prevByStore = sumByStore(prevConversion);
+
+  const matrixEntries: MatrixEntry[] = [];
+  const matrixInsufficientData: string[] = [];
+
+  for (const storeId of storeNames.keys()) {
+    const curr = curByStore.get(storeId);
+    const prev = prevByStore.get(storeId);
+    if (!curr || !prev || curr.footfall === 0 || prev.footfall === 0) {
+      matrixInsufficientData.push(storeNames.get(storeId) ?? storeId);
+      continue;
+    }
+    const convNow = (curr.bills / curr.footfall) * 100;
+    const convPrev = (prev.bills / prev.footfall) * 100;
+    const footfallChangePct = ((curr.footfall - prev.footfall) / prev.footfall) * 100;
+    const conversionChangePts = convNow - convPrev;
+    const salesChangePct = prev.net > 0 ? ((curr.net - prev.net) / prev.net) * 100 : null;
+
+    matrixEntries.push({
+      storeId,
+      name: storeNames.get(storeId) ?? storeId,
+      footfallNow: curr.footfall,
+      footfallPrev: prev.footfall,
+      footfallChangePct,
+      conversionNow: convNow,
+      conversionPrev: convPrev,
+      conversionChangePts,
+      salesNow: curr.net,
+      salesPrev: prev.net,
+      salesChangePct,
+      ...assess(footfallChangePct, conversionChangePts, salesChangePct),
+    });
+  }
+
+  // --- Footfall data completeness (spec §4/§37) — conversion figures above
+  // are only as trustworthy as the footfall behind them, so this is shown
+  // next to them rather than buried in a separate data-quality page. ---
+  const completenessRows = completeness ?? [];
+  const expectedStoreDays = completenessRows.length;
+  const enteredStoreDays = completenessRows.filter((r) => r.has_footfall).length;
+  const completenessPct = expectedStoreDays > 0 ? (enteredStoreDays / expectedStoreDays) * 100 : null;
+  const missingToday = completenessRows.filter((r) => r.date === isoDate(today) && !r.has_footfall).length;
+
+  // --- Per-store sales driver analysis + opportunity sizing (spec §14/§18/§19/§32).
+  //
+  // Two things this deliberately does NOT do:
+  //  1. No YOY anywhere — footfall history is seeded test data, not real
+  //     counts, so a YOY figure would be arithmetic on invented numbers.
+  //     Everything here is period-over-period against the equally-sized
+  //     window immediately before the selected range.
+  //  2. Traffic and conversion opportunity are NEVER summed (spec §20).
+  //     They overlap — fixing traffic at today's conversion, and fixing
+  //     conversion at today's traffic, both count the same incremental
+  //     bills. `combinedOpportunity` is computed as the single
+  //     both-levers-at-benchmark figure, which is what actually bounds the
+  //     upside.
+  // primaryIssue / recommendation are NOT recomputed here — they come from
+  // assess() via matrixEntries, so this table and the matrix above can never
+  // disagree about a store.
+  const storeDiagnosis = matrixEntries.map((m) => {
+    const curr = curByStore.get(m.storeId)!;
+    const prev = prevByStore.get(m.storeId)!;
+    const atvNow = curr.bills > 0 ? curr.net / curr.bills : 0;
+    const atvPrev = prev.bills > 0 ? prev.net / prev.bills : 0;
+    const atvChangePct = atvPrev > 0 ? ((atvNow - atvPrev) / atvPrev) * 100 : null;
+    const convNow = m.conversionNow;
+
+    // Benchmark = this store's own previous period. Peer/similar-store
+    // benchmarking (spec §17/§39) needs store size/age/type attributes that
+    // core.stores doesn't carry yet — deliberately not faked with a network
+    // average, which would punish a small store for not matching a big one.
+    const benchmarkFootfall = prev.footfall;
+    const benchmarkConv = (prev.bills / prev.footfall) * 100;
+
+    const trafficGap = Math.max(0, benchmarkFootfall - curr.footfall);
+    const trafficOpportunity = trafficGap * (convNow / 100) * atvNow;
+
+    const convGapPts = Math.max(0, benchmarkConv - convNow);
+    const conversionOpportunity = curr.footfall * (convGapPts / 100) * atvNow;
+
+    // Both levers at benchmark, minus actual — the non-additive ceiling.
+    const combinedOpportunity = Math.max(
+      0,
+      benchmarkFootfall * (Math.max(convNow, benchmarkConv) / 100) * atvNow - curr.net
+    );
+
+    return {
+      ...m,
+      atvChangePct,
+      salesPerVisitor: curr.footfall > 0 ? curr.net / curr.footfall : null,
+      nonConverting: curr.footfall - curr.bills,
+      trafficOpportunity,
+      conversionOpportunity,
+      combinedOpportunity,
+    };
+  });
+
+  // --- Extra KPIs + rule-based "what to do about it" suggestions, all
+  // computed from data already loaded above (league, schemeRows,
+  // storeDiagnosis) — no external AI call, so this is instant and free.
+  // Placed above Week-wise sales per the ask: a reader should see "here's
+  // what's happening and what to do" before the raw weekly numbers.
+  const league = computeLeague(weekRows, storesInView, storeNames);
+  const { schemeRows, schemePenetrationPct } = computeSchemeRows(schemeDaily);
+  const topStore = league[0] ?? null;
+  const bottomStore = league.length > 1 ? league[league.length - 1] : null;
+
+  const severity: Record<string, number> = { crit: 3, warn: 2, neutral: 1, good: 0 };
+  const flaggedStores = [...storeDiagnosis]
+    .filter((s) => s.tone === "crit" || s.tone === "warn")
+    .sort((a, b) => (severity[b.tone] ?? 0) - (severity[a.tone] ?? 0))
+    .slice(0, 3);
+
+  const insights: string[] = [];
+  if (wow !== null && wow < -5) {
+    insights.push(`Network sales are down ${Math.abs(wow).toFixed(1)}% week-over-week — worth a closer look before next week.`);
+  }
+  if (discountPct !== null && discountPct > 25) {
+    insights.push(`Discount is ${discountPct.toFixed(1)}% of gross sales — check whether markdowns are being used more than planned.`);
+  }
+  if (schemePenetrationPct !== null && schemePenetrationPct > 60) {
+    insights.push(`${schemePenetrationPct.toFixed(0)}% of units sold this period were on a scheme — a heavy reliance on discounting to move stock.`);
+  }
+  if (topStore && bottomStore && topStore.storeId !== bottomStore.storeId && topStore.net > 0) {
+    const gapPct = ((topStore.net - bottomStore.net) / topStore.net) * 100;
+    if (gapPct > 40) {
+      insights.push(`${topStore.name} is outselling ${bottomStore.name} by ${gapPct.toFixed(0)}% — worth studying what ${topStore.name} is doing differently.`);
+    }
+  }
+  for (const s of flaggedStores) {
+    insights.push(`${s.name}: ${s.headline} — ${s.recommendation}.`);
+  }
+
+  return (
+    <>
+      <span className="mt-6 block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
+        Footfall &amp; growth
+      </span>
+      <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <KpiCard
+          label="Footfall"
+          value={footfallDaysCovered > 0 ? String(totalFootfall) : "—"}
+          sub={footfallDaysCovered < totalDaysInRange ? `${footfallDaysCovered}/${totalDaysInRange} days entered` : "all days entered"}
+          tone={footfallDaysCovered === 0 ? "muted" : "default"}
+        />
+        <KpiCard
+          label="Conversion"
+          value={conversionPct !== null ? `${conversionPct.toFixed(1)}%` : "—"}
+          tone={conversionPct === null ? "muted" : "default"}
+        />
+        <KpiCard
+          label="Sales per footfall"
+          value={salesPerFootfall !== null ? INR(salesPerFootfall) : "—"}
+          tone={salesPerFootfall === null ? "muted" : "default"}
+        />
+        <KpiCard
+          label="WOW"
+          value={wow !== null ? `${wow >= 0 ? "+" : ""}${wow.toFixed(1)}%` : "—"}
+          sub={wow === null ? "need 2 complete weeks" : "last complete week"}
+          tone={wow === null ? "muted" : "default"}
+        />
+      </div>
+
+      <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <KpiCard
+          label="Non-converting visits"
+          value={totalFootfall > 0 ? String(totalFootfall - totalSaleBills) : "—"}
+          sub="footfall − bills"
+          tone={totalFootfall === 0 ? "muted" : "default"}
+        />
+        <KpiCard
+          label="Footfall data completeness"
+          value={completenessPct !== null ? `${completenessPct.toFixed(0)}%` : "—"}
+          sub={`${enteredStoreDays} of ${expectedStoreDays} store-days`}
+          tone={completenessPct !== null && completenessPct < 90 ? "muted" : "default"}
+        />
+        <KpiCard
+          label="Missing today"
+          value={String(missingToday)}
+          sub={missingToday === 0 ? "all stores entered" : "stores not entered"}
+          tone={missingToday > 0 ? "muted" : "default"}
+        />
+        <KpiCard
+          label="Stores with traffic issues"
+          value={String(
+            // Falling footfall AND not otherwise doing fine — a store whose
+            // footfall dipped while sales still grew isn't a problem to chase.
+            storeDiagnosis.filter((s) => s.footfallChangePct < 0 && s.tone !== "good").length
+          )}
+          sub="footfall down & flagged"
+        />
+      </div>
+
+      {completenessPct !== null && completenessPct < 90 && (
+        <p className="mt-3 border-l-2 border-warn bg-warn-soft px-3 py-2 text-sm text-ink-2">
+          Footfall is missing for {expectedStoreDays - enteredStoreDays} store-day
+          {expectedStoreDays - enteredStoreDays === 1 ? "" : "s"} in this range — conversion and
+          sales-per-visitor below are computed only on days that have footfall, so treat them as
+          indicative rather than exact.
+        </p>
+      )}
+
+      <span className="mt-6 block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
+        More KPIs
+      </span>
+      <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <KpiCard
+          label="Top store"
+          value={topStore ? topStore.name : "—"}
+          sub={topStore ? INR(topStore.net) : undefined}
+        />
+        <KpiCard
+          label="Weakest store"
+          value={bottomStore ? bottomStore.name : "—"}
+          sub={bottomStore ? INR(bottomStore.net) : undefined}
+          tone={bottomStore ? "muted" : "default"}
+        />
+        <KpiCard
+          label="Scheme penetration"
+          value={schemePenetrationPct !== null ? `${schemePenetrationPct.toFixed(0)}%` : "—"}
+          sub="units sold on a scheme"
+          tone={schemePenetrationPct === null ? "muted" : "default"}
+        />
+        <KpiCard
+          label="Stores flagged"
+          value={String(flaggedStores.length)}
+          sub="need attention this period"
+          tone={flaggedStores.length > 0 ? "muted" : "default"}
+        />
+      </div>
+
+      {insights.length > 0 && (
+        <div className="mt-4 border-l-2 border-accent bg-accent-soft px-4 py-3">
+          <span className="text-[10.5px] font-semibold uppercase tracking-wide text-accent-ink">
+            Suggested actions
+          </span>
+          <ul className="mt-2 space-y-1.5 text-[13px] text-ink-2">
+            {insights.map((line, i) => (
+              <li key={i} className="flex gap-2">
+                <span className="text-accent">•</span>
+                <span>{line}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="mt-8">
         <div className="flex items-baseline justify-between">
@@ -1322,6 +1270,143 @@ export default async function NetworkPage({
           </p>
         </div>
       )}
+    </>
+  );
+}
+
+function FootfallSectionSkeleton() {
+  return (
+    <>
+      <SectionLabelSkeleton />
+      <KpiGridSkeleton count={4} />
+      <div className="mt-2">
+        <KpiGridSkeleton count={4} />
+      </div>
+      <div className="mt-6">
+        <KpiGridSkeleton count={4} />
+      </div>
+      <div className="mt-8">
+        <SectionLabelSkeleton />
+        <MatrixSkeleton />
+      </div>
+      <div className="mt-8">
+        <TableSkeleton rows={5} cols={8} />
+      </div>
+    </>
+  );
+}
+
+export default async function NetworkPage({
+  searchParams,
+}: {
+  searchParams: { from?: string; to?: string; store?: string }; // store: comma-separated store_ids, multi-select (0038)
+}) {
+  // requirePageAccess (migration 0035) layers a per-user override on top of
+  // the role default — (ho)/layout.tsx's gate is coarse (it also hosts
+  // /targets, a different page_key), so the "network" page_key check has to
+  // happen here instead. This page previously had no per-page gate of its
+  // own (only the layout's), so this is a new check, not a swap.
+  await requirePageAccess("network");
+
+  const supabase = await createClient();
+
+  const today = new Date();
+  const defaultFrom = new Date(today);
+  defaultFrom.setDate(defaultFrom.getDate() - 27);
+  const from = searchParams.from ?? isoDate(defaultFrom);
+  const to = searchParams.to ?? isoDate(today);
+
+  // Store filter — multi-select (comma-separated store_ids in the URL).
+  // Narrowing only — every view below already filters to the caller's
+  // permitted stores via core.fn_user_store_ids(), so this can never widen
+  // what a user sees, only focus it. Empty = no filter ("all stores").
+  const storeFilters = (searchParams.store ?? "").split(",").filter(Boolean);
+  const applyStore: ApplyStore = (q, col = "store_id") => {
+    if (storeFilters.length === 0) return q;
+    if (storeFilters.length === 1) return q.eq(col, storeFilters[0] as string);
+    return q.in(col, storeFilters);
+  };
+
+  // Weekly window needs to reach back one extra week before `from` so WOW
+  // can compare the week before the range starts, not just weeks inside it.
+  const weeklyStart = new Date(from);
+  weeklyStart.setDate(weeklyStart.getDate() - 7);
+
+  // Previous period, same length, immediately before `from` — what the
+  // footfall x conversion matrix compares each store's trend against. A
+  // period-over-period comparison (not a fixed "last week"), so it tracks
+  // whatever range the date picker has selected.
+  const periodDays = Math.round((new Date(to).getTime() - new Date(from).getTime()) / 86400000) + 1;
+  const prevTo = new Date(from);
+  prevTo.setDate(prevTo.getDate() - 1);
+  const prevFrom = new Date(prevTo);
+  prevFrom.setDate(prevFrom.getDate() - (periodDays - 1));
+
+  // --- Shell data: small, fast, non-user-scoped-enough-to-matter queries
+  // that the header (store filter dropdown, action-queue banner) needs
+  // immediately. Awaited directly (not streamed) — this is what lets the
+  // page shell + filters paint before either heavy section below is ready,
+  // per the "shell appears immediately" requirement. ---
+  const [{ data: stores }, { data: actionSummary }] = await timeAll("network:shell", [
+    supabase.schema("core").from<StoreRow>("stores").select("store_id, store_name, city").order("store_id") as unknown as QueryChain<StoreRow>,
+    supabase.schema("ops").from<ActionSummary>("vw_action_queue_summary").select("*").maybeSingle() as unknown as Promise<{ data: ActionSummary | null }>,
+  ] as const);
+
+  const storeNames = new Map((stores ?? []).map((s) => [s.store_id, s.store_name]));
+
+  return (
+    <main className="py-6">
+      <div className="flex items-baseline justify-between">
+        <h1 className="font-serif text-2xl">Executive dashboard</h1>
+        <div className="flex items-center gap-2">
+          <MultiSelectFilter
+            paramName="store"
+            options={(stores ?? []).map((s) => s.store_id)}
+            labels={Object.fromEntries((stores ?? []).map((s) => [s.store_id, s.store_name]))}
+            selected={storeFilters}
+            allLabel="All stores"
+          />
+          <DateRangePicker from={from} to={to} />
+        </div>
+      </div>
+
+      {actionSummary && (actionSummary.open_count ?? 0) > 0 && (
+        <p className="mt-3 border-l-2 border-warn bg-warn-soft px-3 py-2 text-sm text-ink-2">
+          {actionSummary.open_count} open action{actionSummary.open_count === 1 ? "" : "s"} in the queue
+          {(actionSummary.closed_unmeasured_count ?? 0) > 0
+            ? ` · ${actionSummary.closed_unmeasured_count} closed without a measured result`
+            : ""}
+        </p>
+      )}
+
+      <SectionErrorBoundary label="Sales & Trends">
+        <Suspense fallback={<SalesSectionSkeleton />}>
+          <SalesSection
+            supabase={supabase}
+            applyStore={applyStore}
+            from={from}
+            to={to}
+            weeklyStart={weeklyStart}
+            storeNames={storeNames}
+          />
+        </Suspense>
+      </SectionErrorBoundary>
+
+      <SectionErrorBoundary label="Footfall & Diagnosis">
+        <Suspense fallback={<FootfallSectionSkeleton />}>
+          <FootfallSection
+            supabase={supabase}
+            applyStore={applyStore}
+            from={from}
+            to={to}
+            weeklyStart={weeklyStart}
+            prevFrom={prevFrom}
+            prevTo={prevTo}
+            storeNames={storeNames}
+            today={today}
+          />
+        </Suspense>
+      </SectionErrorBoundary>
     </main>
   );
 }

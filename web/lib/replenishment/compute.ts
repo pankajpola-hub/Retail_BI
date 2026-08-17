@@ -118,22 +118,23 @@ export async function computeReplenishmentRows(
   const SCORE_W_TOTAL =
     SCORE_W.stockoutRisk + SCORE_W.velocity + SCORE_W.cover + SCORE_W.salesValue + SCORE_W.trend + SCORE_W.productivity || 1;
 
-  const { data: storesData } = await supabase
-    .schema("core")
-    .from<StoreRow>("stores")
-    .select("store_id, store_name, branch_name_erp")
-    .order("store_id");
-  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004");
-  const storeBranchToId = new Map(storeList.map((s) => [s.branch_name_erp, s.store_id]));
-
   const ninetyDaysAgo = new Date();
   ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
   const fromDate = ninetyDaysAgo.toISOString().slice(0, 10);
 
+  // stores/stock/sale are three fully independent queries — stores is only
+  // used AFTER all three resolve (to build storeBranchToId for grouping),
+  // never as an input filter to the stock/sale queries below. Previously
+  // fetched sequentially before the other two; now genuinely parallel.
   // Every branch (store AND warehouse) — warehouse rows are whatever branch
   // isn't a known store, not a hardcoded name, so a renamed or additional
   // warehouse branch doesn't silently disappear from this page.
-  const [{ data: stockRows }, { data: saleRows }] = await Promise.all([
+  const [{ data: storesData }, { data: stockRows }, { data: saleRows }] = await Promise.all([
+    supabase
+      .schema("core")
+      .from<StoreRow>("stores")
+      .select("store_id, store_name, branch_name_erp")
+      .order("store_id"),
     supabase
       .schema("sales")
       .from<StockRow>("vw_stock_with_scheme")
@@ -146,6 +147,8 @@ export async function computeReplenishmentRows(
       .gte("bill_date", fromDate)
       .limit(100000),
   ]);
+  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004");
+  const storeBranchToId = new Map(storeList.map((s) => [s.branch_name_erp, s.store_id]));
 
   // --- Grain: Style No. + Color, not barcode (item_code = one row per
   // size). item_name in this data IS the style code, shade_name is the

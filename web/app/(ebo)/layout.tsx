@@ -1,5 +1,5 @@
 import { requireRole } from "@/lib/auth/roles";
-import { TopNav } from "@/components/ui/TopNav";
+import { AppShell } from "@/components/ui/AppShell";
 
 export default async function EboLayout({ children }: { children: React.ReactNode }) {
   // super_admin/ho_admin included so HO can view/test any store's EBO
@@ -8,10 +8,13 @@ export default async function EboLayout({ children }: { children: React.ReactNod
   // the alphabetically-first store for them, not a "their store" concept.
   const user = await requireRole("ebo_manager", "super_admin", "ho_admin");
 
+  // Previously max-w-xl (narrower than every other group, since this is a
+  // small phone-oriented form) — AppShell standardizes on the app-wide
+  // 1240px content width. Content itself still doesn't stretch to fill it,
+  // so this only affects how much empty margin surrounds it, not layout.
   return (
-    <div className="mx-auto max-w-xl px-5 pb-16">
-      <TopNav role={user.role} fullName={user.fullName} userId={user.id} />
+    <AppShell role={user.role} fullName={user.fullName} userId={user.id}>
       {children}
-    </div>
+    </AppShell>
   );
 }

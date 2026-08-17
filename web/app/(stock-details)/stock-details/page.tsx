@@ -1,7 +1,12 @@
+import { Suspense } from "react";
 import { createClient } from "@/lib/data/client";
+import type { DataClient } from "@/lib/data/client";
 import { requirePageAccess } from "@/lib/auth/roles";
 import { MultiSelectFilter } from "@/components/ui/StoreFilter";
 import { CapacityEditorCard } from "./capacity-editor";
+import { KpiGridSkeleton, TableSkeleton } from "@/components/ui/Skeleton";
+import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
+import { timeAll } from "@/lib/perf/timing";
 import {
   GENDER_LABELS,
   buildDcMatrix,
@@ -182,48 +187,50 @@ function GenderSplitCard({ title, note, data }: { title: string; note: string; d
   );
 }
 
-export default async function StockDetailsPage({
-  searchParams,
+function StockDetailsSkeleton() {
+  return (
+    <>
+      <KpiGridSkeleton count={4} />
+      <div className="mt-6">
+        <TableSkeleton rows={4} cols={9} />
+      </div>
+      <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <TableSkeleton rows={4} cols={3} />
+        <TableSkeleton rows={4} cols={3} />
+      </div>
+    </>
+  );
+}
+
+/**
+ * Everything below the header/filter — deliberately ONE Suspense boundary,
+ * not several. capacityRows feeds both the comparison table AND the
+ * capacity-editor cards, and the comparison table itself needs BOTH
+ * capacityRows and the (up to 20k-row) stock snapshot together before it can
+ * render a single row — there's no visually-independent region here the way
+ * Network's Sales/Footfall split had. Splitting further would only add
+ * duplicate capacityRows fetches with nothing to show for it. What DOES
+ * happen here: rawRows and capacityRows are independent of each other and
+ * now run in parallel (they were sequential before), and this whole section
+ * streams in behind the header/filter shell instead of blocking it.
+ */
+async function StockDetailsContent({
+  supabase,
+  canEditCapacity,
+  storeList,
+  storeLabels,
+  selectedStoreIds,
+  selectedBranchNames,
+  storesInView,
 }: {
-  searchParams: { store?: string };
+  supabase: DataClient;
+  canEditCapacity: boolean;
+  storeList: StoreRow[];
+  storeLabels: Record<string, string>;
+  selectedStoreIds: string[];
+  selectedBranchNames: string[];
+  storesInView: StoreRow[];
 }) {
-  // Independent re-check of the layout's requirePageAccess (perf pass: was
-  // a plain requireRole with a hardcoded role list that could silently
-  // diverge from the layout's per-user-override-aware gate — e.g. a role
-  // granted access to this page via an override at the layout would still
-  // get redirected away here by a hardcoded list that doesn't know about
-  // the override). Now both layers use the same override-aware check, and
-  // — since requirePageAccess/requireRole share the same underlying
-  // per-request-cached profile/store-id resolution — this "independent
-  // re-check" costs nothing extra over the layout's own call.
-  const user = await requirePageAccess("stock-details");
-  const canEditCapacity = user.role === "ho_admin" || user.role === "super_admin";
-
-  const supabase = await createClient();
-
-  const { data: storesData } = await supabase
-    .schema("core")
-    .from<StoreRow>("stores")
-    .select("store_id, store_name, branch_name_erp")
-    .order("store_id");
-  // BO-004 (Phoenix Palassio, Lucknow) is discontinued — kept visible only on
-  // /network for historical reference, hidden from every other store filter.
-  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004");
-
-  const storeLabels = Object.fromEntries(storeList.map((s) => [s.store_id, s.store_name]));
-  const selectedStoreIds = (searchParams.store ?? "")
-    .split(",")
-    .filter((id) => storeList.some((s) => s.store_id === id));
-  const selectedBranchNames = storeList
-    .filter((s) => selectedStoreIds.includes(s.store_id))
-    .map((s) => s.branch_name_erp);
-  // Every section on this page (capacity cards, the comparison table, both
-  // gender-split boxes) now scopes to exactly this list — no section is
-  // silently "all stores" while its neighbors are filtered, which used to
-  // read as a bug (the Planned gender-split box previously always showed
-  // every store's numbers regardless of the filter above it).
-  const storesInView = selectedStoreIds.length > 0 ? storeList.filter((s) => selectedStoreIds.includes(s.store_id)) : storeList;
-
   // Pushed down to SQL when a store filter is active: the capacity cards
   // below only ever render the SELECTED store(s), so there's no reason to
   // pull every OTHER store's ~1,500-2,500 stock lines over the network just
@@ -248,12 +255,21 @@ export default async function StockDetailsPage({
   // uploads. Warehouse stock has its own home: /replenishment.
   const knownBranchNames = storeList.map((s) => s.branch_name_erp);
   const branchFilter = selectedBranchNames.length > 0 ? selectedBranchNames : knownBranchNames;
-  const { data: rawRows, error } = await supabase
-    .schema("sales")
-    .from<StockRow>("vw_stock_with_scheme")
-    .select("id, branch_name, season, gender, size_group, item_code, shade_name, size, closing_stock, is_eoss")
-    .in("branch_name", branchFilter)
-    .limit(20000);
+
+  // rawRows and capacityRows share nothing — independent queries, now
+  // genuinely parallel instead of the original 2 sequential awaits.
+  const [{ data: rawRows, error }, { data: capacityData }] = await timeAll("stock-details:content", [
+    supabase
+      .schema("sales")
+      .from<StockRow>("vw_stock_with_scheme")
+      .select("id, branch_name, season, gender, size_group, item_code, shade_name, size, closing_stock, is_eoss")
+      .in("branch_name", branchFilter)
+      .limit(20000),
+    supabase
+      .schema("ops")
+      .from<CapacityRow>("stock_display_capacity")
+      .select("store_id, gender, age_segment, base_capacity, buffer_pct, fresh_pct, updated_by, updated_at"),
+  ] as const);
 
   // Gender-filtered. Store-filtered too now when a filter is active (see
   // above) — safe because the capacity cards below only render the
@@ -265,15 +281,11 @@ export default async function StockDetailsPage({
     (r) => selectedBranchNames.length === 0 || (r.branch_name !== null && selectedBranchNames.includes(r.branch_name))
   );
 
-  // Base display capacity (migration 0026) — independent of whether a stock
-  // snapshot has been uploaded, so this is fetched and rendered regardless
-  // of the `rows.length` early-return below.
-  const { data: capacityData } = await supabase
-    .schema("ops")
-    .from<CapacityRow>("stock_display_capacity")
-    .select("store_id, gender, age_segment, base_capacity, buffer_pct, fresh_pct, updated_by, updated_at");
   const capacityRows = capacityData ?? [];
 
+  // editorProfiles depends on capacityRows (needs its updated_by ids), so
+  // this one stays sequential — a single small lookup query, not worth
+  // parallelizing around.
   const editorIds = [...new Set(capacityRows.map((r) => r.updated_by).filter((id): id is string => !!id))];
   const { data: editorProfiles } =
     editorIds.length > 0
@@ -319,20 +331,7 @@ export default async function StockDetailsPage({
 
   if (!rows.length) {
     return (
-      <main className="py-6">
-        <div className="flex flex-wrap items-baseline justify-between gap-3">
-          <h1 className="font-serif text-2xl">Stock Details</h1>
-          {storeList.length > 0 && (
-            <MultiSelectFilter
-              paramName="store"
-              options={storeList.map((s) => s.store_id)}
-              labels={storeLabels}
-              selected={selectedStoreIds}
-              label="Store"
-              allLabel="All stores"
-            />
-          )}
-        </div>
+      <>
         <p className="mt-3 text-sm text-ink-3">
           {selectedBranchNames.length > 0
             ? "No stock for the selected store(s) in the current snapshot."
@@ -346,7 +345,7 @@ export default async function StockDetailsPage({
         </p>
 
         {capacitySection}
-      </main>
+      </>
     );
   }
 
@@ -354,20 +353,7 @@ export default async function StockDetailsPage({
   const nibm = buildNibmSummary(dcBlocks);
 
   return (
-    <main className="py-6">
-      <div className="flex flex-wrap items-baseline justify-between gap-3">
-        <h1 className="font-serif text-2xl">Stock Details</h1>
-        {storeList.length > 0 && (
-          <MultiSelectFilter
-            paramName="store"
-            options={storeList.map((s) => s.store_id)}
-            labels={storeLabels}
-            selected={selectedStoreIds}
-            label="Store"
-            allLabel="All stores"
-          />
-        )}
-      </div>
+    <>
       <p className="mt-1 max-w-3xl text-[12.5px] text-ink-3">
         Live equivalent of the Display Capacity planning sheet — computed from the current stock snapshot
         (uploaded via Data Upload) cross-referenced against the scheme lookup, not a planned 35/65 split.
@@ -419,6 +405,83 @@ export default async function StockDetailsPage({
       <BreakdownSection title="Size-group-wise stock" rows={rows} keyFn={(r) => r.size_group} />
       <BreakdownSection title="Color-wise stock (top 15 shades per gender)" rows={rows} keyFn={(r) => r.shade_name} topN={15} />
       <BreakdownSection title="Size-wise stock" rows={rows} keyFn={(r) => r.size} />
+    </>
+  );
+}
+
+export default async function StockDetailsPage({
+  searchParams,
+}: {
+  searchParams: { store?: string };
+}) {
+  // Independent re-check of the layout's requirePageAccess (perf pass: was
+  // a plain requireRole with a hardcoded role list that could silently
+  // diverge from the layout's per-user-override-aware gate — e.g. a role
+  // granted access to this page via an override at the layout would still
+  // get redirected away here by a hardcoded list that doesn't know about
+  // the override). Now both layers use the same override-aware check, and
+  // — since requirePageAccess/requireRole share the same underlying
+  // per-request-cached profile/store-id resolution — this "independent
+  // re-check" costs nothing extra over the layout's own call.
+  const user = await requirePageAccess("stock-details");
+  const canEditCapacity = user.role === "ho_admin" || user.role === "super_admin";
+
+  const supabase = await createClient();
+
+  // Small, fast, needed for the header/filter immediately — awaited
+  // directly rather than deferred, same shell pattern as the Network page.
+  const { data: storesData } = await supabase
+    .schema("core")
+    .from<StoreRow>("stores")
+    .select("store_id, store_name, branch_name_erp")
+    .order("store_id");
+  // BO-004 (Phoenix Palassio, Lucknow) is discontinued — kept visible only on
+  // /network for historical reference, hidden from every other store filter.
+  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004");
+
+  const storeLabels = Object.fromEntries(storeList.map((s) => [s.store_id, s.store_name]));
+  const selectedStoreIds = (searchParams.store ?? "")
+    .split(",")
+    .filter((id) => storeList.some((s) => s.store_id === id));
+  const selectedBranchNames = storeList
+    .filter((s) => selectedStoreIds.includes(s.store_id))
+    .map((s) => s.branch_name_erp);
+  // Every section on this page (capacity cards, the comparison table, both
+  // gender-split boxes) now scopes to exactly this list — no section is
+  // silently "all stores" while its neighbors are filtered, which used to
+  // read as a bug (the Planned gender-split box previously always showed
+  // every store's numbers regardless of the filter above it).
+  const storesInView = selectedStoreIds.length > 0 ? storeList.filter((s) => selectedStoreIds.includes(s.store_id)) : storeList;
+
+  return (
+    <main className="py-6">
+      <div className="flex flex-wrap items-baseline justify-between gap-3">
+        <h1 className="font-serif text-2xl">Stock Details</h1>
+        {storeList.length > 0 && (
+          <MultiSelectFilter
+            paramName="store"
+            options={storeList.map((s) => s.store_id)}
+            labels={storeLabels}
+            selected={selectedStoreIds}
+            label="Store"
+            allLabel="All stores"
+          />
+        )}
+      </div>
+
+      <SectionErrorBoundary label="Stock Details">
+        <Suspense fallback={<StockDetailsSkeleton />}>
+          <StockDetailsContent
+            supabase={supabase}
+            canEditCapacity={canEditCapacity}
+            storeList={storeList}
+            storeLabels={storeLabels}
+            selectedStoreIds={selectedStoreIds}
+            selectedBranchNames={selectedBranchNames}
+            storesInView={storesInView}
+          />
+        </Suspense>
+      </SectionErrorBoundary>
     </main>
   );
 }

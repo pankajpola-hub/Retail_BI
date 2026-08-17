@@ -53,8 +53,192 @@ Deployed and live (no new `vercel logs` errors after deploy; could not do a full
 - **Stock Details rebuilt around a real "Current Stock vs Planned Display Capacity" comparison table** (`StockVsCapacityTable` in `page.tsx`), replacing what used to be a prose sentence buried in each capacity-editor block. Columns: Segment, Base Capacity, Buffer%, then Fresh and EOSS *each broken out separately* (Planned / Current Stock / Status) — merging Fresh+EOSS into one status previously hid real shortages (e.g. Boys segments are short on EOSS stock at both stores even though Fresh is in heavy excess everywhere — invisible in the old combined view). The "NIBM" naming (a meaningless leftover from a source spreadsheet's filename, not a real term) is gone, replaced with "Gender split — planned capacity" / "Gender split — current stock," both now correctly follow the store filter (previously the planned one was hardcoded to always show all stores regardless of the filter — a real, confirmed bug, not just a wording issue). Also added a Total row above each of the four breakdown tables (Season/Size-group/Color/Size-wise) reflecting the FULL group even when the table itself is truncated (e.g. color's "top 15" — the total is the true total, the rows below are just where).
 - Verified via a downloaded stock report + independent Python read of the actual xlsx: the app's "Current stock" numbers match a user-built pivot table exactly, unit for unit, across both stores and both genders. The apparent "huge difference" the user flagged was Planned Capacity vs Current Stock (intentionally very different — capacity is set far below actual stock right now), not a data bug.
 
+## Local dev stack — how to actually start it (2026-08-15)
+
+The all-local stack under `D:\Programs` (see Objective.md's environment note)
+has **no start script**. It is four processes, and three of them have a
+gotcha that will waste your time if you don't know it. Start them in this
+order:
+
+1. **Postgres** — `D:\Programs\pgsql\bin\pg_ctl.exe -D "D:\Programs\pgdata" -l "D:\Programs\pg.log" start`.
+   The app DB is `ebo_bi` on **port 5432** here (NOT 5433 — that split is a
+   production-server thing, see the two-instances note above; locally there
+   is one instance). Auth is trust, so no password is needed locally.
+2. **PostgREST** — `D:\Programs\postgrest\postgrest.exe D:\Programs\postgrest\postgrest.conf`, port 3001.
+   **`D:\Programs\pgsql\bin` MUST be on PATH** or it dies instantly with
+   `error while loading shared libraries: LIBPQ.dll`. Started without that,
+   it exits with no log output at all, which looks like it silently did
+   nothing. A healthy PostgREST answers `401` on `/` (auth required) — not
+   `200`.
+3. **Keycloak** — `D:\Programs\keycloak\bin\kc.bat start-dev`, port 8080.
+   **The machine's `JAVA_HOME` was broken** (pointed at `D:\Py\jdk17`, which
+   does not exist), so `kc.bat` exited immediately with
+   `JAVA_HOME ... path doesn't exist` and nothing else. Fixed 2026-08-15 by
+   deleting the stale **User**-level env var so the correct **Machine**-level
+   one (`C:\Program Files\Eclipse Adoptium\jdk-21.0.11.10-hotspot`) applies —
+   user scope overrides machine scope, which is why the good value was being
+   shadowed. Keycloak 26.7.1 is verified working on JDK 21. JDK 17 is also
+   installed if something ever needs it.
+4. **MinIO** — `D:\Programs\minio\minio.exe server D:\Programs\miniodata --address ":9000" --console-address ":9001"`,
+   with `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` set from
+   `SELFHOSTED_MINIO_ACCESS_KEY`/`SELFHOSTED_MINIO_SECRET_KEY` in
+   `web/.env.local`. Buckets `erp-reports` and `incentive-targets` live in
+   `D:\Programs\miniodata`. **If MinIO is down, every file upload fails with
+   `connect ECONNREFUSED 127.0.0.1:9000`** and nothing else is wrong — this
+   is easy to misread as an app bug. It is the service most likely to be
+   forgotten, because the verification scripts don't need it.
+5. **Dev server** — via the preview tooling using `.claude/launch.json`,
+   which now carries a real start command (`node node_modules/next/dist/bin/next dev`,
+   cwd `web`). It previously had only a `url`, so it could attach to a
+   running server but never start one.
+
+Postgres crashed once this session with
+`server process was terminated by exception 0xC0000142` (a Windows
+DLL-init failure, not data corruption) and took PostgREST with it; a plain
+restart recovered it cleanly with no data loss.
+
+## Verification harnesses (there is still no test framework)
+
+Four now exist. All are plain Node/psql, matching the project's existing
+convention rather than introducing Jest. Run from `web/` **invoking `node`
+directly** — the `&` in the repo path breaks npm `.cmd` shims:
+
+- `node --env-file=.env.local scripts/parity-check.mjs` — KPI parity against
+  the confirmed fixture, plus ATV grain discrimination. Marks metrics
+  `is_verified` on success.
+- `node --env-file=.env.local scripts/verify-query-planner.mjs` — Phase 4
+  planner: grouping, grain splitting, extraColumns.
+- `node --env-file=.env.local scripts/verify-filter-engine.mjs` — Phase 6
+  governed filters, including that an inapplicable filter is REFUSED rather
+  than silently dropped.
+- `psql ... -f server/db/tests/rls_workspace_sharing.sql` — Phase 7 sharing
+  RLS. Simulates multiple users via the `app.user_id` GUC (no accounts are
+  created). **This one caught a real privilege-escalation bug** — run it
+  after any change to workspace RLS.
+
+`server/db/seeds/dev_fixture.sql` generates a synthetic dataset (sale,
+return and other bills, scheme groups, parseable bill times, footfall) for
+when the local DB is otherwise nearly empty. It is idempotent, deliberately
+skips the BO-001/2026-08-10 parity fixture, and is tagged for one-command
+removal (`SB-F%`/`RB-F%`/`EX-F%` bill numbers, `remarks='dev_fixture'`
+footfall). **Remove it before loading real data** or the two datasets render
+combined.
+
+## Two silent-failure formats worth knowing
+
+Both were found on 2026-08-15 and both fail by producing NOTHING rather than
+an error, which makes them hard to notice:
+
+- **`bill_time` only parses `HH:MM:SS AM/PM`** (`sales.vw_ebo_sales_lines`).
+  A 24-hour value like `14:30:00` becomes NULL and the row disappears from
+  `sales.vw_ebo_sales_hourly` entirely — the hourly chart just renders empty.
+  If a real export uses 24-hour times, hourly sales will silently show
+  nothing.
+- **`bill_type` keys on `SB-` / `RB-` including the dash** (0036). A bill
+  number like `SBF-123` matches `%SB%` but NOT `%SB-%`, so it classifies as
+  `OTHER`: zero sale bills, zero returns, no error. Any drift in bill-number
+  format misclassifies silently.
+
+## State as of 2026-08-15, item master + Configurations page
+
+- **Migrations 0055-0059** applied to the local dev DB. 0055 fixes the
+  Fresh/Disc tracker view/function divergence (dead-code view, no live
+  callers). 0056 repoints `sales.vw_ebo_sales_lines`/`vw_item_subcategory_lookup`/
+  `vw_stock_with_scheme` to read product-detail fields from
+  `raw_logic.item_master` by barcode, falling back to each view's prior
+  source when a barcode isn't yet in `item_master`. 0057 adds
+  `core.app_settings` (first generic settings table). 0058 makes the
+  Fresh/EOSS classification source (`discount_ratio` vs `scheme_lookup`) an
+  admin setting instead of hardcoded SQL. 0059 fixes a grant bug in 0057
+  (service_role needs an explicit GRANT on the table even though it has
+  `bypassrls` — same lesson as 0045, re-learned the hard way, caught by an
+  actual browser test of the Save button failing with "permission denied for
+  table app_settings").
+- **New `/configurations` route** (`super_admin` only), first real settings
+  page in the app — `web/app/(configurations)/`. Verified in-browser: nav
+  entry renders, page loads, Save round-trips to `core.app_settings` and
+  back, `ops.fn_monthly_fresh_disc_tracker`'s output changed correctly under
+  both settings values. Left at `discount_ratio` (unchanged default) after
+  testing.
+- **Known issue surfaced, not fixed**: the synthetic parity fixture
+  (`SB-1001`/`SB-1002` on `BO-001`, 2026-08-10) now collides with real
+  uploaded data on the same store/date, so `parity-check.mjs` and
+  `verify-query-planner.mjs` both fail on stale hardcoded totals. Confirmed
+  unrelated to this session's changes (every failing assertion is a plain
+  amount column, not touched). Needs the fixture rows removed or moved to a
+  non-colliding date before those two scripts are trustworthy again.
+- Dev server for this session ran on an auto-assigned port (3000 was held
+  by a concurrent session) — `.claude/launch.json`'s `web-dev` config now
+  has `"autoPort": true` so this doesn't block future sessions either.
+
+## State as of 2026-08-15, batch 4 — Workspace expansion, real UI stack, real fonts
+
+- **New npm dependencies installed** (`web/package.json`): `ag-grid-community`,
+  `ag-grid-react` (v36, the new Theming API — `themeQuartz.withParams()`,
+  not the old CSS-theme-file approach; requires
+  `ModuleRegistry.registerModules([AllCommunityModule])` before any grid
+  renders or it errors); `@tremor/react` (v3.18.7 — note this is the
+  legacy line, Tremor's own active investment moved to "Tremor Raw" which
+  needs Tailwind v4 and does NOT fit this project, still on v3.4.13);
+  `@headlessui/tailwindcss`, `tailwindcss-animate`,
+  `class-variance-authority`, `clsx`, `tailwind-merge`, `lucide-react`,
+  `@radix-ui/react-slot`, `@radix-ui/react-dialog`,
+  `@radix-ui/react-dropdown-menu`. One install run failed to write
+  `package.json` (`npm error UNKNOWN: unknown error, open ... package.json`
+  — a Windows file-lock, likely the running dev server holding it open)
+  even though the packages themselves landed in `node_modules` correctly;
+  had to hand-edit `package.json`'s `dependencies` to match. If a future
+  `npm install` silently doesn't update `package.json`, check for this
+  before assuming the install failed outright.
+- **`.next` build-cache corruption from rapid dev-server restarts**: after
+  several stop/start cycles of the preview server, webpack threw
+  `Cannot find module './vendor-chunks/tailwind-merge...'` — looked like a
+  missing dependency but wasn't (already installed, already typechecking
+  clean). Fixed by `rm -rf web/.next` and restarting. If a "Cannot find
+  module" error appears for a package you know is installed, try this
+  before anything else.
+- **`web/.vercel/project.json` already exists in this Test copy** —
+  `{"projectId":"prj_wMMGEP0889WmOJUqQ8B1RDaThENL","orgId":"team_...","projectName":"ebo-sales-intelligence"}`.
+  This links the directory to the **SAME real production Vercel project**
+  the live app (`https://ebo-sales-intelligence.vercel.app`) deploys from.
+  **A bare `vercel deploy --prod` run from this Test copy would ship
+  straight to real production** — this copy's env vars point entirely at
+  an all-local dev stack (Keycloak/Postgres/PostgREST/MinIO on
+  `localhost`, unreachable from Vercel's servers) and its migrations
+  (0046–0059) have never been applied to the real production database, so
+  such a deploy would be both dangerous (overwrites the real live app)
+  and broken (every page would fail to fetch data even if it somehow
+  didn't touch prod). A deploy was requested this session and then
+  explicitly cancelled by the user before anything ran — nothing was
+  pushed. Before ever deploying from this directory: confirm which
+  project you actually want to target (unlink and re-link to a fresh
+  test project via `vercel link` if a separate preview is wanted), and
+  never run this against real production without the user explicitly
+  directing it.
+- **Migrations 0055–0059 applied to the LOCAL dev DB only** (item_master
+  wiring, `core.app_settings`, dynamic Fresh/EOSS classification —
+  see Objective.md's dated entries for what each does). Current local
+  migration head is **0059**, not the `0039` noted in the "Migrations"
+  section above — that note is from the 2026-08-13 session and is now
+  historical; treat `server/db/migrations/` itself as the source of truth
+  for the real current head, not any single prose note in this file.
+- Everything else from this batch (Workspace switcher/multi-workspace
+  support, 2 new non-Sales workspace component families, Phase 8 drilldown,
+  Phase 9 lazy-mount, real Tremor charts, AG Grid + shadcn-shaped
+  primitives, real fonts via `next/font`, the Sale vs Stock Mix SOH split)
+  is documented in `Objective.md`'s dated sections — not duplicated here,
+  per this file's own stated boundary (operational "how", not product
+  "what/why").
+
 ## Known open items / things to watch
 
+- **Migrations 0050-0053 are applied to the LOCAL dev DB only** (2026-08-15)
+  and have never been near production. 0050/0051 correct the semantic-layer
+  catalogue (no view or displayed number changes); 0052/0053 add workspace
+  sharing. **0052 must never be applied without 0053** — 0052 as first
+  written contained a privilege-escalation bug (a client-supplied `owner_id`
+  forged the whole authorization decision) that 0053 fixes with a trigger.
+  Treat them as one unit.
 - **Logic ERP live connector**: was blocked on port 1433 (SQL Server) being unreachable from the self-hosted box at the time this was last touched — not resolved in this session, worth checking if it's come up again.
 - A separate/parallel session or account has been making concurrent changes to this repo during this period (i18n additions, `data-upload` page rework, `TopNav` prop changes) — these were confirmed intentional and left alone, but double-check `git log` for recent unfamiliar commits before assuming you have the full picture of current state.
 - No automated test suite exists for this app — verification has been "run `tsc --noEmit`, deploy, then manually check the live URL with the browser tools + `vercel logs`." Keep doing that for any change that touches a page users hit directly.

@@ -1,6 +1,11 @@
+import { Suspense } from "react";
 import { createClient } from "@/lib/data/client";
+import type { DataClient } from "@/lib/data/client";
 import { requirePageAccess } from "@/lib/auth/roles";
 import { RowsPerPageSelect } from "@/components/ui/RowsPerPageSelect";
+import { KpiGridSkeleton, TableSkeleton } from "@/components/ui/Skeleton";
+import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
+import { time } from "@/lib/perf/timing";
 import {
   computeReplenishmentRows,
   filterRows,
@@ -48,30 +53,53 @@ function KpiCard({ label, value, sub, tone }: { label: string; value: string; su
   );
 }
 
-export default async function ReplenishmentPage({
+type ReplenishmentSearchParams = {
+  q?: string;
+  store?: string;
+  priority?: string;
+  action?: string;
+  targetCover?: string;
+  leadTime?: string;
+  safetyDays?: string;
+  wStockout?: string;
+  wVelocity?: string;
+  wCover?: string;
+  wRevenue?: string;
+  wTrend?: string;
+  wProductivity?: string;
+  page?: string;
+  perPage?: string;
+};
+
+function ReplenishmentSkeleton() {
+  return (
+    <>
+      <KpiGridSkeleton count={8} />
+      <div className="mt-6">
+        <TableSkeleton rows={6} cols={10} />
+      </div>
+      <div className="mt-6">
+        <TableSkeleton rows={8} cols={14} />
+      </div>
+    </>
+  );
+}
+
+/**
+ * Everything on this page past the intro paragraph comes from ONE call to
+ * computeReplenishmentRows() — the network allocation engine — so unlike
+ * Network/Stock-Details there's no independent visual region to split
+ * further without literally re-running that expensive computation twice.
+ * This whole block is one Suspense boundary; the page shell above it
+ * (title, intro) renders instantly regardless of how long the engine takes.
+ */
+async function ReplenishmentContent({
+  supabase,
   searchParams,
 }: {
-  searchParams: {
-    q?: string;
-    store?: string;
-    priority?: string;
-    action?: string;
-    targetCover?: string;
-    leadTime?: string;
-    safetyDays?: string;
-    wStockout?: string;
-    wVelocity?: string;
-    wCover?: string;
-    wRevenue?: string;
-    wTrend?: string;
-    wProductivity?: string;
-    page?: string;
-    perPage?: string;
-  };
+  supabase: DataClient;
+  searchParams: ReplenishmentSearchParams;
 }) {
-  await requirePageAccess("replenishment");
-  const supabase = await createClient();
-
   // --- Configurable assumptions (the "what-if" inputs). No real vendor/PO
   // lead-time data exists yet (see the page's own disclosure text below), so
   // these are sane defaults the user can override per visit rather than
@@ -99,12 +127,15 @@ export default async function ReplenishmentPage({
   // Network allocation engine — see lib/replenishment/compute.ts. Shared with
   // web/app/api/replenishment/download/route.ts so the Excel export always
   // matches exactly what this page computes for the same query params.
-  const { storeList, rows, totalWarehouseUnits } = await computeReplenishmentRows(supabase, {
-    targetCoverDays,
-    leadTimeDays,
-    safetyDays,
-    scoreWeights: SCORE_W,
-  });
+  const { storeList, rows, totalWarehouseUnits } = await time(
+    "replenishment:compute",
+    computeReplenishmentRows(supabase, {
+      targetCoverDays,
+      leadTimeDays,
+      safetyDays,
+      scoreWeights: SCORE_W,
+    })
+  );
 
   // --- Filters (applied after computation, since priority/action are derived, not DB columns) ---
   const q = searchParams.q ?? "";
@@ -195,17 +226,9 @@ export default async function ReplenishmentPage({
   }
 
   return (
-    <main className="py-6">
-      <h1 className="font-serif text-2xl">Replenishment</h1>
-      <p className="mt-1 max-w-3xl text-[12.5px] text-ink-3">
-        Warehouse → Store and Store → Store recommendations, by <strong>Style No. + Color</strong>, allocated
-        network-wide — when two stores compete for the same limited warehouse stock, the higher-priority store
-        (by sales velocity, stock-out risk, and trend) is served first, not split evenly. Priority score and
-        weighted sales velocity use configurable assumptions below, not measured vendor lead times — no
-        purchase-order or vendor lead-time data exists in the system yet.
-      </p>
+    <>
 
-      <div className="mt-4 grid grid-cols-2 gap-px border border-line-soft bg-line-soft sm:grid-cols-3 lg:grid-cols-4">
+      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
         <KpiCard label="Style-colors needing replenishment" value={fmt(needsReplenishment.length)} />
         <KpiCard label="Units required" value={fmt(unitsRequired)} />
         <KpiCard label="Critical" value={fmt(criticalCount)} tone={criticalCount > 0 ? "crit" : undefined} />
@@ -674,6 +697,34 @@ export default async function ReplenishmentPage({
           </a>
         </div>
       )}
+    </>
+  );
+}
+
+export default async function ReplenishmentPage({
+  searchParams,
+}: {
+  searchParams: ReplenishmentSearchParams;
+}) {
+  await requirePageAccess("replenishment");
+  const supabase = await createClient();
+
+  return (
+    <main className="py-6">
+      <h1 className="font-serif text-2xl">Replenishment</h1>
+      <p className="mt-1 max-w-3xl text-[12.5px] text-ink-3">
+        Warehouse → Store and Store → Store recommendations, by <strong>Style No. + Color</strong>, allocated
+        network-wide — when two stores compete for the same limited warehouse stock, the higher-priority store
+        (by sales velocity, stock-out risk, and trend) is served first, not split evenly. Priority score and
+        weighted sales velocity use configurable assumptions below, not measured vendor lead times — no
+        purchase-order or vendor lead-time data exists in the system yet.
+      </p>
+
+      <SectionErrorBoundary label="Replenishment recommendations">
+        <Suspense fallback={<ReplenishmentSkeleton />}>
+          <ReplenishmentContent supabase={supabase} searchParams={searchParams} />
+        </Suspense>
+      </SectionErrorBoundary>
     </main>
   );
 }

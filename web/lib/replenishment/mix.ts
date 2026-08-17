@@ -101,19 +101,19 @@ export async function computeSaleStockMix(
   supabase: DataClient,
   { storeId, salesPeriodDays }: { storeId: string; salesPeriodDays: SalesPeriodDays }
 ): Promise<{ storeList: StoreRow[]; rows: MixRow[]; totalSales: number; totalStock: number }> {
-  const { data: storesData } = await supabase
-    .schema("core")
-    .from<StoreRow>("stores")
-    .select("store_id, store_name, branch_name_erp")
-    .order("store_id");
-  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004");
-  const storeBranchToId = new Map(storeList.map((s) => [s.branch_name_erp, s.store_id]));
-
   const periodStart = new Date();
   periodStart.setDate(periodStart.getDate() - salesPeriodDays);
   const fromDate = periodStart.toISOString().slice(0, 10);
 
-  const [{ data: stockRows }, { data: saleRows }] = await Promise.all([
+  // stores/stock/sale are independent — stores is only used AFTER all three
+  // resolve (grouping), never as an input filter here. Previously fetched
+  // sequentially before the other two; now genuinely parallel.
+  const [{ data: storesData }, { data: stockRows }, { data: saleRows }] = await Promise.all([
+    supabase
+      .schema("core")
+      .from<StoreRow>("stores")
+      .select("store_id, store_name, branch_name_erp")
+      .order("store_id"),
     supabase
       .schema("sales")
       .from<StockRow>("vw_stock_with_scheme")
@@ -126,6 +126,8 @@ export async function computeSaleStockMix(
       .gte("bill_date", fromDate)
       .limit(100000),
   ]);
+  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004");
+  const storeBranchToId = new Map(storeList.map((s) => [s.branch_name_erp, s.store_id]));
 
   // Same style+color grain as Replenishment (lib/replenishment/compute.ts) —
   // never combine colors of the same style (section 1 of the spec).

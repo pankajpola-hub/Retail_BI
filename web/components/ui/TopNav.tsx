@@ -21,6 +21,7 @@ const HREF_PAGE_KEY: Record<string, PageKey> = {
   "/users": "users",
   "/integrations": "integrations",
   "/data-upload": "data-upload",
+  "/workspace": "workspace",
 };
 
 // Single source of truth for "who can see which section" in the nav. Every
@@ -59,6 +60,12 @@ const NAV_LINKS: NavLink[] = [
   { href: "/users", labelKey: "navUsers", roles: ["super_admin"] },
   { href: "/integrations", labelKey: "navIntegrations", roles: ["super_admin"] },
   { href: "/data-upload", labelKey: "navDataUpload", roles: ["ho_admin", "super_admin"] },
+  {
+    href: "/workspace",
+    labelKey: "navWorkspace",
+    // Personal-only (Phase 5) — see lib/auth/roles.ts PAGE_ROLE_DEFAULTS.workspace.
+    roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"],
+  },
   // Hidden for now at the user's request — both are still placeholder
   // screens. The routes themselves still exist and remain reachable by
   // direct URL; only the nav entries are removed. Restore by uncommenting.

@@ -32,7 +32,7 @@ export default async function MyStorePage() {
     <main className="py-6">
       <h1 className="font-serif text-2xl">{t.myStoreTitle}</h1>
 
-      <div className="mt-5 grid grid-cols-2 gap-px border border-line-soft bg-line-soft">
+      <div className="mt-5 grid grid-cols-2 gap-3">
         <KpiCard
           label={week?.is_complete_week ? "Last complete week" : "This week so far"}
           value={week ? `₹${Number(week.net_sales).toLocaleString("en-IN")}` : "—"}

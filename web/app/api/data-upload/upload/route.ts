@@ -8,7 +8,7 @@ const ALLOWED_TYPES = [
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx
   "application/vnd.ms-excel", // .xls
 ];
-const REPORT_TYPES = ["sale", "stock", "scheme"] as const;
+const REPORT_TYPES = ["sale", "stock", "scheme", "master"] as const;
 type ReportType = (typeof REPORT_TYPES)[number];
 
 /**
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
 
   if (typeof reportType !== "string" || !REPORT_TYPES.includes(reportType as ReportType)) {
     return NextResponse.json(
-      { ok: false, error: { code: "invalid_body", message: "report_type must be one of sale, stock, scheme." } },
+      { ok: false, error: { code: "invalid_body", message: "report_type must be one of sale, stock, scheme, master." } },
       { status: 400 }
     );
   }
@@ -79,8 +79,15 @@ export async function POST(request: Request) {
   // deleting it here, before processing, hits that FK constraint and fails
   // (see cleanupOlderUploads' header). Their cleanup happens in the commit
   // route instead, after a successful process.
+  //
+  // "master" behaves like "sale" here, for the same structural reason:
+  // raw_logic.item_master (migration 0054) has NO upload_id FK — it records
+  // provenance as plain source_file text precisely so retention can delete an
+  // old upload row without hitting a constraint. And a stale item master is
+  // never wanted: the newest attribute list is the only one that should be
+  // re-processable, so keep-latest-only applies from the moment it lands.
   const newId = inserted?.[0]?.id;
-  if (newId && reportType === "sale") {
+  if (newId && (reportType === "sale" || reportType === "master")) {
     await cleanupOlderUploads(supabase, reportType, newId);
   }
 

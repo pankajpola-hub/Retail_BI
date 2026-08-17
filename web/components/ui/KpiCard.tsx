@@ -12,18 +12,18 @@ type KpiCardProps = {
 
 export function KpiCard({ label, value, sub, tone = "default" }: KpiCardProps) {
   return (
-    <div className="border border-line-soft bg-surface px-4 pb-3 pt-3.5">
+    <div className="rounded-lg border border-line-soft bg-surface px-4 pb-4 pt-4 shadow-sm">
       <div className="text-[10.5px] font-semibold uppercase tracking-[0.11em] text-ink-3">
         {label}
       </div>
       <div
-        className={`font-mono font-tabular mt-1.5 text-2xl tracking-tight ${
+        className={`font-mono font-tabular mt-2 text-[26px] leading-none tracking-tight ${
           tone === "muted" ? "text-ink-3" : "text-ink"
         }`}
       >
         {value}
       </div>
-      {sub ? <div className="mt-1 text-[11.5px] text-ink-3">{sub}</div> : null}
+      {sub ? <div className="mt-2 text-[11.5px] text-ink-3">{sub}</div> : null}
     </div>
   );
 }

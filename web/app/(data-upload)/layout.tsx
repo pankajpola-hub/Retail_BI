@@ -1,5 +1,5 @@
 import { requirePageAccess } from "@/lib/auth/roles";
-import { TopNav } from "@/components/ui/TopNav";
+import { AppShell } from "@/components/ui/AppShell";
 
 export default async function DataUploadLayout({ children }: { children: React.ReactNode }) {
   // This route group has exactly one page (data-upload), so the layout-level
@@ -9,9 +9,8 @@ export default async function DataUploadLayout({ children }: { children: React.R
   const user = await requirePageAccess("data-upload");
 
   return (
-    <div className="mx-auto max-w-[1240px] px-6 pb-24">
-      <TopNav role={user.role} fullName={user.fullName} userId={user.id} />
+    <AppShell role={user.role} fullName={user.fullName} userId={user.id}>
       {children}
-    </div>
+    </AppShell>
   );
 }
