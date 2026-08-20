@@ -55,7 +55,8 @@ export default async function UsersPage() {
       <h1 className="font-serif text-2xl">{t.usersTitle}</h1>
       <p className="mt-1 text-[12.5px] text-ink-3">{t.usersSubtitle}</p>
 
-      <div className="mt-4">
+      <h2 className="mt-6 text-[11px] font-semibold uppercase tracking-wide text-ink-3">{t.addUserTitle}</h2>
+      <div className="mt-2">
         <InviteUserForm stores={activeStores} />
       </div>
 

@@ -11,3 +11,6 @@ supabase/.temp
 # local dev server logs
 dev-out.log
 dev-err.log
+
+.vercel
+.env*

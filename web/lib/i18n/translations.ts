@@ -98,6 +98,7 @@ export type Dict = {
   // users (admin)
   usersTitle: string;
   usersSubtitle: string;
+  addUserTitle: string;
   existingUsersTitle: string;
   noUsersYet: string;
 
@@ -196,7 +197,8 @@ const en: Dict = {
 
   usersTitle: "Users",
   usersSubtitle:
-    "New users are provisioned directly in Keycloak — no invite email is sent (SMTP isn't configured), so share the account details with the user yourself after creating them. Store access only matters for EBO Manager / Regional Manager; other roles ignore it.",
+    "New users are provisioned directly here — no invite email is sent (SMTP isn't configured), so set a password with the Reset password button and share the account details with the user yourself after creating them. Store access only matters for EBO Manager / Regional Manager; other roles ignore it.",
+  addUserTitle: "Add user",
   existingUsersTitle: "Existing users",
   noUsersYet: "No users yet.",
 
@@ -296,7 +298,8 @@ const hi: Dict = {
 
   usersTitle: "Users",
   usersSubtitle:
-    "नए Users सीधे Keycloak में बनाए जाते हैं — कोई Invite Email नहीं भेजा जाता (SMTP सेट नहीं है), इसलिए Account बनाने के बाद Details खुद User को दें। Store Access सिर्फ EBO Manager / Regional Manager के लिए मायने रखता है; बाकी Roles इसे इग्नोर करते हैं।",
+    "नए Users यहीं सीधे बनाए जाते हैं — कोई Invite Email नहीं भेजा जाता (SMTP सेट नहीं है), इसलिए Reset Password बटन से Password सेट करें और Account बनाने के बाद Details खुद User को दें। Store Access सिर्फ EBO Manager / Regional Manager के लिए मायने रखता है; बाकी Roles इसे इग्नोर करते हैं।",
+  addUserTitle: "User जोड़ें",
   existingUsersTitle: "मौजूदा Users",
   noUsersYet: "अभी कोई User नहीं है।",
 
@@ -395,7 +398,8 @@ const mr: Dict = {
 
   usersTitle: "Users",
   usersSubtitle:
-    "नवीन Users थेट Keycloak मध्ये तयार केले जातात — कोणताही Invite Email पाठवला जात नाही (SMTP सेट केलेलं नाही), त्यामुळे Account तयार केल्यावर Details स्वतः User ला द्या. Store Access फक्त EBO Manager / Regional Manager साठी महत्त्वाचा आहे; इतर Roles तो दुर्लक्षित करतात.",
+    "नवीन Users इथेच थेट तयार केले जातात — कोणताही Invite Email पाठवला जात नाही (SMTP सेट केलेलं नाही), त्यामुळे Reset Password बटणाने Password सेट करा आणि Account तयार केल्यावर Details स्वतः User ला द्या. Store Access फक्त EBO Manager / Regional Manager साठी महत्त्वाचा आहे; इतर Roles तो दुर्लक्षित करतात.",
+  addUserTitle: "User जोडा",
   existingUsersTitle: "सध्याचे Users",
   noUsersYet: "अजून कोणताही User नाही.",
 
