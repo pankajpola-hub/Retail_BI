@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient as createDataClient } from "@/lib/data/client";
-import { saveObjectFile } from "@/lib/storage/minio";
+import { saveObjectFile } from "@/lib/storage/supabase";
 
 const MAX_BYTES = 10 * 1024 * 1024; // 10MB
 const ALLOWED_TYPES = [

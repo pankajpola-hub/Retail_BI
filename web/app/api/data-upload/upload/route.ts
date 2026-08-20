@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient as createDataClient } from "@/lib/data/client";
-import { saveObjectFile } from "@/lib/storage/minio";
+import { saveObjectFile } from "@/lib/storage/supabase";
 import { cleanupOlderUploads } from "@/lib/erpReports/retention";
 
 const MAX_BYTES = 20 * 1024 * 1024; // 20MB — ERP report exports run larger than the incentive-target sheets

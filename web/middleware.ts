@@ -1,8 +1,8 @@
 import { type NextRequest } from "next/server";
-import { updateSelfHostedSession } from "@/lib/keycloak/middleware";
+import { updateSession } from "@/lib/supabase/middleware";
 
 export async function middleware(request: NextRequest) {
-  return await updateSelfHostedSession(request);
+  return await updateSession(request);
 }
 
 export const config = {

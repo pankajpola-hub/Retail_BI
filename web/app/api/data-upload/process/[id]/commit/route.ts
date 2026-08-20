@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient as createDataClient } from "@/lib/data/client";
-import { getObjectBuffer } from "@/lib/storage/minio";
+import { getObjectBuffer } from "@/lib/storage/supabase";
 import { parseSaleWorkbook } from "@/lib/erpReports/parseSaleWorkbook";
 import { parseStockWorkbook } from "@/lib/erpReports/parseStockWorkbook";
 import { parseSchemeWorkbook } from "@/lib/erpReports/parseSchemeWorkbook";

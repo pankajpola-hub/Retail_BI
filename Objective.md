@@ -1054,6 +1054,28 @@ rows for one store, has a live remarks edit affordance — same reasoning
 already recorded for why this one is correctly NOT an AG Grid candidate)
 and the Users list (not yet surveyed for row count/scale).
 
+## Infrastructure move: self-hosted → real Supabase, 2026-08-20
+
+This Test copy moved off its local self-hosted stack (Keycloak/Postgres/
+PostgREST/MinIO) onto a real Supabase project — user-directed, after
+confirming feasibility (see the architecture-discussion turn earlier this
+session: the data layer was originally built for Supabase, then had
+Supabase support removed, which made this a surgical swap rather than a
+rewrite). Full operational detail — credentials, exact migration-ordering
+gotchas found applying from scratch, verification results — is in
+`HANDOFF.md`'s new top section, not duplicated here.
+
+The short version: schema (59 migrations + a new `0060` reapplying the
+`auth.uid()`-based RLS function migration `0044` had already worked out and
+retracted for hitting the wrong project at the time), the real ERP data
+already loaded locally, and a fresh `super_admin` test account all moved
+over intact. Auth is now real Supabase Auth, not Keycloak. Verified via a
+real end-to-end login (not a bypass) plus 4 data-heavy pages rendering
+correctly. This does not change any business logic, RLS scoping rules, or
+KPI formula — every non-negotiable-rule concern this file opens with is
+about *what the app computes*, and nothing in this move touched that; it's
+purely a backend swap underneath the same application code.
+
 ## Open decisions (not mine to make)
 
 1. ~~**Accessory-exclusion divergence**~~ — **resolved 2026-08-15**, see above.

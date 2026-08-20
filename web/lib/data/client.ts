@@ -1,6 +1,8 @@
 import "server-only";
-import { createClient as createPostgrestClient } from "@/lib/postgrest/server";
-import type { PostgrestResult } from "@/lib/postgrest/client";
+import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
+
+export type PostgrestError = { code: string; message: string; details: string | null; hint: string | null };
+export type PostgrestResult<T> = { data: T | null; error: PostgrestError | null };
 
 /**
  * The subset of the chainable query surface actually used across this
@@ -50,10 +52,14 @@ export interface DataClient {
 }
 
 /**
- * The app's data client — the self-hosted stack (Keycloak-issued JWT ->
- * PostgREST -> Postgres on the in-house server). Supabase was removed
- * entirely; there is no longer a second backend or a toggle between them.
+ * The app's data client — real Supabase (2026-08-20 migration from the
+ * self-hosted Keycloak/PostgREST stack). `DataClient` predates that move (it
+ * originally existed to reconcile a Supabase client and a self-hosted one
+ * behind one shape) and turns out to describe Supabase's own query builder
+ * almost exactly (`.schema().from().select().eq()...`, `.auth.getUser()`),
+ * so the real `@supabase/supabase-js` client satisfies it structurally —
+ * this cast is the whole adapter, no per-method shim needed.
  */
 export async function createClient(): Promise<DataClient> {
-  return (await createPostgrestClient()) as unknown as DataClient;
+  return (await createSupabaseServerClient()) as unknown as DataClient;
 }

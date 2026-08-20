@@ -2,7 +2,83 @@
 
 Operational context for picking this project back up in a new session. This file is committed (no secrets in it) — actual credentials live in `web/.env.local` (gitignored) and in the self-hosted server's own config, not here.
 
-## Stack
+## THIS TEST COPY now runs on real Supabase (2026-08-20)
+
+**Read this before touching auth/data-layer code in this repo.** Everything
+below this section (self-hosted Keycloak/Postgres/PostgREST/MinIO on
+`192.168.1.16`) describes the **real production deployment**, which this
+Test copy remains completely isolated from, same as always. But *this Test
+copy itself* moved off its own local self-hosted stack onto a real Supabase
+project this session — a genuine infrastructure cutover, not a config flag.
+
+- **Project**: `naukfqwjunorzntnzkok` (name "Retail_BI"), ap-southeast-1.
+  Credentials in `web/.env.local` (`NEXT_PUBLIC_SUPABASE_URL`,
+  `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`,
+  `SUPABASE_DB_URL` for direct psql access via the session pooler —
+  `db.<ref>.supabase.co`'s direct-connection host is **IPv6-only**, which
+  this network can't route; use the pooler host instead,
+  `aws-0-ap-southeast-1.pooler.supabase.com:5432`, user
+  `postgres.naukfqwjunorzntnzkok`).
+- **Auth**: real Supabase Auth (email+password), not Keycloak. Test login:
+  `testadmin@retailbi.local` / `TestAdmin123!` (super_admin). `lib/keycloak/*`
+  and `lib/postgrest/*` are retired (unused, left in place) — `lib/supabase/*`
+  is the live path (`server.ts`/`admin.ts`/`middleware.ts`/`userAdmin.ts`).
+  `lib/data/client.ts`/`admin.ts` still export the same `DataClient` type
+  every page codes against; only their internals changed.
+- **Schema**: all 59 migrations (`0001`–`0059`; `0000` is self-hosted-only —
+  Supabase already has `anon`/`authenticated`/`service_role`/`authenticator`
+  roles built in, re-creating them errors) applied via psql over the pooler
+  connection, plus a new `0060_supabase_current_user_id.sql` (the
+  `auth.uid()`-based `core.current_user_id()` that migration `0044` had
+  already worked out and then retracted for being applied to the wrong
+  project at the time — same SQL, honestly reapplied now that this really is
+  the Supabase target). Two real gaps found applying from scratch, both
+  fixed inline rather than by editing the migration files: `0027` depends on
+  a view `0029` creates (apply `0027` right after `0029`/`0030`, not in
+  filename order — `0027`'s own header already documented this from when it
+  first shipped to production); `0045`'s `alter role service_role
+  bypassrls` needs real Postgres superuser, which Supabase's managed
+  `postgres` role doesn't have — skip that one statement, Supabase's
+  `service_role` ships with BYPASSRLS by default already (the migration's
+  own comment says as much).
+- **Data**: the real ERP data this Test copy had loaded locally (93,291
+  `item_master` rows, 23,408 `sales_transactions`, 12,513 `scheme_lookup`,
+  46,656 `stock_snapshot`, plus a handful of `ops.*` rows) was
+  `pg_dump --data-only`'d across and restored — row counts confirmed
+  matching exactly. `core.stores`/`retail_calendar` and the
+  `workspace.component_definitions`/`metric_definitions`/`dimension_definitions`
+  catalogs did NOT need copying — they're seeded by the migrations
+  themselves via inline `INSERT`s. Old self-hosted user-linked rows
+  (`ops.ebo_monthly_targets.set_by`, `ops.erp_report_uploads.uploaded_by`)
+  had their FK values nulled during the copy rather than pointing at a user
+  that no longer exists.
+- **Storage**: `lib/storage/minio.ts` retired, replaced by
+  `lib/storage/supabase.ts` (same 4-function interface — every caller's
+  import path changed, nothing else). Two buckets created directly via
+  `insert into storage.buckets` (private, not public):
+  `erp-reports`, `incentive-targets`.
+- **Dashboard config that can't be done via SQL, already done**: Project
+  Settings → API → Exposed schemas needed `core, sales, ops, marketing,
+  workspace` added explicitly (Supabase's managed PostgREST only exposes
+  `public`/`graphql_public` by default) — deliberately did **not** add
+  `raw_logic`, matching its own "never queried by the app directly" design.
+- **Verified end-to-end this session**: real login (actual `curl`-driven
+  form POST through the real Server Action, not a bypass — confirmed a real
+  `sb-<ref>-auth-token` session cookie was issued), RLS resolving correctly
+  through Supabase's real managed PostgREST (`core.profiles` self-read +
+  `sales.vw_ebo_sales_daily` both scoped correctly for the test user), 4
+  data-heavy pages (`/network`, `/workspace`, `/stock-details`,
+  `/replenishment`) rendering real migrated numbers, the service-role admin
+  write path (`core.profiles` insert via `service_role`, the same path
+  `inviteUser()` uses), and a full Storage upload/download/delete
+  round-trip.
+- **Not yet done**: no real users were migrated (none existed in this repo
+  — the old Keycloak invite flow was never finished). The Vercel
+  `.vercel/project.json` landmine from the old HANDOFF entries is
+  unrelated to this move and still applies if this Test copy is ever
+  deployed — see that section below, unchanged.
+
+## Stack (production — NOT this Test copy)
 
 - **App**: Next.js 14 App Router, deployed on Vercel. `cd web && vercel deploy --prod` to ship, `vercel logs <url> --json` to check for runtime errors after every deploy.
 - **Backend**: Self-hosted on a Windows server (LAN `192.168.1.16`, public IP `103.250.139.98`) — Keycloak (auth) + Postgres + PostgREST (API) + MinIO (file storage). `DATA_BACKEND=selfhosted` in the Vercel env drives `web/lib/data/*` to talk to this stack instead of Supabase (Supabase is legacy/being migrated away from).

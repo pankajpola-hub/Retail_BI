@@ -1,6 +1,6 @@
 import "server-only";
 import type { DataClient } from "@/lib/data/client";
-import { removeObjectFile } from "@/lib/storage/minio";
+import { removeObjectFile } from "@/lib/storage/supabase";
 
 /**
  * "Always keep the latest file only" — deletes every ops.erp_report_uploads

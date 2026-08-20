@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient as createDataClient } from "@/lib/data/client";
-import { getObjectBuffer } from "@/lib/storage/minio";
+import { getObjectBuffer } from "@/lib/storage/supabase";
 
 type UploadRow = { storage_path: string; file_name: string };
 

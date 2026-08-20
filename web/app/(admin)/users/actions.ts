@@ -3,7 +3,7 @@
 import { z } from "zod";
 import { createClient } from "@/lib/data/client";
 import { createAdminClient } from "@/lib/data/admin";
-import { createKeycloakUser, setKeycloakUserPassword, updateKeycloakUserName } from "@/lib/keycloak/admin";
+import { createSupabaseUser, setSupabaseUserPassword, updateSupabaseUserName } from "@/lib/supabase/userAdmin";
 import type { AppRole, PageKey } from "@/lib/auth/roles";
 import { PAGE_KEYS } from "@/lib/auth/roles";
 
@@ -51,7 +51,7 @@ export async function inviteUser(input: z.infer<typeof inviteSchema>) {
   // Identity first — core.profiles.user_id must match the identity
   // provider's id, so a failure here must abort before any DB row is
   // written rather than leave a profile pointing at nothing.
-  const newUserId = await createKeycloakUser(email, fullName);
+  const newUserId = await createSupabaseUser(email, fullName);
 
   const admin = await createAdminClient();
 
@@ -105,7 +105,7 @@ export async function setUserPassword(userId: string, newPassword: string): Prom
     throw new Error("Password must be at least 8 characters.");
   }
 
-  await setKeycloakUserPassword(userId, newPassword);
+  await setSupabaseUserPassword(userId, newPassword);
 }
 
 // Same "re-check the caller regardless of whether the (admin) layout's
@@ -147,7 +147,7 @@ export async function renameUser(userId: string, fullName: string): Promise<void
   const trimmed = fullName.trim();
   if (!trimmed) throw new Error("Name can't be empty.");
 
-  await updateKeycloakUserName(userId, trimmed);
+  await updateSupabaseUserName(userId, trimmed);
 
   const admin = await createAdminClient();
   const { error } = await admin
