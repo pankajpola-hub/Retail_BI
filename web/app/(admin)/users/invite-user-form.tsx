@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { inviteUser } from "./actions";
+import { createUser } from "./actions";
 import { Input, Select, Label } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
@@ -17,10 +17,18 @@ const ROLES: { value: Role; label: string; needsStores: boolean }[] = [
   { value: "super_admin", label: "Super Admin", needsStores: false },
 ];
 
+/**
+ * Creates a fully working account in one step — no separate "Reset
+ * password" afterward. Named/worded as creation, not an invite: no email is
+ * sent (SMTP isn't configured on this project), so there's nothing to
+ * "invite" — the admin sets the password right here and hands the
+ * credentials to the user directly.
+ */
 export function InviteUserForm({ stores }: { stores: Store[] }) {
   const router = useRouter();
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [role, setRole] = useState<Role>("ebo_manager");
   const [storeIds, setStoreIds] = useState<string[]>([]);
   const [status, setStatus] = useState<
@@ -39,14 +47,15 @@ export function InviteUserForm({ stores }: { stores: Store[] }) {
     e.preventDefault();
     setStatus({ state: "saving" });
     try {
-      await inviteUser({ email, fullName, role, storeIds: needsStores ? storeIds : [] });
+      await createUser({ email, fullName, password, role, storeIds: needsStores ? storeIds : [] });
       setStatus({ state: "done" });
       setFullName("");
       setEmail("");
+      setPassword("");
       setStoreIds([]);
       router.refresh();
     } catch (err) {
-      setStatus({ state: "error", message: err instanceof Error ? err.message : "Invite failed." });
+      setStatus({ state: "error", message: err instanceof Error ? err.message : "Couldn't create the user." });
     }
   }
 
@@ -62,6 +71,18 @@ export function InviteUserForm({ stores }: { stores: Store[] }) {
           <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
         </Label>
       </div>
+
+      <Label className="flex flex-col gap-1">
+        Password
+        <Input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          minLength={8}
+          required
+          autoComplete="new-password"
+        />
+      </Label>
 
       <Label className="flex flex-col gap-1">
         Role
@@ -96,7 +117,7 @@ export function InviteUserForm({ stores }: { stores: Store[] }) {
       )}
 
       <Button type="submit" disabled={status.state === "saving"} className="mt-1 self-start">
-        {status.state === "saving" ? "Sending invite…" : "Send invite"}
+        {status.state === "saving" ? "Creating…" : "Create user"}
       </Button>
 
       {status.state === "error" && (
@@ -106,7 +127,7 @@ export function InviteUserForm({ stores }: { stores: Store[] }) {
       )}
       {status.state === "done" && (
         <p className="border-l-2 border-good bg-good-soft px-3 py-2 text-sm text-ink-2">
-          Invite sent. They'll get an email to set their password.
+          User created and ready to sign in — share the email and password with them yourself.
         </p>
       )}
     </form>

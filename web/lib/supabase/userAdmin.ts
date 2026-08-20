@@ -11,18 +11,23 @@ import { createAdminClient } from "@/lib/supabase/admin";
  * match its generated id — that's the join core.current_user_id()
  * (migration 0060, `select auth.uid()`) and the whole RLS model depend on.
  *
- * Same "no password at creation" posture as the Keycloak version, and for
- * the same reason: this realm has no email/SMTP configured, so there's no
- * invite-link flow to rely on. createUser() below creates the account with
- * NO password; the admin sets one via the Users page's existing "Reset
- * password" button (setSupabaseUserPassword), which already had to exist
- * for password changes regardless of how the user was created — no new UI
- * needed.
+ * 2026-08-20: password is now set AT creation, not as a required separate
+ * "Reset password" step afterward. The original two-step design (create
+ * with no password, admin resets it after) was a direct port of the
+ * Keycloak version's own workaround for a REAL Keycloak-specific bug
+ * (setting a password at creation there implied a required action that
+ * permanently locked the account out — see the retired lib/keycloak/admin.ts's
+ * incident note). Supabase has no such lockout behavior; `createUser` with a
+ * password produces an account immediately usable with
+ * `signInWithPassword`, no separate step. Keeping the two-step version here
+ * would have been carrying over someone else's platform's bug as if it
+ * were still a constraint.
  */
-export async function createSupabaseUser(email: string, fullName: string): Promise<string> {
+export async function createSupabaseUser(email: string, fullName: string, password: string): Promise<string> {
   const admin = createAdminClient();
   const { data, error } = await admin.auth.admin.createUser({
     email,
+    password,
     email_confirm: true, // no SMTP on this project — skip the confirmation-email step entirely
     user_metadata: { full_name: fullName },
   });

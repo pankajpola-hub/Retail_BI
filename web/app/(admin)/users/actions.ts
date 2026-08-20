@@ -7,9 +7,10 @@ import { createSupabaseUser, setSupabaseUserPassword, updateSupabaseUserName } f
 import type { AppRole, PageKey } from "@/lib/auth/roles";
 import { PAGE_KEYS } from "@/lib/auth/roles";
 
-const inviteSchema = z.object({
+const createUserSchema = z.object({
   email: z.string().email(),
   fullName: z.string().min(1),
+  password: z.string().min(8, "Password must be at least 8 characters."),
   role: z.enum(["super_admin", "ho_admin", "regional_manager", "ebo_manager", "marketing"]),
   storeIds: z.array(z.string()),
 });
@@ -22,14 +23,15 @@ const inviteSchema = z.object({
  * layout gate — Server Actions are directly callable and must not assume
  * the layout ran), and only then does provisioning start.
  *
- * Identity is created in Keycloak via its Admin API; no email is sent (the
- * realm has no SMTP configured), so the admin sets a password via the Reset
- * password button and passes it on out of band. What follows is the
- * core.profiles row and core.user_store_access grants, keyed on the Keycloak
- * user id — that id IS the join the entire RLS model rests on.
+ * Instant, not an email invite — this realm has no SMTP configured, and
+ * Supabase (unlike the retired Keycloak setup) has no reason to withhold a
+ * password at creation, so the admin sets one right here and the account is
+ * immediately usable. What follows is the core.profiles row and
+ * core.user_store_access grants, keyed on the Supabase Auth user id — that
+ * id IS the join the entire RLS model rests on.
  */
-export async function inviteUser(input: z.infer<typeof inviteSchema>) {
-  const { email, fullName, role, storeIds } = inviteSchema.parse(input);
+export async function createUser(input: z.infer<typeof createUserSchema>) {
+  const { email, fullName, password, role, storeIds } = createUserSchema.parse(input);
 
   const supabase = await createClient();
   const {
@@ -45,13 +47,13 @@ export async function inviteUser(input: z.infer<typeof inviteSchema>) {
     .single();
 
   if (callerProfile?.role !== "super_admin") {
-    throw new Error("Only super_admin can invite users.");
+    throw new Error("Only super_admin can create users.");
   }
 
   // Identity first — core.profiles.user_id must match the identity
   // provider's id, so a failure here must abort before any DB row is
   // written rather than leave a profile pointing at nothing.
-  const newUserId = await createSupabaseUser(email, fullName);
+  const newUserId = await createSupabaseUser(email, fullName, password);
 
   const admin = await createAdminClient();
 
@@ -71,17 +73,13 @@ export async function inviteUser(input: z.infer<typeof inviteSchema>) {
 }
 
 /**
- * Sets an existing user's Keycloak password to an admin-chosen value,
- * replacing whatever was there before — same re-check-the-caller pattern as
- * inviteUser above, since Server Actions are directly callable regardless of
+ * Sets an existing user's password to an admin-chosen value, replacing
+ * whatever was there before — same re-check-the-caller pattern as
+ * createUser above, since Server Actions are directly callable regardless of
  * whether the (admin) layout's requireRole("super_admin") ran. Nothing is
  * generated or returned; the admin types the new password themselves and
- * hands it to the user out of band (no email — Keycloak's SMTP isn't
- * configured on this realm).
- *
- * The password is set as NON-temporary — see the incident note on
- * setKeycloakUserPassword() in lib/keycloak/admin.ts for why a temporary one
- * locks the account out of this app entirely.
+ * hands it to the user out of band (no email — SMTP isn't configured on
+ * this project).
  */
 export async function setUserPassword(userId: string, newPassword: string): Promise<void> {
   const supabase = await createClient();
@@ -165,7 +163,7 @@ export async function renameUser(userId: string, fullName: string): Promise<void
  * returns every store for ho_admin/super_admin regardless — but this
  * doesn't restrict by role: an admin re-provisioning someone into a
  * store-scoped role later shouldn't need a separate first-time setup path.
- * Delete-then-insert rather than a diff, same tradeoff inviteUser already
+ * Delete-then-insert rather than a diff, same tradeoff createUser already
  * makes implicitly (insert-only on a fresh user): simpler than computing
  * add/remove sets, at the cost of a moment where the user has zero grants
  * mid-transaction-less-round-trip. Acceptable here — this is an infrequent
