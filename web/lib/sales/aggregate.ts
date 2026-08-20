@@ -27,6 +27,7 @@ export type WeeklyRow = {
 };
 export type SchemeDailyRow = { scheme_group: string | null; quantity: number | string | null; net_sales: number | string | null };
 export type HourlyRow = { bill_hour: number | null; net_sales: number | string };
+export type AgentDailyRow = { store_id: string | null; agent_name: string | null; bills: number | string; quantity: number | string; net_sales: number | string };
 
 export function computeSalesTotals(weeks: WeeklyRow[] | null, from: string) {
   const weekRows = (weeks ?? []).filter((w) => w.week_start && w.week_start >= from);
@@ -119,6 +120,31 @@ export function computeSchemeRows(schemeDaily: SchemeDailyRow[] | null) {
   const noSchemeQty = schemeRows.find(([k]) => k === "NO SCHEME")?.[1].qty ?? 0;
   const schemePenetrationPct = totalSchemeQty > 0 ? ((totalSchemeQty - noSchemeQty) / totalSchemeQty) * 100 : null;
   return { schemeRows, schemeMaxQty, totalSchemeQty, noSchemeQty, schemePenetrationPct };
+}
+
+/**
+ * Top 12 agents by net sales — extracted verbatim from
+ * app/(ho)/network/page.tsx's SalesSection (2026-08-20) so the Workspace's
+ * agent_sales_table component calls the same function. Strips the
+ * "001 - " / "003 - " branch-code prefix for DISPLAY only — grouping stays
+ * on the full raw name + store, since two agents can share a first name
+ * across stores and the prefix is occasionally the only thing telling them
+ * apart.
+ */
+export function computeAgentRows(agentDaily: AgentDailyRow[] | null) {
+  const cleanAgentName = (name: string) => name.replace(/^\d+\s*-\s*/, "").trim();
+  const byAgent = new Map<string, { storeId: string; agent: string; bills: number; qty: number; net: number }>();
+  for (const a of agentDaily ?? []) {
+    if (!a.store_id) continue;
+    const rawName = a.agent_name ?? "Unassigned";
+    const key = `${a.store_id}::${rawName}`;
+    const cur = byAgent.get(key) ?? { storeId: a.store_id, agent: cleanAgentName(rawName), bills: 0, qty: 0, net: 0 };
+    cur.bills += Number(a.bills);
+    cur.qty += Number(a.quantity);
+    cur.net += Number(a.net_sales);
+    byAgent.set(key, cur);
+  }
+  return [...byAgent.values()].sort((a, b) => b.net - a.net).slice(0, 12);
 }
 
 const DAY_LABEL = (iso: string) =>

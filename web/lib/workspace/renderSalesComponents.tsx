@@ -8,6 +8,7 @@ import {
   computeSchemeRows,
   computeTrendPoints,
   computeHourlyPoints,
+  computeAgentRows,
   buildWeekSeries,
   HOUR_START,
   HOUR_END,
@@ -15,9 +16,11 @@ import {
   type WeeklyRow,
   type SchemeDailyRow,
   type HourlyRow,
+  type AgentDailyRow,
 } from "@/lib/sales/aggregate";
 import { timeAll } from "@/lib/perf/timing";
 import { StoreLeagueDrilldown } from "@/app/(workspace)/workspace/StoreLeagueDrilldown";
+import { WeeklyRowDrilldown } from "@/app/(workspace)/workspace/WeeklyRowDrilldown";
 import type { MetricDefinition, DimensionDefinition } from "@/lib/workspace/semantic";
 import { planQueries, buildQuery, isSatisfiable, type QueryRequirement, type DimensionPredicate } from "@/lib/workspace/queryPlanner";
 
@@ -172,7 +175,7 @@ async function fetchRaw(scope: SalesComponentScope) {
     );
   }
 
-  const [{ data: daily }, { data: weeks }, { data: schemeDaily }, { data: hourly }] = await timeAll(
+  const [{ data: daily }, { data: weeks }, { data: schemeDaily }, { data: hourly }, { data: agentDaily }] = await timeAll(
     "workspace:sales-components",
     [
       plannedOrFallback<DailyRow>(
@@ -208,10 +211,14 @@ async function fetchRaw(scope: SalesComponentScope) {
         () =>
           applyStore(supabase.schema("sales").from<HourlyRow>("vw_ebo_sales_hourly").select("*").gte("bill_date", from).lte("bill_date", to) as unknown as QueryChain<HourlyRow>)
       ),
+      // NOT planned — agent_sales_table groups by agent+store, and there's
+      // no metric_definitions row modelling that grain, same reason the
+      // weekly fetch above stays hand-written.
+      applyStore(supabase.schema("sales").from<AgentDailyRow>("vw_ebo_agent_daily").select("*").gte("bill_date", from).lte("bill_date", to) as unknown as QueryChain<AgentDailyRow>),
     ] as const
   );
 
-  return { daily, weeks, schemeDaily, hourly };
+  return { daily, weeks, schemeDaily, hourly, agentDaily };
 }
 
 function deriveSalesComponentData(
@@ -225,7 +232,8 @@ function deriveSalesComponentData(
   const { schemeRows, schemeMaxQty } = computeSchemeRows(raw.schemeDaily);
   const trendPoints = computeTrendPoints(raw.daily);
   const hourlyPoints = computeHourlyPoints(raw.hourly);
-  return { totals, league, schemeRows, schemeMaxQty, trendPoints, hourlyPoints, storeNames, periodFrom: from, periodTo: to };
+  const agentRows = computeAgentRows(raw.agentDaily);
+  return { totals, league, schemeRows, schemeMaxQty, trendPoints, hourlyPoints, agentRows, storeNames, periodFrom: from, periodTo: to };
 }
 
 export async function fetchSalesComponentData(scope: SalesComponentScope, storeNames: Map<string, string>) {
@@ -252,15 +260,27 @@ export function SalesKpiGrid({ data }: { data: SalesComponentData }) {
 export function WeeklySalesTable({ data }: { data: SalesComponentData }) {
   const { weekRows, storesInView } = data.totals;
   const weekLabel = (n: number) => `RW${String(n).padStart(2, "0")}`;
-  const tables = [
-    ...storesInView.map((sid) => ({ title: data.storeNames.get(sid) ?? sid, rows: buildWeekSeries(weekRows, sid) })),
-    ...(storesInView.length > 1 ? [{ title: "Network total", rows: buildWeekSeries(weekRows, null) }] : []),
-  ];
+  const networkTotal = storesInView.length > 1 ? buildWeekSeries(weekRows, null) : null;
   return (
     <div className="grid grid-cols-1 gap-4 overflow-y-auto">
-      {tables.map((t) => (
-        <div key={t.title} className="border border-line-soft">
-          <div className="border-b border-line-soft bg-surface-2 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-ink-2">{t.title}</div>
+      {/* Per-store tables — rows are clickable (Phase 8 drilldown, extended
+          2026-08-20: WeeklyRowDrilldown.tsx), each opening that store's own
+          daily breakdown for just the clicked week, fetched on demand. */}
+      {storesInView.map((sid) => {
+        const storeName = data.storeNames.get(sid) ?? sid;
+        return (
+          <div key={sid} className="border border-line-soft">
+            <div className="border-b border-line-soft bg-surface-2 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-ink-2">{storeName}</div>
+            <WeeklyRowDrilldown storeId={sid} storeName={storeName} rows={buildWeekSeries(weekRows, sid)} />
+          </div>
+        );
+      })}
+      {/* Network total — a sum across stores, not a single store to drill
+          into (same honesty rule the Mix component follows), so this one
+          stays a plain, inert table. */}
+      {networkTotal && (
+        <div className="border border-line-soft">
+          <div className="border-b border-line-soft bg-surface-2 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-ink-2">Network total</div>
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-line-soft text-left text-[10px] uppercase tracking-wide text-ink-3">
@@ -270,7 +290,7 @@ export function WeeklySalesTable({ data }: { data: SalesComponentData }) {
               </tr>
             </thead>
             <tbody>
-              {t.rows.map((row) => (
+              {networkTotal.map((row) => (
                 <tr key={row.weekStart} className="border-b border-line-soft last:border-0">
                   <td className="px-3 py-1.5 font-semibold">{weekLabel(row.retailWeek)}</td>
                   <td className="px-3 py-1.5 text-right font-mono">{INR(row.net)}</td>
@@ -279,7 +299,7 @@ export function WeeklySalesTable({ data }: { data: SalesComponentData }) {
                   </td>
                 </tr>
               ))}
-              {t.rows.length === 0 && (
+              {networkTotal.length === 0 && (
                 <tr>
                   <td colSpan={3} className="px-3 py-4 text-center text-sm text-ink-3">No weeks in range.</td>
                 </tr>
@@ -287,7 +307,7 @@ export function WeeklySalesTable({ data }: { data: SalesComponentData }) {
             </tbody>
           </table>
         </div>
-      ))}
+      )}
     </div>
   );
 }
@@ -334,6 +354,42 @@ export function SchemePenetration({ data }: { data: SalesComponentData }) {
   );
 }
 
+export function AgentSalesTable({ data }: { data: SalesComponentData }) {
+  return (
+    <div className="overflow-x-auto overflow-y-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-line-soft bg-surface-2 text-left text-[10px] uppercase tracking-wide text-ink-3">
+            <th className="px-3 py-2">Agent</th>
+            <th className="px-3 py-2">Store</th>
+            <th className="px-3 py-2 text-right">Bills</th>
+            <th className="px-3 py-2 text-right">Units</th>
+            <th className="px-3 py-2 text-right">Net</th>
+            <th className="px-3 py-2 text-right">ATV</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.agentRows.map((v) => (
+            <tr key={`${v.storeId}-${v.agent}`} className="border-b border-line-soft last:border-0">
+              <td className="px-3 py-2">{v.agent}</td>
+              <td className="px-3 py-2 text-ink-3">{data.storeNames.get(v.storeId) ?? v.storeId}</td>
+              <td className="px-3 py-2 text-right font-mono">{v.bills}</td>
+              <td className="px-3 py-2 text-right font-mono">{v.qty}</td>
+              <td className="px-3 py-2 text-right font-mono">{INR(v.net)}</td>
+              <td className="px-3 py-2 text-right font-mono">{v.bills > 0 ? INR(v.net / v.bills) : "—"}</td>
+            </tr>
+          ))}
+          {data.agentRows.length === 0 && (
+            <tr>
+              <td colSpan={6} className="px-3 py-4 text-center text-sm text-ink-3">No agent data in this window.</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export const SALES_COMPONENT_RENDERERS: Record<string, (props: { data: SalesComponentData }) => JSX.Element> = {
   sales_kpi_grid: SalesKpiGrid,
   weekly_sales_table: WeeklySalesTable,
@@ -341,4 +397,5 @@ export const SALES_COMPONENT_RENDERERS: Record<string, (props: { data: SalesComp
   hourly_sales_chart: HourlySalesChart,
   store_league_table: StoreLeagueTable,
   scheme_penetration: SchemePenetration,
+  agent_sales_table: AgentSalesTable,
 };

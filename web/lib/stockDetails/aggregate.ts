@@ -232,6 +232,88 @@ export function buildCapacityNibmSummary(blocks: CapacityBlock[]): CapacityNibmS
   }));
 }
 
+export type CapacityStatus = { label: string; className: string };
+
+/**
+ * Short / Excess / On target / Not set — the one column a store manager
+ * actually needs: "does what's on the floor match what was planned?"
+ * `hasPlan` false only when nobody has ever entered a base capacity for
+ * this segment — flagged distinctly from "Excess" (which would otherwise
+ * misleadingly claim the ENTIRE stock count as "excess" against a planned
+ * figure of zero). Extracted verbatim from
+ * app/(stock-details)/stock-details/page.tsx (2026-08-20) so the
+ * Workspace's stock_vs_capacity_table calls the same function.
+ */
+export function capacityStatus(actual: number, planned: number, hasPlan: boolean): CapacityStatus {
+  const fmt = (n: number) => Math.round(n).toLocaleString("en-IN");
+  if (!hasPlan) return { label: "Capacity not set", className: "text-ink-3" };
+  const diff = actual - planned;
+  if (diff === 0) return { label: "On target", className: "text-good" };
+  if (diff < 0) return { label: `Short by ${fmt(-diff)}`, className: "text-crit" };
+  return { label: `Excess by ${fmt(diff)}`, className: "text-warn" };
+}
+
+type SplitCells = { target: number; actual: number; status: CapacityStatus };
+
+function splitCells(target: number, actual: number, hasPlan: boolean): SplitCells {
+  return { target, actual, status: capacityStatus(actual, target, hasPlan) };
+}
+
+export type CapacityGridRow = {
+  storeId: string;
+  storeName: string;
+  segment: string;
+  baseCapacity: number;
+  bufferPct: number;
+  freshTarget: number;
+  freshActual: number;
+  freshStatusLabel: string;
+  freshStatusClass: string;
+  eossTarget: number;
+  eossActual: number;
+  eossStatusLabel: string;
+  eossStatusClass: string;
+};
+
+/**
+ * One flat row per store × segment (Girls/Boys x Baby/Kids), across every
+ * store passed in — feeds StockVsCapacityGrid.tsx (AG Grid) on
+ * `/stock-details` and the Workspace's stock_vs_capacity_table alike.
+ */
+export function buildCapacityGridRows<S extends { store_id: string; store_name: string }>(
+  stores: S[],
+  blocksByStore: (s: S) => CapacityBlock[],
+  actualBlocksByStore: (s: S) => DcBlock[]
+): CapacityGridRow[] {
+  const out: CapacityGridRow[] = [];
+  for (const s of stores) {
+    const blocks = blocksByStore(s);
+    const actualBlocks = actualBlocksByStore(s);
+    for (const b of blocks) {
+      const actual = actualBlocks.find((a) => a.gender === b.gender && a.ageSegment === b.ageSegment);
+      const hasPlan = b.baseCapacity > 0;
+      const fresh = splitCells(b.freshCapacity, actual?.fresh ?? 0, hasPlan);
+      const eoss = splitCells(b.eossCapacity, actual?.eoss ?? 0, hasPlan);
+      out.push({
+        storeId: s.store_id,
+        storeName: s.store_name,
+        segment: b.label,
+        baseCapacity: b.baseCapacity,
+        bufferPct: b.bufferPct,
+        freshTarget: fresh.target,
+        freshActual: fresh.actual,
+        freshStatusLabel: fresh.status.label,
+        freshStatusClass: fresh.status.className,
+        eossTarget: eoss.target,
+        eossActual: eoss.actual,
+        eossStatusLabel: eoss.status.label,
+        eossStatusClass: eoss.status.className,
+      });
+    }
+  }
+  return out;
+}
+
 export type GroupedBreakdown = { key: string; label: string } & FreshEossSplit;
 
 /** Generic "group by X, split by gender within each group" used for season/color/size/size-group. */

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { renameUser } from "./actions";
+import { Input } from "@/components/ui/input";
 
 type State =
   | { status: "idle" }
@@ -59,7 +60,7 @@ export function RenameUserButton({ userId, fullName }: { userId: string; fullNam
   return (
     <span className="flex flex-col items-end gap-1">
       <span className="flex items-center gap-1">
-        <input
+        <Input
           value={"value" in state ? state.value : fullName}
           onChange={(e) =>
             setState((prev) =>
@@ -70,7 +71,7 @@ export function RenameUserButton({ userId, fullName }: { userId: string; fullNam
           }
           disabled={saving}
           autoFocus
-          className="border border-line px-2 py-1 text-[12.5px]"
+          className="min-h-0 w-auto py-1 text-[12.5px]"
         />
         <button
           type="button"

@@ -9,6 +9,9 @@ import {
 import { fetchSalesComponentData, SALES_COMPONENT_RENDERERS, PLANNED_METRIC_IDS } from "@/lib/workspace/renderSalesComponents";
 import { fetchStockComponentData, STOCK_COMPONENT_RENDERERS } from "@/lib/workspace/renderStockComponents";
 import { fetchMixComponentData, MIX_COMPONENT_RENDERERS } from "@/lib/workspace/renderMixComponents";
+import { fetchReplenishmentComponentData, REPLENISHMENT_COMPONENT_RENDERERS } from "@/lib/workspace/renderReplenishmentComponents";
+import { fetchFootfallComponentData, FOOTFALL_COMPONENT_RENDERERS } from "@/lib/workspace/renderFootfallComponents";
+import { fetchTargetsComponentData, TARGETS_COMPONENT_RENDERERS } from "@/lib/workspace/renderTargetsComponents";
 import { listMetricDefinitionsByIds, listDimensionDefinitions } from "@/lib/workspace/semantic";
 import { WorkspaceGridClient, type GridItemMeta } from "./WorkspaceGridClient";
 import { AddComponentPicker, type PickableComponent } from "./AddComponentPicker";
@@ -83,15 +86,18 @@ export default async function WorkspacePage({
   const weeklyStart = new Date(from);
   weeklyStart.setDate(weeklyStart.getDate() - 7);
 
-  // 2026-08-15 — component variety expansion. Sales (Phase 5) + the first
-  // two non-Sales families (Stock, Mix). Every other registered component
-  // (16 more in workspace.component_definitions) exists in the catalogue
-  // but has no renderer here yet — offering them would be a picker that
-  // lies about what it can do.
+  // 2026-08-15/20 — every registered component now has a renderer. See
+  // Objective.md's dated entries for how each family was built (which
+  // functions are shared with their source pages, and what's deliberately
+  // scoped down — e.g. capacity_editor/fresh_discounted_tracker need an
+  // exactly-one-store selection and say so rather than guessing).
   const ALL_RENDERERS: Record<string, unknown> = {
     ...SALES_COMPONENT_RENDERERS,
     ...STOCK_COMPONENT_RENDERERS,
     ...MIX_COMPONENT_RENDERERS,
+    ...REPLENISHMENT_COMPONENT_RENDERERS,
+    ...FOOTFALL_COMPONENT_RENDERERS,
+    ...TARGETS_COMPONENT_RENDERERS,
   };
   const wiredIds = Object.keys(ALL_RENDERERS);
   const [{ data: registryRows }, plannedMetrics, allDimensions] = await Promise.all([
@@ -145,16 +151,24 @@ export default async function WorkspacePage({
   const needsSalesData = components.some((c) => c.component_id in SALES_COMPONENT_RENDERERS);
   const needsStockData = components.some((c) => c.component_id in STOCK_COMPONENT_RENDERERS);
   const needsMixData = components.some((c) => c.component_id in MIX_COMPONENT_RENDERERS);
+  const needsReplenishmentData = components.some((c) => c.component_id in REPLENISHMENT_COMPONENT_RENDERERS);
+  const needsFootfallData = components.some((c) => c.component_id in FOOTFALL_COMPONENT_RENDERERS);
+  const needsTargetsData = components.some((c) => c.component_id in TARGETS_COMPONENT_RENDERERS);
 
-  const [salesData, stockData, mixData] = await Promise.all([
+  const [salesData, stockData, mixData, replenishmentData, footfallData, targetsData] = await Promise.all([
     needsSalesData
       ? fetchSalesComponentData(
           { supabase, storeIds, from, to, weeklyStart: isoDate(weeklyStart), metricsById, dimensionsById, dimensionFilters },
           storeNames
         )
       : Promise.resolve(null),
-    needsStockData ? fetchStockComponentData({ supabase, storeIds }) : Promise.resolve(null),
+    needsStockData
+      ? fetchStockComponentData({ supabase, storeIds, canEditCapacity: user.role === "ho_admin" || user.role === "super_admin" })
+      : Promise.resolve(null),
     needsMixData ? fetchMixComponentData({ supabase, storeIds }) : Promise.resolve(null),
+    needsReplenishmentData ? fetchReplenishmentComponentData({ supabase }) : Promise.resolve(null),
+    needsFootfallData ? fetchFootfallComponentData({ supabase, storeIds, from, to, storeNames }) : Promise.resolve(null),
+    needsTargetsData ? fetchTargetsComponentData({ supabase, storeIds }) : Promise.resolve(null),
   ]);
 
   const gridItems: GridItemMeta[] = components.map((c) => ({
@@ -194,6 +208,30 @@ export default async function WorkspacePage({
       return (
         <LazyMount key={c.id} fallback={<ChartSkeleton height={140} />}>
           <Renderer data={mixData} storeIds={storeIds} />
+        </LazyMount>
+      );
+    }
+    if (c.component_id in REPLENISHMENT_COMPONENT_RENDERERS && replenishmentData) {
+      const Renderer = REPLENISHMENT_COMPONENT_RENDERERS[c.component_id]!;
+      return (
+        <LazyMount key={c.id} fallback={<ChartSkeleton height={140} />}>
+          <Renderer data={replenishmentData} />
+        </LazyMount>
+      );
+    }
+    if (c.component_id in FOOTFALL_COMPONENT_RENDERERS && footfallData) {
+      const Renderer = FOOTFALL_COMPONENT_RENDERERS[c.component_id]!;
+      return (
+        <LazyMount key={c.id} fallback={<ChartSkeleton height={140} />}>
+          <Renderer data={footfallData} />
+        </LazyMount>
+      );
+    }
+    if (c.component_id in TARGETS_COMPONENT_RENDERERS && targetsData) {
+      const Renderer = TARGETS_COMPONENT_RENDERERS[c.component_id]!;
+      return (
+        <LazyMount key={c.id} fallback={<ChartSkeleton height={140} />}>
+          <Renderer data={targetsData} />
         </LazyMount>
       );
     }

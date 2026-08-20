@@ -3,11 +3,15 @@ import { createClient } from "@/lib/data/client";
 import type { DataClient } from "@/lib/data/client";
 import { requirePageAccess } from "@/lib/auth/roles";
 import { RowsPerPageSelect } from "@/components/ui/RowsPerPageSelect";
+import { Input, Select, Label } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { KpiGridSkeleton, TableSkeleton } from "@/components/ui/Skeleton";
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
 import { time } from "@/lib/perf/timing";
 import {
   computeReplenishmentRows,
+  computeReplenishmentKpis,
+  computeTopSupplyMoves,
   filterRows,
   fmt,
   fmt1,
@@ -17,6 +21,7 @@ import {
   type Action,
   type ScoreWeights,
 } from "@/lib/replenishment/compute";
+import { ReplenishmentGrid } from "./ReplenishmentGrid";
 
 export const dynamic = "force-dynamic";
 
@@ -199,37 +204,20 @@ async function ReplenishmentContent({
     return `/api/replenishment/download${qs ? `?${qs}` : ""}`;
   })();
 
-  // --- KPIs (computed over the FULL unfiltered set) ---
-  const needsReplenishment = rows.filter((r) => r.recommendedQty > 0);
-  const unitsRequired = needsReplenishment.reduce((s, r) => s + r.recommendedQty, 0);
-  const criticalCount = rows.filter((r) => r.priority === "critical").length;
-  const storesAtRisk = new Set(rows.filter((r) => r.priority === "critical").map((r) => r.storeId)).size;
-  const transferCount = rows.filter((r) => r.action === "TRANSFER FROM STORE").length;
-  const purchaseCount = rows.filter((r) => r.action === "PURCHASE").length;
-  const exhaustedCount = rows.filter((r) => r.priority === "exhausted").length;
-
-  // --- "Where should we send stock?" — top 10 actionable moves by score,
-  // plus a rough revenue-protection estimate (ASP x units, where ASP is
-  // computed from this row's own last-90-day sales; rows with no sales
-  // history at this store yet fall back to skipping the value estimate for
-  // that row rather than guessing a price). ---
-  const actionable = rows
-    .filter((r) => r.action === "REPLENISH FROM WAREHOUSE" || r.action === "TRANSFER FROM STORE")
-    .sort((a, b) => b.score - a.score);
-  const top10 = actionable.slice(0, 10);
-  let salesProtected = 0;
-  for (const r of top10) {
-    if (r.sales30d > 0 && r.salesValue30d !== 0) {
-      const asp = Math.abs(r.salesValue30d) / (r.sales30d || 1);
-      salesProtected += r.recommendedQty * asp;
-    }
-  }
+  // KPIs and the "Where should we send stock?" top-10 moves now live in
+  // lib/replenishment/compute.ts's computeReplenishmentKpis()/
+  // computeTopSupplyMoves() (2026-08-20) — moved verbatim so the Workspace
+  // Builder's replenishment_kpi_grid/top_supply_moves_table call the same
+  // functions this page does.
+  const { needsReplenishment, unitsRequired, criticalCount, storesAtRisk, transferCount, purchaseCount, exhaustedCount } =
+    computeReplenishmentKpis(rows);
+  const { top: top10, salesProtected } = computeTopSupplyMoves(rows, 10);
 
   return (
     <>
 
       <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-        <KpiCard label="Style-colors needing replenishment" value={fmt(needsReplenishment.length)} />
+        <KpiCard label="Style-colors needing replenishment" value={fmt(needsReplenishment)} />
         <KpiCard label="Units required" value={fmt(unitsRequired)} />
         <KpiCard label="Critical" value={fmt(criticalCount)} tone={criticalCount > 0 ? "crit" : undefined} />
         <KpiCard label="Stores at stock-out risk" value={fmt(storesAtRisk)} tone={storesAtRisk > 0 ? "warn" : undefined} />
@@ -309,39 +297,19 @@ async function ReplenishmentContent({
           <input type="hidden" name="wTrend" value={SCORE_W.trend} />
           <input type="hidden" name="wProductivity" value={SCORE_W.productivity} />
           <input type="hidden" name="perPage" value={perPageParam} />
-          <label className="flex flex-col gap-1">
+          <Label className="flex flex-col gap-1">
             Target cover (days)
-            <input
-              type="number"
-              name="targetCover"
-              min={1}
-              defaultValue={targetCoverDays}
-              className="min-h-[32px] w-24 border border-line bg-surface px-2 py-1"
-            />
-          </label>
-          <label className="flex flex-col gap-1">
+            <Input type="number" name="targetCover" min={1} defaultValue={targetCoverDays} className="w-24" />
+          </Label>
+          <Label className="flex flex-col gap-1">
             Lead time (days)
-            <input
-              type="number"
-              name="leadTime"
-              min={0}
-              defaultValue={leadTimeDays}
-              className="min-h-[32px] w-24 border border-line bg-surface px-2 py-1"
-            />
-          </label>
-          <label className="flex flex-col gap-1">
+            <Input type="number" name="leadTime" min={0} defaultValue={leadTimeDays} className="w-24" />
+          </Label>
+          <Label className="flex flex-col gap-1">
             Safety stock (days)
-            <input
-              type="number"
-              name="safetyDays"
-              min={0}
-              defaultValue={safetyDays}
-              className="min-h-[32px] w-24 border border-line bg-surface px-2 py-1"
-            />
-          </label>
-          <button type="submit" className="min-h-[34px] bg-accent px-4 py-1.5 text-[13px] font-semibold text-white">
-            Recalculate
-          </button>
+            <Input type="number" name="safetyDays" min={0} defaultValue={safetyDays} className="w-24" />
+          </Label>
+          <Button type="submit">Recalculate</Button>
         </form>
       </details>
 
@@ -366,18 +334,11 @@ async function ReplenishmentContent({
           <input type="hidden" name="perPage" value={perPageParam} />
 
           <div>
-            <label className="flex items-center justify-between gap-2 font-semibold text-ink-2">
+            <Label className="flex items-center justify-between gap-2 font-semibold text-ink-2">
               Stock-out risk
-              <input
-                type="number"
-                name="wStockout"
-                min={0}
-                max={100}
-                defaultValue={SCORE_W.stockoutRisk}
-                className="min-h-[30px] w-16 border border-line bg-surface px-2 py-1 text-right"
-              />
+              <Input type="number" name="wStockout" min={0} max={100} defaultValue={SCORE_W.stockoutRisk} className="w-16 text-right" />
               %
-            </label>
+            </Label>
             <p className="mt-1 text-[11.5px] text-ink-3">
               How soon a store will actually run out, given how long a reorder takes to arrive. A store about to hit
               zero gets pushed to the top of the list even if its stock number alone doesn&apos;t look dramatic.
@@ -385,18 +346,11 @@ async function ReplenishmentContent({
           </div>
 
           <div>
-            <label className="flex items-center justify-between gap-2 font-semibold text-ink-2">
+            <Label className="flex items-center justify-between gap-2 font-semibold text-ink-2">
               Demand velocity
-              <input
-                type="number"
-                name="wVelocity"
-                min={0}
-                max={100}
-                defaultValue={SCORE_W.velocity}
-                className="min-h-[30px] w-16 border border-line bg-surface px-2 py-1 text-right"
-              />
+              <Input type="number" name="wVelocity" min={0} max={100} defaultValue={SCORE_W.velocity} className="w-16 text-right" />
               %
-            </label>
+            </Label>
             <p className="mt-1 text-[11.5px] text-ink-3">
               How fast this style-color is actually selling right now. A fast seller with low stock is treated as
               more urgent than a slow seller with the same low stock.
@@ -404,18 +358,11 @@ async function ReplenishmentContent({
           </div>
 
           <div>
-            <label className="flex items-center justify-between gap-2 font-semibold text-ink-2">
+            <Label className="flex items-center justify-between gap-2 font-semibold text-ink-2">
               Days of cover
-              <input
-                type="number"
-                name="wCover"
-                min={0}
-                max={100}
-                defaultValue={SCORE_W.cover}
-                className="min-h-[30px] w-16 border border-line bg-surface px-2 py-1 text-right"
-              />
+              <Input type="number" name="wCover" min={0} max={100} defaultValue={SCORE_W.cover} className="w-16 text-right" />
               %
-            </label>
+            </Label>
             <p className="mt-1 text-[11.5px] text-ink-3">
               How many days the current stock will last compared to the target cover you set above. The further
               short of target a store is, the higher this pushes its priority.
@@ -423,18 +370,11 @@ async function ReplenishmentContent({
           </div>
 
           <div>
-            <label className="flex items-center justify-between gap-2 font-semibold text-ink-2">
+            <Label className="flex items-center justify-between gap-2 font-semibold text-ink-2">
               Revenue potential
-              <input
-                type="number"
-                name="wRevenue"
-                min={0}
-                max={100}
-                defaultValue={SCORE_W.salesValue}
-                className="min-h-[30px] w-16 border border-line bg-surface px-2 py-1 text-right"
-              />
+              <Input type="number" name="wRevenue" min={0} max={100} defaultValue={SCORE_W.salesValue} className="w-16 text-right" />
               %
-            </label>
+            </Label>
             <p className="mt-1 text-[11.5px] text-ink-3">
               How much money this style-color actually earns per day at this store. Raise this to send scarce stock
               toward the styles/stores that protect the most revenue, not just the ones selling the most units.
@@ -442,18 +382,11 @@ async function ReplenishmentContent({
           </div>
 
           <div>
-            <label className="flex items-center justify-between gap-2 font-semibold text-ink-2">
+            <Label className="flex items-center justify-between gap-2 font-semibold text-ink-2">
               Sales trend
-              <input
-                type="number"
-                name="wTrend"
-                min={0}
-                max={100}
-                defaultValue={SCORE_W.trend}
-                className="min-h-[30px] w-16 border border-line bg-surface px-2 py-1 text-right"
-              />
+              <Input type="number" name="wTrend" min={0} max={100} defaultValue={SCORE_W.trend} className="w-16 text-right" />
               %
-            </label>
+            </Label>
             <p className="mt-1 text-[11.5px] text-ink-3">
               Whether sales are speeding up, holding steady, or slowing down (last 7 days vs. last 30). An
               accelerating style gets a boost; a declining one gets pushed down so you don&apos;t over-stock something
@@ -462,18 +395,11 @@ async function ReplenishmentContent({
           </div>
 
           <div>
-            <label className="flex items-center justify-between gap-2 font-semibold text-ink-2">
+            <Label className="flex items-center justify-between gap-2 font-semibold text-ink-2">
               Store productivity
-              <input
-                type="number"
-                name="wProductivity"
-                min={0}
-                max={100}
-                defaultValue={SCORE_W.productivity}
-                className="min-h-[30px] w-16 border border-line bg-surface px-2 py-1 text-right"
-              />
+              <Input type="number" name="wProductivity" min={0} max={100} defaultValue={SCORE_W.productivity} className="w-16 text-right" />
               %
-            </label>
+            </Label>
             <p className="mt-1 text-[11.5px] text-ink-3">
               How much this store contributes to total sales overall. When two stores are competing for the same
               limited stock, your busier/higher-performing store gets a slight edge.
@@ -481,9 +407,7 @@ async function ReplenishmentContent({
           </div>
 
           <div className="sm:col-span-2 lg:col-span-3">
-            <button type="submit" className="min-h-[34px] bg-accent px-4 py-1.5 text-[13px] font-semibold text-white">
-              Recalculate priorities
-            </button>
+            <Button type="submit">Recalculate priorities</Button>
           </div>
         </form>
       </details>
@@ -500,41 +424,35 @@ async function ReplenishmentContent({
         <input type="hidden" name="wTrend" value={SCORE_W.trend} />
         <input type="hidden" name="wProductivity" value={SCORE_W.productivity} />
         <input type="hidden" name="perPage" value={perPageParam} />
-        <label className="flex flex-col gap-1">
+        <Label className="flex flex-col gap-1">
           Search style / color
-          <input
-            type="text"
-            name="q"
-            defaultValue={searchParams.q ?? ""}
-            placeholder="style no. or color"
-            className="min-h-[34px] w-52 border border-line bg-surface px-2 py-1.5"
-          />
-        </label>
-        <label className="flex flex-col gap-1">
+          <Input type="text" name="q" defaultValue={searchParams.q ?? ""} placeholder="style no. or color" className="w-52" />
+        </Label>
+        <Label className="flex flex-col gap-1">
           Store
-          <select name="store" defaultValue={storeFilter} className="min-h-[34px] border border-line bg-surface px-2 py-1.5">
+          <Select name="store" defaultValue={storeFilter}>
             <option value="">All stores</option>
             {storeList.map((s) => (
               <option key={s.store_id} value={s.store_id}>
                 {s.store_name}
               </option>
             ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1">
+          </Select>
+        </Label>
+        <Label className="flex flex-col gap-1">
           Priority
-          <select name="priority" defaultValue={priorityFilter} className="min-h-[34px] border border-line bg-surface px-2 py-1.5">
+          <Select name="priority" defaultValue={priorityFilter}>
             <option value="">All</option>
             {PRIORITY_ORDER.map((p) => (
               <option key={p} value={p}>
                 {PRIORITY_META[p].label}
               </option>
             ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1">
+          </Select>
+        </Label>
+        <Label className="flex flex-col gap-1">
           Action
-          <select name="action" defaultValue={actionFilter} className="min-h-[34px] border border-line bg-surface px-2 py-1.5">
+          <Select name="action" defaultValue={actionFilter}>
             <option value="">All</option>
             {(
               [
@@ -551,11 +469,9 @@ async function ReplenishmentContent({
                 {a}
               </option>
             ))}
-          </select>
-        </label>
-        <button type="submit" className="min-h-[34px] border border-line px-4 py-1.5 text-[13px] text-ink-2">
-          Apply
-        </button>
+          </Select>
+        </Label>
+        <Button type="submit" variant="outline">Apply</Button>
       </form>
 
       {/* --- Main table --- */}
@@ -573,95 +489,7 @@ async function ReplenishmentContent({
           </a>
         </span>
       </div>
-      <div className="mt-2 overflow-x-auto border border-line-soft">
-        <table className="w-full min-w-[1250px] text-[12.5px]">
-          <thead>
-            <tr className="border-b border-line-soft bg-surface-2 text-left text-[10px] uppercase tracking-wide text-ink-3">
-              <th className="px-2 py-2">Priority</th>
-              <th className="px-2 py-2 text-right">Score</th>
-              <th className="px-2 py-2">Style No.</th>
-              <th className="px-2 py-2">Color</th>
-              <th className="px-2 py-2">Store</th>
-              <th className="px-2 py-2 text-right">SOH</th>
-              <th className="px-2 py-2 text-right">Daily demand</th>
-              <th className="px-2 py-2">Trend</th>
-              <th className="px-2 py-2 text-right">Cover</th>
-              <th className="px-2 py-2 text-right">Reorder pt</th>
-              <th className="px-2 py-2 text-right">Target</th>
-              <th className="px-2 py-2 text-right">Recommended</th>
-              <th className="px-2 py-2">Source</th>
-              <th className="px-2 py-2">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.length === 0 ? (
-              <tr>
-                <td colSpan={14} className="px-2 py-4 text-center text-ink-3">
-                  No style-colors match these filters.
-                </td>
-              </tr>
-            ) : (
-              pageRows.map((r) => (
-                <tr key={`${r.storeId}-${r.styleNo}-${r.color}`} className="border-b border-line-soft align-top last:border-0">
-                  <td className={`px-2 py-2 ${PRIORITY_META[r.priority].className}`}>
-                    {PRIORITY_META[r.priority].dot} {PRIORITY_META[r.priority].label}
-                  </td>
-                  <td className="px-2 py-2 text-right font-mono text-ink-3">{fmt1(r.score)}</td>
-                  <td className="px-2 py-2 font-mono text-[11.5px]">{r.styleNo}</td>
-                  <td className="px-2 py-2 text-ink-2">{r.color}</td>
-                  <td className="px-2 py-2 text-ink-2">{r.storeName}</td>
-                  <td className="px-2 py-2 text-right font-mono">{fmt(r.soh)}</td>
-                  <td className="px-2 py-2 text-right font-mono">{fmt1(r.dailyDemand)}</td>
-                  <td className={`px-2 py-2 ${r.trend ? TREND_META[r.trend].className : ""}`}>
-                    {r.trend ? TREND_META[r.trend].label : "—"}
-                  </td>
-                  <td className="px-2 py-2 text-right font-mono">{r.coverDays === null ? "—" : `${fmt1(r.coverDays)}d`}</td>
-                  <td className="px-2 py-2 text-right font-mono text-ink-3">{fmt(r.reorderPoint)}</td>
-                  <td className="px-2 py-2 text-right font-mono text-ink-3">{fmt(r.targetStock)}</td>
-                  <td className="px-2 py-2 text-right font-mono font-semibold">{r.recommendedQty > 0 ? fmt(r.recommendedQty) : "—"}</td>
-                  <td className="px-2 py-2 text-ink-2">{r.source}</td>
-                  <td className="px-2 py-2">
-                    <details>
-                      <summary className="cursor-pointer font-medium text-ink-2">{r.action}</summary>
-                      <p className="mt-1 max-w-xs text-[11.5px] text-ink-3">{r.why}</p>
-                      {r.sizeBreakdown.length > 0 && (
-                        <div className="mt-2 max-w-xs">
-                          <div className="text-[10px] font-semibold uppercase tracking-wide text-ink-3">
-                            Size breakdown (30d sales)
-                          </div>
-                          <table className="mt-1 w-full text-[11px]">
-                            <thead>
-                              <tr className="text-left text-ink-3">
-                                <th className="pr-2 py-0.5">Size</th>
-                                <th className="pr-2 py-0.5 text-right">SOH</th>
-                                <th className="pr-2 py-0.5 text-right">30D</th>
-                                <th className="py-0.5 text-right">Velocity</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {r.sizeBreakdown.map((s) => {
-                                const lowStockHighDemand = s.soh <= 1 && s.sales30d >= 3;
-                                return (
-                                  <tr key={s.size} className={lowStockHighDemand ? "text-crit font-semibold" : "text-ink-2"}>
-                                    <td className="pr-2 py-0.5">{s.size}</td>
-                                    <td className="pr-2 py-0.5 text-right font-mono">{fmt(s.soh)}</td>
-                                    <td className="pr-2 py-0.5 text-right font-mono">{fmt(s.sales30d)}</td>
-                                    <td className="py-0.5 text-right font-mono">{fmt1(s.velocity)}</td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
-                    </details>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+      <ReplenishmentGrid rows={pageRows} />
 
       {/* --- Pager --- */}
       {totalPages > 1 && (

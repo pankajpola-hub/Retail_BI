@@ -1,5 +1,7 @@
 import { login } from "./actions";
 import { getDict } from "@/lib/i18n/server";
+import { Input, Label } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 export default async function LoginPage({
   searchParams,
@@ -25,33 +27,23 @@ export default async function LoginPage({
 
       <form action={login} className="flex flex-col gap-3">
         <input type="hidden" name="next" value={searchParams.next ?? "/"} />
-        <label className="flex flex-col gap-1 text-sm">
+        <Label className="flex flex-col gap-1.5">
           {t.email}
-          <input
+          <Input
             name="email"
             type="email"
             required
             defaultValue={searchParams.email ?? ""}
             autoFocus={!searchParams.email}
-            className="border border-line px-3 py-2 text-sm"
           />
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
+        </Label>
+        <Label className="flex flex-col gap-1.5">
           {t.password}
-          <input
-            name="password"
-            type="password"
-            required
-            autoFocus={!!searchParams.email}
-            className="border border-line px-3 py-2 text-sm"
-          />
-        </label>
-        <button
-          type="submit"
-          className="mt-2 bg-accent px-3 py-2 text-sm font-semibold text-white"
-        >
+          <Input name="password" type="password" required autoFocus={!!searchParams.email} />
+        </Label>
+        <Button type="submit" className="mt-2">
           {t.signIn}
-        </button>
+        </Button>
       </form>
 
       {/*

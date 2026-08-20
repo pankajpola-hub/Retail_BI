@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { inviteUser } from "./actions";
+import { Input, Select, Label } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 type Store = { store_id: string; store_name: string };
 type Role = "super_admin" | "ho_admin" | "regional_manager" | "ebo_manager" | "marketing";
@@ -51,41 +53,26 @@ export function InviteUserForm({ stores }: { stores: Store[] }) {
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-3 border border-line-soft p-4">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <label className="flex flex-col gap-1 text-sm">
+        <Label className="flex flex-col gap-1">
           Full name
-          <input
-            value={fullName}
-            onChange={(e) => setFullName(e.target.value)}
-            required
-            className="border border-line px-3 py-2 text-sm"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
+          <Input value={fullName} onChange={(e) => setFullName(e.target.value)} required />
+        </Label>
+        <Label className="flex flex-col gap-1">
           Email
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            className="border border-line px-3 py-2 text-sm"
-          />
-        </label>
+          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+        </Label>
       </div>
 
-      <label className="flex flex-col gap-1 text-sm">
+      <Label className="flex flex-col gap-1">
         Role
-        <select
-          value={role}
-          onChange={(e) => setRole(e.target.value as Role)}
-          className="border border-line px-3 py-2 text-sm"
-        >
+        <Select value={role} onChange={(e) => setRole(e.target.value as Role)}>
           {ROLES.map((r) => (
             <option key={r.value} value={r.value}>
               {r.label}
             </option>
           ))}
-        </select>
-      </label>
+        </Select>
+      </Label>
 
       {needsStores && (
         <fieldset className="flex flex-col gap-1.5">
@@ -108,13 +95,9 @@ export function InviteUserForm({ stores }: { stores: Store[] }) {
         </fieldset>
       )}
 
-      <button
-        type="submit"
-        disabled={status.state === "saving"}
-        className="mt-1 self-start bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-      >
+      <Button type="submit" disabled={status.state === "saving"} className="mt-1 self-start">
         {status.state === "saving" ? "Sending invite…" : "Send invite"}
-      </button>
+      </Button>
 
       {status.state === "error" && (
         <p className="border-l-2 border-crit bg-crit-soft px-3 py-2 text-sm text-ink-2">

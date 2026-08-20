@@ -3,23 +3,22 @@ import { createClient } from "@/lib/data/client";
 import type { DataClient } from "@/lib/data/client";
 import { requirePageAccess } from "@/lib/auth/roles";
 import { RowsPerPageSelect } from "@/components/ui/RowsPerPageSelect";
+import { Input, Select, Label } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { KpiGridSkeleton, TableSkeleton } from "@/components/ui/Skeleton";
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
 import { time } from "@/lib/perf/timing";
 import { computeSaleStockMix, MIX_STATUS_META, type MixStatus, type SalesPeriodDays } from "@/lib/replenishment/mix";
+import { SaleStockMixGrid } from "./SaleStockMixGrid";
 
 export const dynamic = "force-dynamic";
 
 function fmt(n: number): string {
   return Math.round(n).toLocaleString("en-IN");
 }
-function pct(n: number): string {
-  return `${n.toFixed(1)}%`;
-}
-function pts(n: number): string {
-  const sign = n > 0 ? "+" : "";
-  return `${sign}${n.toFixed(1)}pp`;
-}
+// pct/pts (percent / signed-points formatters) moved into
+// SaleStockMixGrid.tsx (2026-08-20) — this page no longer renders the raw
+// table cells that needed them.
 
 function KpiCard({ label, value, tone }: { label: string; value: string; tone?: "warn" | "crit" | "good" }) {
   return (
@@ -163,61 +162,47 @@ async function SaleStockMixContent({
       {/* --- Filters --- */}
       <form className="mt-4 flex flex-wrap items-end gap-3 text-[12.5px]">
         <input type="hidden" name="perPage" value={perPageParam} />
-        <label className="flex flex-col gap-1">
+        <Label className="flex flex-col gap-1">
           Store
-          <select name="store" defaultValue={storeId} className="min-h-[34px] border border-line bg-surface px-2 py-1.5">
+          <Select name="store" defaultValue={storeId}>
             <option value="">All stores</option>
             {storeList.map((s) => (
               <option key={s.store_id} value={s.store_id}>
                 {s.store_name}
               </option>
             ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1">
+          </Select>
+        </Label>
+        <Label className="flex flex-col gap-1">
           Style No.
-          <input
-            type="text"
-            name="style"
-            defaultValue={searchParams.style ?? ""}
-            placeholder="style no."
-            className="min-h-[34px] w-40 border border-line bg-surface px-2 py-1.5"
-          />
-        </label>
-        <label className="flex flex-col gap-1">
+          <Input type="text" name="style" defaultValue={searchParams.style ?? ""} placeholder="style no." className="w-40" />
+        </Label>
+        <Label className="flex flex-col gap-1">
           Color
-          <input
-            type="text"
-            name="color"
-            defaultValue={searchParams.color ?? ""}
-            placeholder="color"
-            className="min-h-[34px] w-40 border border-line bg-surface px-2 py-1.5"
-          />
-        </label>
-        <label className="flex flex-col gap-1">
+          <Input type="text" name="color" defaultValue={searchParams.color ?? ""} placeholder="color" className="w-40" />
+        </Label>
+        <Label className="flex flex-col gap-1">
           Sales period
-          <select name="period" defaultValue={String(salesPeriodDays)} className="min-h-[34px] border border-line bg-surface px-2 py-1.5">
+          <Select name="period" defaultValue={String(salesPeriodDays)}>
             {PERIOD_OPTIONS.map((p) => (
               <option key={p} value={p}>
                 Last {p} days
               </option>
             ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1">
+          </Select>
+        </Label>
+        <Label className="flex flex-col gap-1">
           Status
-          <select name="status" defaultValue={statusFilter} className="min-h-[34px] border border-line bg-surface px-2 py-1.5">
+          <Select name="status" defaultValue={statusFilter}>
             <option value="">All</option>
             {(Object.keys(MIX_STATUS_META) as MixStatus[]).map((s) => (
               <option key={s} value={s}>
                 {MIX_STATUS_META[s].label}
               </option>
             ))}
-          </select>
-        </label>
-        <button type="submit" className="min-h-[34px] border border-line px-4 py-1.5 text-[13px] text-ink-2">
-          Apply
-        </button>
+          </Select>
+        </Label>
+        <Button type="submit" variant="outline">Apply</Button>
       </form>
 
       {/* --- Table --- */}
@@ -227,70 +212,7 @@ async function SaleStockMixContent({
         </span>
         <RowsPerPageSelect selected={perPageParam} />
       </div>
-      <div className="mt-2 overflow-x-auto border border-line-soft">
-        <table className="w-full min-w-[1000px] text-[12.5px]">
-          <thead>
-            <tr className="border-b border-line-soft bg-surface-2 text-left text-[10px] uppercase tracking-wide text-ink-3">
-              <th className="px-2 py-2">Style No.</th>
-              <th className="px-2 py-2">Color</th>
-              <th className="px-2 py-2 text-right">Sales</th>
-              <th className="px-2 py-2 text-right">Sale Mix</th>
-              <th className="px-2 py-2 text-right">Store SOH</th>
-              <th className="px-2 py-2 text-right">WH SOH</th>
-              <th className="px-2 py-2 text-right">Stock Mix</th>
-              <th className="px-2 py-2 text-right">Mix Gap</th>
-              <th className="px-2 py-2">Status</th>
-              <th className="px-2 py-2">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {pageRows.length === 0 ? (
-              <tr>
-                <td colSpan={10} className="px-2 py-4 text-center text-ink-3">
-                  No style-colors match these filters.
-                </td>
-              </tr>
-            ) : (
-              pageRows.map((r) => {
-                const meta = MIX_STATUS_META[r.status];
-                const isAllocationCandidate = r.status === "high_priority" || r.status === "opportunity";
-                const warehouseBlocked = isAllocationCandidate && r.warehouseAvailable === 0;
-                return (
-                  <tr key={`${r.styleNo}-${r.color}`} className="border-b border-line-soft align-top last:border-0">
-                    <td className="px-2 py-2 font-mono text-[11.5px]">
-                      {r.styleNo}
-                      {r.negativeStock && <span className="ml-1 text-crit" title="Negative stock in source data">⚠</span>}
-                    </td>
-                    <td className="px-2 py-2 text-ink-2">{r.color}</td>
-                    <td className="px-2 py-2 text-right font-mono">{fmt(r.sales)}</td>
-                    <td className="px-2 py-2 text-right font-mono">{pct(r.saleMixPct)}</td>
-                    <td className="px-2 py-2 text-right font-mono">{fmt(r.soh)}</td>
-                    <td className="px-2 py-2 text-right font-mono">{fmt(r.warehouseAvailable)}</td>
-                    <td className="px-2 py-2 text-right font-mono">{pct(r.stockMixPct)}</td>
-                    <td
-                      className={`px-2 py-2 text-right font-mono font-semibold ${
-                        r.mixGapPts > 0 ? "text-good" : r.mixGapPts < 0 ? "text-crit" : "text-ink-3"
-                      }`}
-                    >
-                      {pts(r.mixGapPts)}
-                    </td>
-                    <td className={`px-2 py-2 ${meta.className}`}>
-                      {meta.dot} {meta.demandLabel}
-                    </td>
-                    <td className="px-2 py-2 text-ink-2">
-                      {warehouseBlocked ? (
-                        <span className="text-warn">Demand Opportunity — Warehouse Stock Unavailable</span>
-                      ) : (
-                        meta.action
-                      )}
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+      <SaleStockMixGrid rows={pageRows} />
 
       {/* --- Pager --- */}
       {totalPages > 1 && (

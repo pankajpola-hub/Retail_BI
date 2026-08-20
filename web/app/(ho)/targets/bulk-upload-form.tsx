@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
 
 type PreviewRow = {
   rowNumber: number;
@@ -105,13 +106,9 @@ export function BulkUploadForm() {
 
       <form onSubmit={onFileChosen} className="mt-3 flex flex-wrap items-center gap-3">
         <input ref={fileRef} type="file" accept=".xlsx,.xls" required className="text-sm" />
-        <button
-          type="submit"
-          disabled={state.kind === "loading"}
-          className="bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-        >
+        <Button type="submit" disabled={state.kind === "loading"}>
           {state.kind === "loading" ? "Reading…" : "Preview"}
-        </button>
+        </Button>
       </form>
 
       {state.kind === "error" && (
@@ -167,13 +164,9 @@ export function BulkUploadForm() {
               {validCount} of {state.rows.length} row{state.rows.length === 1 ? "" : "s"} ready to save
               {overwriteCount > 0 && ` — ${overwriteCount} will overwrite an existing target`}.
             </p>
-            <button
-              onClick={commit}
-              disabled={validCount === 0 || state.kind === "committing"}
-              className="bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-            >
+            <Button onClick={commit} disabled={validCount === 0 || state.kind === "committing"}>
               {state.kind === "committing" ? "Saving…" : `Confirm and save ${validCount} target${validCount === 1 ? "" : "s"}`}
-            </button>
+            </Button>
           </div>
         </div>
       )}

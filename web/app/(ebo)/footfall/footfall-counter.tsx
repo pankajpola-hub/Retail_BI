@@ -3,6 +3,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import type { Dict } from "@/lib/i18n/translations";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 const INR = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
 
@@ -247,62 +249,41 @@ export function FootfallCounter({
         >
           <label className="flex flex-col gap-1 text-sm">
             {t.date}
-            <input
-              type="date"
-              max={today}
-              value={otherDate}
-              onChange={(e) => setOtherDate(e.target.value)}
-              required
-              className="border border-line px-3 py-2 text-sm"
-            />
+            <Input type="date" max={today} value={otherDate} onChange={(e) => setOtherDate(e.target.value)} required />
           </label>
           <label className="flex flex-col gap-1 text-sm">
             {t.footfallLabel}
-            <input
+            <Input
               type="number"
               inputMode="numeric"
               min={0}
               value={otherValue}
               onChange={(e) => setOtherValue(e.target.value)}
               required
-              className="border border-line px-3 py-2 font-mono text-lg"
+              className="font-mono text-lg"
             />
           </label>
           <label className="flex flex-col gap-1 text-sm">
             {t.remarks} <span className="text-[11px] text-ink-3">{t.remarksHint}</span>
-            <input
-              type="text"
-              maxLength={500}
-              value={remarks}
-              onChange={(e) => setRemarks(e.target.value)}
-              className="border border-line px-3 py-2 text-sm"
-            />
+            <Input type="text" maxLength={500} value={remarks} onChange={(e) => setRemarks(e.target.value)} />
           </label>
 
           {pendingConfirm ? (
             <div className="border-l-2 border-warn bg-warn-soft px-3 py-2">
               <p className="text-sm text-ink-2">{pendingConfirm}</p>
               <div className="mt-2 flex gap-2">
-                <button
-                  type="button"
-                  onClick={(e) => saveOther(e as unknown as React.FormEvent, true)}
-                  className="bg-accent px-3 py-1.5 text-[13px] font-semibold text-white"
-                >
+                <Button type="button" size="sm" onClick={(e) => saveOther(e as unknown as React.FormEvent, true)}>
                   {t.saveAnyway}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPendingConfirm(null)}
-                  className="border border-line px-3 py-1.5 text-[13px] text-ink-2"
-                >
+                </Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => setPendingConfirm(null)}>
                   {t.letMeFixIt}
-                </button>
+                </Button>
               </div>
             </div>
           ) : (
-            <button type="submit" className="self-start bg-accent px-4 py-2 text-sm font-semibold text-white">
+            <Button type="submit" className="self-start">
               {t.save}
-            </button>
+            </Button>
           )}
 
           {error && (

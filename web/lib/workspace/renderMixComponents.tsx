@@ -1,5 +1,6 @@
 import type { DataClient } from "@/lib/data/client";
-import { computeSaleStockMix, MIX_STATUS_META, type MixRow } from "@/lib/replenishment/mix";
+import { KpiCard } from "@/components/ui/KpiCard";
+import { computeSaleStockMix, MIX_STATUS_META, type MixRow, type MixStatus } from "@/lib/replenishment/mix";
 
 /**
  * Second non-Sales workspace component family (2026-08-15). Wraps
@@ -27,6 +28,13 @@ export type MixComponentData = {
   rows: MixRow[];
   totalRows: number;
   usedStoreId: string;
+  /**
+   * Status counts across the FULL row set, not just the top-N slice below —
+   * feeds mix_status_kpi_grid (2026-08-20). Computed here rather than by a
+   * second query: computeSaleStockMix already returns every row, this was
+   * just never tallied before the top-15 cap discarded the rest.
+   */
+  statusCounts: Record<MixStatus, number>;
 };
 
 const TOP_N = 15;
@@ -36,10 +44,19 @@ export async function fetchMixComponentData(scope: MixComponentScope): Promise<M
   const usedStoreId = storeIds.length === 1 ? storeIds[0]! : "";
   const { rows } = await computeSaleStockMix(supabase, { storeId: usedStoreId, salesPeriodDays: 30 });
 
+  const statusCounts: Record<MixStatus, number> = {
+    high_priority: 0,
+    opportunity: 0,
+    balanced: 0,
+    stock_heavy: 0,
+    overstocked: 0,
+  };
+  for (const r of rows) statusCounts[r.status]++;
+
   // Highest-priority gaps first (same sort computeSaleStockMix already
   // returns — descending mixGapPts), capped to a tile-sized top N rather
   // than dumping all 1,000+ style-colors into a workspace card.
-  return { rows: rows.slice(0, TOP_N), totalRows: rows.length, usedStoreId };
+  return { rows: rows.slice(0, TOP_N), totalRows: rows.length, usedStoreId, statusCounts };
 }
 
 const fmt = (n: number) => Math.round(n).toLocaleString("en-IN");
@@ -105,9 +122,35 @@ export function SaleStockMixTable({ data, storeIds }: { data: MixComponentData; 
   );
 }
 
+/**
+ * 2026-08-20 — second Mix-family component. Counts across the full row set
+ * (see MixComponentData.statusCounts) rather than the top-15-row slice
+ * SaleStockMixTable shows, so the two components can be dropped in the same
+ * workspace without one silently undercounting the other.
+ */
+export function MixStatusKpiGrid({ data, storeIds }: { data: MixComponentData; storeIds: string[] }) {
+  const order: MixStatus[] = ["high_priority", "opportunity", "balanced", "stock_heavy", "overstocked"];
+  return (
+    <div>
+      {storeIds.length !== 1 && (
+        <p className="mb-2 text-[11px] text-ink-3">
+          Showing all stores combined (last 30 days) — single-store selection narrows this to that store.
+        </p>
+      )}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        {order.map((status) => {
+          const meta = MIX_STATUS_META[status];
+          return <KpiCard key={status} label={`${meta.dot} ${meta.label}`} value={fmt(data.statusCounts[status])} />;
+        })}
+      </div>
+    </div>
+  );
+}
+
 export const MIX_COMPONENT_RENDERERS: Record<
   string,
   (props: { data: MixComponentData; storeIds: string[] }) => JSX.Element
 > = {
   sale_stock_mix_table: SaleStockMixTable,
+  mix_status_kpi_grid: MixStatusKpiGrid,
 };

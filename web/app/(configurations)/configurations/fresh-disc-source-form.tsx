@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { setFreshDiscClassificationSource } from "./actions";
+import { Button } from "@/components/ui/button";
 
 type Source = "discount_ratio" | "scheme_lookup";
 type SaveStatus = { state: "idle" } | { state: "saving" } | { state: "error"; message: string } | { state: "done" };
@@ -64,13 +65,9 @@ export function FreshDiscSourceForm({
       </label>
 
       <div className="mt-1">
-        <button
-          type="submit"
-          disabled={status.state === "saving" || source === current}
-          className="bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-        >
+        <Button type="submit" disabled={status.state === "saving" || source === current}>
           {status.state === "saving" ? "…" : labels.save}
-        </button>
+        </Button>
       </div>
 
       {status.state === "error" && (

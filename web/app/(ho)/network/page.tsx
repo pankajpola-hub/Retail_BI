@@ -17,10 +17,20 @@ import {
   computeSchemeRows,
   computeTrendPoints,
   computeHourlyPoints,
+  computeAgentRows,
   buildWeekSeries as buildWeekSeriesShared,
   HOUR_START,
   HOUR_END,
+  type AgentDailyRow,
 } from "@/lib/sales/aggregate";
+import {
+  computeFootfallInsights,
+  type MatrixEntry,
+  type ConversionRow,
+  type CompletenessRow,
+} from "@/lib/network/footfall";
+import { MatrixCell, TrafficSalesCell } from "@/components/ui/FootfallMatrixCells";
+import { StoreLeagueDrilldown } from "@/app/(workspace)/workspace/StoreLeagueDrilldown";
 
 export const dynamic = "force-dynamic";
 
@@ -42,17 +52,8 @@ type WeeklyRow = {
 };
 type SchemeDailyRow = { scheme_group: string | null; quantity: number | string | null; net_sales: number | string | null };
 type StoreRow = { store_id: string; store_name: string; city: string };
-type ConversionRow = {
-  store_id: string | null;
-  bill_date: string;
-  footfall: number | null;
-  sale_bills: number | string;
-  net_sales: number | string;
-};
 type ActionSummary = { open_count: number | null; closed_unmeasured_count: number | null };
-type AgentDailyRow = { store_id: string | null; agent_name: string | null; bills: number | string; quantity: number | string; net_sales: number | string };
 type HourlyRow = { bill_hour: number | null; net_sales: number | string };
-type CompletenessRow = { store_id: string | null; date: string; has_footfall: boolean };
 
 const INR = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
 const isoDate = (d: Date) => d.toISOString().slice(0, 10);
@@ -62,319 +63,12 @@ type ApplyStore = <T extends { eq: (col: string, val: string) => T; in: (col: st
   col?: string
 ) => T;
 
-type Quadrant = "healthy" | "conversion_opportunity" | "marketing_opportunity" | "critical";
-
-type Assessment = {
-  quadrant: Quadrant;
-  tone: "good" | "warn" | "crit" | "neutral";
-  headline: string;
-  primaryIssue: string;
-  recommendation: string;
-};
-
-/**
- * SINGLE source of truth for "how is this store doing".
- *
- * The matrix and the diagnosis table below both call this. They used to
- * classify independently — the matrix on footfall/conversion direction
- * alone, the table on sales first — which let them contradict each other
- * (a store shown as "Conversion opportunity" in the matrix while the table
- * said "None — sales up"). Anything sales-aware belongs here so both stay
- * consistent by construction.
- *
- * Quadrant placement stays purely footfall x conversion, because those ARE
- * the matrix's two axes — but the severity, headline and recommended action
- * all account for what sales actually did. A store growing its sales is not
- * "an opportunity" in the problem sense, whichever way its levers moved.
- */
-function assess(
-  footfallChangePct: number,
-  conversionChangePts: number,
-  salesChangePct: number | null
-): Assessment {
-  const footfallUp = footfallChangePct >= 0;
-  const conversionUp = conversionChangePts >= 0;
-  const quadrant: Quadrant =
-    footfallUp && conversionUp
-      ? "healthy"
-      : footfallUp
-      ? "conversion_opportunity"
-      : conversionUp
-      ? "marketing_opportunity"
-      : "critical";
-
-  if (salesChangePct === null) {
-    return {
-      quadrant,
-      tone: "neutral",
-      headline: "Not enough data",
-      primaryIssue: "—",
-      recommendation: "—",
-    };
-  }
-
-  if (salesChangePct >= 0) {
-    switch (quadrant) {
-      case "healthy":
-        return {
-          quadrant,
-          tone: "good",
-          headline: "Healthy growth",
-          primaryIssue: "None — all levers up",
-          recommendation: "Study & replicate",
-        };
-      case "conversion_opportunity":
-        return {
-          quadrant,
-          tone: "good",
-          headline: "Growing, conversion slipping",
-          primaryIssue: "None — sales up",
-          recommendation: "Watch conversion",
-        };
-      case "marketing_opportunity":
-        return {
-          quadrant,
-          tone: "good",
-          headline: "Growing on fewer visitors",
-          primaryIssue: "None — sales up",
-          recommendation: "Rebuild traffic to extend",
-        };
-      case "critical":
-        // Both levers down but sales up means ATV alone is carrying it —
-        // real growth, but resting on one lever, so flagged not celebrated.
-        return {
-          quadrant,
-          tone: "warn",
-          headline: "Sales up on ATV alone",
-          primaryIssue: "ATV carrying growth",
-          recommendation: "Fragile — rebuild traffic",
-        };
-    }
-  }
-
-  switch (quadrant) {
-    case "healthy":
-      // Footfall and conversion both up yet sales down — only ATV/mix can
-      // explain that.
-      return {
-        quadrant,
-        tone: "warn",
-        headline: "Levers up, sales down",
-        primaryIssue: "ATV / mix",
-        recommendation: "Category & pricing review",
-      };
-    case "conversion_opportunity":
-      return {
-        quadrant,
-        tone: "warn",
-        headline: "Conversion opportunity",
-        primaryIssue: "Conversion",
-        recommendation: "Store ops / staffing",
-      };
-    case "marketing_opportunity":
-      return {
-        quadrant,
-        tone: "warn",
-        headline: "Marketing opportunity",
-        primaryIssue: "Footfall",
-        recommendation: "Marketing support",
-      };
-    case "critical":
-      return {
-        quadrant,
-        tone: "crit",
-        headline: "Critical",
-        primaryIssue: "Footfall + conversion",
-        recommendation: "Check stock before spending",
-      };
-  }
-}
-
-type MatrixEntry = {
-  storeId: string;
-  name: string;
-  // Raw values on BOTH sides of every comparison. Deltas alone can't be
-  // sanity-checked ("−7%" of what?), and with footfall entry being manual
-  // it matters that a reader can see the actual counts a verdict rests on.
-  footfallNow: number;
-  footfallPrev: number;
-  footfallChangePct: number;
-  conversionNow: number;
-  conversionPrev: number;
-  conversionChangePts: number;
-  salesNow: number;
-  salesPrev: number;
-  salesChangePct: number | null;
-} & Assessment;
-
-// Describes what the BOX means (its axes), not a verdict — the verdict is
-// per store, since two stores in the same box can be doing opposite things
-// depending on what sales did.
-const QUADRANT_AXES: Record<Quadrant, string> = {
-  healthy: "Footfall ↑ · Conversion ↑",
-  conversion_opportunity: "Footfall ↑ · Conversion ↓",
-  marketing_opportunity: "Footfall ↓ · Conversion ↑",
-  critical: "Footfall ↓ · Conversion ↓",
-};
-
-const INR_SHORT = (n: number) =>
-  n >= 100000 ? `₹${(n / 100000).toFixed(2)}L` : `₹${Math.round(n).toLocaleString("en-IN")}`;
-
-function MatrixCell({ quadrant, entries }: { quadrant: Quadrant; entries: MatrixEntry[] }) {
-  const rows = entries.filter((e) => e.quadrant === quadrant);
-  return (
-    <div className="bg-surface p-3">
-      <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-3">
-        {QUADRANT_AXES[quadrant]}
-      </span>
-      <div className="mt-2 flex flex-col gap-2.5">
-        {rows.map((e) => (
-          <div key={e.storeId}>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[12px] font-semibold">{e.name}</span>
-              <Pill tone={e.tone}>{e.headline}</Pill>
-            </div>
-            <table className="mt-1 font-mono text-[11px] text-ink-3">
-              <tbody>
-                <tr>
-                  <td className="pr-2">footfall</td>
-                  <td className="pr-1 text-right tabular-nums">{e.footfallPrev}</td>
-                  <td className="pr-1">→</td>
-                  <td className="pr-2 text-right tabular-nums text-ink-2">{e.footfallNow}</td>
-                  <td className={e.footfallChangePct >= 0 ? "text-good" : "text-crit"}>
-                    {e.footfallChangePct >= 0 ? "+" : ""}
-                    {e.footfallChangePct.toFixed(1)}%
-                  </td>
-                </tr>
-                <tr>
-                  <td className="pr-2">conversion</td>
-                  <td className="pr-1 text-right tabular-nums">{e.conversionPrev.toFixed(1)}%</td>
-                  <td className="pr-1">→</td>
-                  <td className="pr-2 text-right tabular-nums text-ink-2">{e.conversionNow.toFixed(1)}%</td>
-                  <td className={e.conversionChangePts >= 0 ? "text-good" : "text-crit"}>
-                    {e.conversionChangePts >= 0 ? "+" : ""}
-                    {e.conversionChangePts.toFixed(1)}pp
-                  </td>
-                </tr>
-                <tr>
-                  <td className="pr-2">sales</td>
-                  <td className="pr-1 text-right tabular-nums">{INR_SHORT(e.salesPrev)}</td>
-                  <td className="pr-1">→</td>
-                  <td className="pr-2 text-right tabular-nums text-ink-2">{INR_SHORT(e.salesNow)}</td>
-                  <td
-                    className={
-                      e.salesChangePct !== null && e.salesChangePct >= 0 ? "text-good" : "text-crit"
-                    }
-                  >
-                    {e.salesChangePct !== null
-                      ? `${e.salesChangePct >= 0 ? "+" : ""}${e.salesChangePct.toFixed(1)}%`
-                      : "—"}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            <div className="mt-0.5 text-[11px] text-ink-2">→ {e.recommendation}</div>
-          </div>
-        ))}
-        {rows.length === 0 && <span className="text-[12px] text-ink-3">—</span>}
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Traffic vs Sales matrix (spec §16)
-//
-// Different question from the footfall x conversion matrix above. That one
-// asks "which lever moved?"; this one asks "is traffic translating into
-// money?". A store can look fine on conversion and still be a traffic
-// problem, or lose traffic while growing sales — this separates those.
-// ---------------------------------------------------------------------------
-type TrafficSalesQuadrant =
-  | "growth_engine"
-  | "efficiency_opportunity"
-  | "positive_efficiency"
-  | "traffic_problem";
-
-const TRAFFIC_SALES_META: Record<
-  TrafficSalesQuadrant,
-  { label: string; axes: string; meaning: string; tone: "good" | "warn" | "crit" }
-> = {
-  growth_engine: {
-    label: "Growth engine",
-    axes: "Footfall ↑ · Sales ↑",
-    meaning: "More traffic, more money. Find what's working and copy it.",
-    tone: "good",
-  },
-  efficiency_opportunity: {
-    label: "Efficiency opportunity",
-    axes: "Footfall ↑ · Sales ↓",
-    meaning: "Traffic is arriving but not converting into revenue — the store floor is the constraint, not marketing.",
-    tone: "warn",
-  },
-  positive_efficiency: {
-    label: "Positive efficiency",
-    axes: "Footfall ↓ · Sales ↑",
-    meaning: "Doing more with fewer visitors. Real, but capped — growth stalls once traffic runs out.",
-    tone: "good",
-  },
-  traffic_problem: {
-    label: "Traffic problem",
-    axes: "Footfall ↓ · Sales ↓",
-    meaning: "Fewer people, less money. Traffic is the first thing to fix.",
-    tone: "crit",
-  },
-};
-
-function trafficSalesQuadrant(footfallChangePct: number, salesChangePct: number | null): TrafficSalesQuadrant | null {
-  if (salesChangePct === null) return null;
-  const footfallUp = footfallChangePct >= 0;
-  const salesUp = salesChangePct >= 0;
-  if (footfallUp && salesUp) return "growth_engine";
-  if (footfallUp && !salesUp) return "efficiency_opportunity";
-  if (!footfallUp && salesUp) return "positive_efficiency";
-  return "traffic_problem";
-}
-
-function TrafficSalesCell({
-  quadrant,
-  entries,
-}: {
-  quadrant: TrafficSalesQuadrant;
-  entries: MatrixEntry[];
-}) {
-  const meta = TRAFFIC_SALES_META[quadrant];
-  const rows = entries.filter((e) => trafficSalesQuadrant(e.footfallChangePct, e.salesChangePct) === quadrant);
-  return (
-    <div className="bg-surface p-3">
-      <Pill tone={meta.tone}>{meta.label}</Pill>
-      <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-ink-3">{meta.axes}</p>
-      <p className="mt-1 text-[11px] leading-snug text-ink-3">{meta.meaning}</p>
-      <div className="mt-2 flex flex-col gap-1.5">
-        {rows.map((e) => (
-          <div key={e.storeId} className="text-[12px]">
-            <span className="font-semibold">{e.name}</span>
-            <div className="font-mono text-[11px] text-ink-3">
-              footfall {e.footfallPrev} → {e.footfallNow}{" "}
-              <span className={e.footfallChangePct >= 0 ? "text-good" : "text-crit"}>
-                ({e.footfallChangePct >= 0 ? "+" : ""}
-                {e.footfallChangePct.toFixed(1)}%)
-              </span>
-            </div>
-            <div className="font-mono text-[11px] text-ink-3">
-              sales {INR_SHORT(e.salesPrev)} → {INR_SHORT(e.salesNow)}{" "}
-              <span className={(e.salesChangePct ?? 0) >= 0 ? "text-good" : "text-crit"}>
-                ({(e.salesChangePct ?? 0) >= 0 ? "+" : ""}
-                {(e.salesChangePct ?? 0).toFixed(1)}%)
-              </span>
-            </div>
-          </div>
-        ))}
-        {rows.length === 0 && <span className="text-[12px] text-ink-3">—</span>}
-      </div>
-    </div>
-  );
-}
+// Quadrant/Assessment/assess()/MatrixEntry/QUADRANT_AXES/TrafficSalesQuadrant/
+// TRAFFIC_SALES_META/trafficSalesQuadrant() moved to lib/network/footfall.ts,
+// and the MatrixCell/TrafficSalesCell renderers moved to
+// components/ui/FootfallMatrixCells.tsx (both 2026-08-20) — imported above —
+// so the Workspace Builder's footfall components render identically to this
+// page instead of via a hand-resynced copy.
 
 // ---------------------------------------------------------------------------
 // computeSalesTotals / computeLeague / computeSchemeRows now live in
@@ -476,23 +170,10 @@ async function SalesSection({
   // --- Scheme penetration, by quantity (not line count) ---
   const { schemeRows, schemeMaxQty } = computeSchemeRows(schemeDaily);
 
-  // --- Agent-wise sales — strip the "001 - " / "003 - " branch-code prefix
-  // for display (the raw agent_name keeps it, since it's occasionally the
-  // only thing distinguishing two agents with the same first name across
-  // stores — grouping is on the full raw name plus store, not the cleaned one) ---
-  const cleanAgentName = (name: string) => name.replace(/^\d+\s*-\s*/, "").trim();
-  const byAgent = new Map<string, { storeId: string; agent: string; bills: number; qty: number; net: number }>();
-  for (const a of agentDaily ?? []) {
-    if (!a.store_id) continue;
-    const rawName = a.agent_name ?? "Unassigned";
-    const key = `${a.store_id}::${rawName}`;
-    const cur = byAgent.get(key) ?? { storeId: a.store_id, agent: cleanAgentName(rawName), bills: 0, qty: 0, net: 0 };
-    cur.bills += Number(a.bills);
-    cur.qty += Number(a.quantity);
-    cur.net += Number(a.net_sales);
-    byAgent.set(key, cur);
-  }
-  const agentRows = [...byAgent.values()].sort((a, b) => b.net - a.net).slice(0, 12);
+  // --- Agent-wise sales — moved to lib/sales/aggregate.ts's
+  // computeAgentRows() (2026-08-20) so the Workspace's agent_sales_table
+  // component calls the same function. ---
+  const agentRows = computeAgentRows(agentDaily);
 
   // --- Hour-of-day, business hours only (9am-12am — stores aren't open overnight) ---
   const hourlyPoints = computeHourlyPoints(hourly);
@@ -637,42 +318,9 @@ async function SalesSection({
 
         <div>
           <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Store league</span>
-          <div className="mt-2 overflow-x-auto border border-line-soft">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-line-soft bg-surface-2 text-left text-[10px] uppercase tracking-wide text-ink-3">
-                  <th className="px-3 py-2">Store</th>
-                  <th className="px-3 py-2 text-right">Net</th>
-                  <th className="px-3 py-2 text-right">Bills</th>
-                  <th className="px-3 py-2 text-right">Units</th>
-                  <th className="px-3 py-2 text-right">ATV</th>
-                  <th className="px-3 py-2 text-right">UPT</th>
-                  <th className="px-3 py-2 text-right">Disc</th>
-                </tr>
-              </thead>
-              <tbody>
-                {league.map((s) => (
-                  <tr key={s.storeId} className="border-b border-line-soft last:border-0">
-                    <td className="px-3 py-2">{s.name}</td>
-                    <td className="px-3 py-2 text-right font-mono">{INR(s.net)}</td>
-                    <td className="px-3 py-2 text-right font-mono">{s.bills}</td>
-                    <td className="px-3 py-2 text-right font-mono">{s.qty}</td>
-                    <td className="px-3 py-2 text-right font-mono">{s.atv !== null ? INR(s.atv) : "—"}</td>
-                    <td className="px-3 py-2 text-right font-mono">{s.upt !== null ? s.upt.toFixed(2) : "—"}</td>
-                    <td className="px-3 py-2 text-right font-mono">
-                      {s.discountPct !== null ? `${s.discountPct.toFixed(1)}%` : "—"}
-                    </td>
-                  </tr>
-                ))}
-                {league.length === 0 && (
-                  <tr>
-                    <td colSpan={7} className="px-3 py-4 text-center text-sm text-ink-3">
-                      No stores with sales in this window.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+          <p className="mt-1 text-[11px] text-ink-3">Click a row for that store&apos;s own daily trend.</p>
+          <div className="mt-2">
+            <StoreLeagueDrilldown league={league} from={from} to={to} />
           </div>
 
           <span className="mt-6 block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
@@ -813,167 +461,33 @@ async function FootfallSection({
     applyStore(supabase.schema("sales").from<SchemeDailyRow>("vw_ebo_scheme_daily").select("*").gte("bill_date", from).lte("bill_date", to) as unknown as QueryChain<SchemeDailyRow>),
   ] as const);
 
-  // --- Footfall / conversion KPIs ---
-  const convRows = (conversion ?? []).filter((c) => c.footfall !== null);
-  const totalFootfall = convRows.reduce((s, c) => s + Number(c.footfall), 0);
-
-  const { totalSaleBills, totalNetSales, wow, discountPct, storesInView, weekRows } = computeSalesTotals(weeks, from);
-  const conversionPct = totalFootfall > 0 ? (totalSaleBills / totalFootfall) * 100 : null;
-  const salesPerFootfall = totalFootfall > 0 ? totalNetSales / totalFootfall : null;
-  const footfallDaysCovered = convRows.length;
-  const totalDaysInRange = new Set((daily ?? []).map((d) => `${d.store_id}-${d.bill_date}`)).size;
-
-  // --- Footfall x conversion matrix: per-store trend, this period vs the
-  // immediately preceding period of equal length. A store only gets placed
-  // on the grid if BOTH periods have footfall entered for it — otherwise
-  // there's no trend to compute, and it's listed separately rather than
-  // guessed. ---
-  type PeriodTotals = { footfall: number; bills: number; net: number };
-  function sumByStore(rows: typeof conversion): Map<string, PeriodTotals> {
-    const out = new Map<string, PeriodTotals>();
-    for (const r of rows ?? []) {
-      if (!r.store_id || r.footfall === null) continue;
-      const cur = out.get(r.store_id) ?? { footfall: 0, bills: 0, net: 0 };
-      cur.footfall += Number(r.footfall);
-      cur.bills += Number(r.sale_bills);
-      cur.net += Number(r.net_sales);
-      out.set(r.store_id, cur);
-    }
-    return out;
-  }
-  const curByStore = sumByStore(conversion);
-  const prevByStore = sumByStore(prevConversion);
-
-  const matrixEntries: MatrixEntry[] = [];
-  const matrixInsufficientData: string[] = [];
-
-  for (const storeId of storeNames.keys()) {
-    const curr = curByStore.get(storeId);
-    const prev = prevByStore.get(storeId);
-    if (!curr || !prev || curr.footfall === 0 || prev.footfall === 0) {
-      matrixInsufficientData.push(storeNames.get(storeId) ?? storeId);
-      continue;
-    }
-    const convNow = (curr.bills / curr.footfall) * 100;
-    const convPrev = (prev.bills / prev.footfall) * 100;
-    const footfallChangePct = ((curr.footfall - prev.footfall) / prev.footfall) * 100;
-    const conversionChangePts = convNow - convPrev;
-    const salesChangePct = prev.net > 0 ? ((curr.net - prev.net) / prev.net) * 100 : null;
-
-    matrixEntries.push({
-      storeId,
-      name: storeNames.get(storeId) ?? storeId,
-      footfallNow: curr.footfall,
-      footfallPrev: prev.footfall,
-      footfallChangePct,
-      conversionNow: convNow,
-      conversionPrev: convPrev,
-      conversionChangePts,
-      salesNow: curr.net,
-      salesPrev: prev.net,
-      salesChangePct,
-      ...assess(footfallChangePct, conversionChangePts, salesChangePct),
-    });
-  }
-
-  // --- Footfall data completeness (spec §4/§37) — conversion figures above
-  // are only as trustworthy as the footfall behind them, so this is shown
-  // next to them rather than buried in a separate data-quality page. ---
-  const completenessRows = completeness ?? [];
-  const expectedStoreDays = completenessRows.length;
-  const enteredStoreDays = completenessRows.filter((r) => r.has_footfall).length;
-  const completenessPct = expectedStoreDays > 0 ? (enteredStoreDays / expectedStoreDays) * 100 : null;
-  const missingToday = completenessRows.filter((r) => r.date === isoDate(today) && !r.has_footfall).length;
-
-  // --- Per-store sales driver analysis + opportunity sizing (spec §14/§18/§19/§32).
-  //
-  // Two things this deliberately does NOT do:
-  //  1. No YOY anywhere — footfall history is seeded test data, not real
-  //     counts, so a YOY figure would be arithmetic on invented numbers.
-  //     Everything here is period-over-period against the equally-sized
-  //     window immediately before the selected range.
-  //  2. Traffic and conversion opportunity are NEVER summed (spec §20).
-  //     They overlap — fixing traffic at today's conversion, and fixing
-  //     conversion at today's traffic, both count the same incremental
-  //     bills. `combinedOpportunity` is computed as the single
-  //     both-levers-at-benchmark figure, which is what actually bounds the
-  //     upside.
-  // primaryIssue / recommendation are NOT recomputed here — they come from
-  // assess() via matrixEntries, so this table and the matrix above can never
-  // disagree about a store.
-  const storeDiagnosis = matrixEntries.map((m) => {
-    const curr = curByStore.get(m.storeId)!;
-    const prev = prevByStore.get(m.storeId)!;
-    const atvNow = curr.bills > 0 ? curr.net / curr.bills : 0;
-    const atvPrev = prev.bills > 0 ? prev.net / prev.bills : 0;
-    const atvChangePct = atvPrev > 0 ? ((atvNow - atvPrev) / atvPrev) * 100 : null;
-    const convNow = m.conversionNow;
-
-    // Benchmark = this store's own previous period. Peer/similar-store
-    // benchmarking (spec §17/§39) needs store size/age/type attributes that
-    // core.stores doesn't carry yet — deliberately not faked with a network
-    // average, which would punish a small store for not matching a big one.
-    const benchmarkFootfall = prev.footfall;
-    const benchmarkConv = (prev.bills / prev.footfall) * 100;
-
-    const trafficGap = Math.max(0, benchmarkFootfall - curr.footfall);
-    const trafficOpportunity = trafficGap * (convNow / 100) * atvNow;
-
-    const convGapPts = Math.max(0, benchmarkConv - convNow);
-    const conversionOpportunity = curr.footfall * (convGapPts / 100) * atvNow;
-
-    // Both levers at benchmark, minus actual — the non-additive ceiling.
-    const combinedOpportunity = Math.max(
-      0,
-      benchmarkFootfall * (Math.max(convNow, benchmarkConv) / 100) * atvNow - curr.net
-    );
-
-    return {
-      ...m,
-      atvChangePct,
-      salesPerVisitor: curr.footfall > 0 ? curr.net / curr.footfall : null,
-      nonConverting: curr.footfall - curr.bills,
-      trafficOpportunity,
-      conversionOpportunity,
-      combinedOpportunity,
-    };
-  });
-
-  // --- Extra KPIs + rule-based "what to do about it" suggestions, all
-  // computed from data already loaded above (league, schemeRows,
-  // storeDiagnosis) — no external AI call, so this is instant and free.
-  // Placed above Week-wise sales per the ask: a reader should see "here's
-  // what's happening and what to do" before the raw weekly numbers.
-  const league = computeLeague(weekRows, storesInView, storeNames);
-  const { schemeRows, schemePenetrationPct } = computeSchemeRows(schemeDaily);
-  const topStore = league[0] ?? null;
-  const bottomStore = league.length > 1 ? league[league.length - 1] : null;
-
-  const severity: Record<string, number> = { crit: 3, warn: 2, neutral: 1, good: 0 };
-  const flaggedStores = [...storeDiagnosis]
-    .filter((s) => s.tone === "crit" || s.tone === "warn")
-    .sort((a, b) => (severity[b.tone] ?? 0) - (severity[a.tone] ?? 0))
-    .slice(0, 3);
-
-  const insights: string[] = [];
-  if (wow !== null && wow < -5) {
-    insights.push(`Network sales are down ${Math.abs(wow).toFixed(1)}% week-over-week — worth a closer look before next week.`);
-  }
-  if (discountPct !== null && discountPct > 25) {
-    insights.push(`Discount is ${discountPct.toFixed(1)}% of gross sales — check whether markdowns are being used more than planned.`);
-  }
-  if (schemePenetrationPct !== null && schemePenetrationPct > 60) {
-    insights.push(`${schemePenetrationPct.toFixed(0)}% of units sold this period were on a scheme — a heavy reliance on discounting to move stock.`);
-  }
-  if (topStore && bottomStore && topStore.storeId !== bottomStore.storeId && topStore.net > 0) {
-    const gapPct = ((topStore.net - bottomStore.net) / topStore.net) * 100;
-    if (gapPct > 40) {
-      insights.push(`${topStore.name} is outselling ${bottomStore.name} by ${gapPct.toFixed(0)}% — worth studying what ${topStore.name} is doing differently.`);
-    }
-  }
-  for (const s of flaggedStores) {
-    insights.push(`${s.name}: ${s.headline} — ${s.recommendation}.`);
-  }
+  // All KPI/matrix/table/insight derivation now lives in
+  // lib/network/footfall.ts's computeFootfallInsights() (2026-08-20) — moved
+  // verbatim so the Workspace Builder's footfall components call the exact
+  // same function this page does. See that file for the full formulas and
+  // the spec-§ references that used to sit inline here.
+  const {
+    totalFootfall,
+    conversionPct,
+    salesPerFootfall,
+    footfallDaysCovered,
+    totalDaysInRange,
+    totalSaleBills,
+    wow,
+    discountPct,
+    matrixEntries,
+    matrixInsufficientData,
+    completenessPct,
+    expectedStoreDays,
+    enteredStoreDays,
+    missingToday,
+    storeDiagnosis,
+    topStore,
+    bottomStore,
+    schemePenetrationPct,
+    flaggedStores,
+    insights,
+  } = computeFootfallInsights({ conversion, prevConversion, completeness, daily, weeks, schemeDaily, storeNames, today, from, prevFrom, prevTo });
 
   return (
     <>

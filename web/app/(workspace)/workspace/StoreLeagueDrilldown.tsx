@@ -11,6 +11,8 @@ type LeagueRow = {
   storeId: string;
   name: string;
   net: number;
+  bills: number;
+  qty: number;
   atv: number | null;
   upt: number | null;
   discountPct: number | null;
@@ -66,6 +68,22 @@ export function StoreLeagueDrilldown({ league, from, to }: { league: LeagueRow[]
         cellClass: "text-right font-mono",
         headerClass: "text-right",
         valueFormatter: (p) => INR(p.value),
+      },
+      {
+        field: "bills",
+        headerName: "Bills",
+        flex: 0.7,
+        sortable: true,
+        cellClass: "text-right font-mono",
+        headerClass: "text-right",
+      },
+      {
+        field: "qty",
+        headerName: "Units",
+        flex: 0.7,
+        sortable: true,
+        cellClass: "text-right font-mono",
+        headerClass: "text-right",
       },
       {
         field: "atv",

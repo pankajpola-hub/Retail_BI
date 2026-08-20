@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { saveLogicErpCredentials, testLogicErpConnection } from "./actions";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 type Existing = {
   host: string;
@@ -66,44 +68,22 @@ export function LogicErpForm({ existing }: { existing: Existing }) {
 
       <label className="flex flex-col gap-1 text-sm">
         <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Host / IP</span>
-        <input
-          value={host}
-          onChange={(e) => setHost(e.target.value)}
-          placeholder="192.168.1.233"
-          required
-          className="min-h-[36px] border border-line bg-surface px-3 py-1.5 text-sm"
-        />
+        <Input value={host} onChange={(e) => setHost(e.target.value)} placeholder="192.168.1.233" required />
       </label>
 
       <label className="flex flex-col gap-1 text-sm">
         <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Port</span>
-        <input
-          type="number"
-          value={port}
-          onChange={(e) => setPort(e.target.value)}
-          required
-          className="min-h-[36px] w-32 border border-line bg-surface px-3 py-1.5 text-sm"
-        />
+        <Input type="number" value={port} onChange={(e) => setPort(e.target.value)} required className="w-32" />
       </label>
 
       <label className="flex flex-col gap-1 text-sm">
         <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Database name</span>
-        <input
-          value={databaseName}
-          onChange={(e) => setDatabaseName(e.target.value)}
-          required
-          className="min-h-[36px] border border-line bg-surface px-3 py-1.5 text-sm"
-        />
+        <Input value={databaseName} onChange={(e) => setDatabaseName(e.target.value)} required />
       </label>
 
       <label className="flex flex-col gap-1 text-sm">
         <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">DB user</span>
-        <input
-          value={dbUser}
-          onChange={(e) => setDbUser(e.target.value)}
-          required
-          className="min-h-[36px] border border-line bg-surface px-3 py-1.5 text-sm"
-        />
+        <Input value={dbUser} onChange={(e) => setDbUser(e.target.value)} required />
       </label>
 
       <label className="flex flex-col gap-1 text-sm">
@@ -111,7 +91,7 @@ export function LogicErpForm({ existing }: { existing: Existing }) {
           DB password
           {existing && <span className="ml-1 normal-case text-ink-3">(leave blank to keep the current one)</span>}
         </span>
-        <input
+        <Input
           type="password"
           value={dbPassword}
           onChange={(e) => {
@@ -120,26 +100,21 @@ export function LogicErpForm({ existing }: { existing: Existing }) {
           }}
           autoComplete="new-password"
           required={!existing}
-          className="min-h-[36px] border border-line bg-surface px-3 py-1.5 text-sm"
         />
       </label>
 
       <div className="mt-1 flex flex-wrap items-center gap-3">
-        <button
+        <Button
           type="button"
+          variant="outline"
           onClick={onTest}
           disabled={testStatus.state === "testing" || !host || !databaseName || !dbUser}
-          className="border border-line px-4 py-2 text-sm font-semibold text-ink-2 disabled:opacity-60"
         >
           {testStatus.state === "testing" ? "Testing…" : "Test connection"}
-        </button>
-        <button
-          type="submit"
-          disabled={saveStatus.state === "saving"}
-          className="bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-        >
+        </Button>
+        <Button type="submit" disabled={saveStatus.state === "saving"}>
           {saveStatus.state === "saving" ? "Saving…" : "Save"}
-        </button>
+        </Button>
       </div>
 
       {testStatus.state === "success" && (

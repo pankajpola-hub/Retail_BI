@@ -659,6 +659,401 @@ Verified live via computed styles across Network and Workspace: real
 weight/letter-spacing/line-height values applied, zero console errors on
 a clean build.
 
+## Replenishment table → AG Grid, 2026-08-20
+
+Second table converted to AG Grid Community (first was the Workspace's Store
+League table, 2026-08-15) — the Replenishment page's main table is the
+densest in the app (14 columns, one row per store × style-color, exactly the
+"wall of rows at scale" problem the Scale target section flags) and was
+explicitly named as the natural next candidate.
+
+New `web/app/(replenishment)/replenishment/ReplenishmentGrid.tsx` (client
+component) replaces the hand-rolled `<table>`; `page.tsx`'s server-side
+compute/filter/what-if/pagination logic is **completely unchanged** — the
+grid just renders whatever page of rows the server already sliced
+(`pageRows`), with virtualized scrolling instead of a second pagination
+layer bolted on top. The per-row expandable "why" + size-breakdown detail
+(previously a nested `<details>`, awkward inside a virtualized grid row) now
+opens in a Radix Dialog on row click — the same interaction pattern
+`StoreLeagueDrilldown.tsx` already established, not a new one.
+
+A real bug was caught and fixed during server-side verification (browser
+verification was blocked this session — see below): `compute.ts` is marked
+`import "server-only"` and the new grid component (a client component)
+imported its tiny `fmt`/`fmt1` formatters as **values**, which pulls the
+whole module graph — including the `server-only` guard — into the client
+bundle and throws at build time. Fixed by duplicating the two one-line
+formatters locally in `ReplenishmentGrid.tsx` (type-only imports of
+`Priority`/`Trend`/`Row` from the same module are fine — those erase at
+compile time and were never the problem). Caught via the dev server's own
+compile error log, not assumed from a clean `tsc` pass — `tsc --noEmit`
+alone did not catch this, since it's a bundler-level constraint, not a type
+error.
+
+**Verification, stated plainly given the constraint**: the local dev stack
+(all four services) had been fully stopped since the last session and was
+restarted in the documented order (Postgres → PostgREST → Keycloak → MinIO
+→ Next dev server) — `Start-Process` was needed instead of `nohup ... &` /
+`disown` this time, since the latter did not survive this Bash tool's own
+process-teardown between calls (a stricter version of the same
+detached-process lesson HANDOFF.md already recorded for PostgREST's DLL
+issue). Once services were up, this session's Browser-pane tab would not
+composite frames (`screenshot` and all click/keypress-driven form
+interactions produced no server-side effect at all, confirmed by an empty
+Next.js access log across multiple click/Enter/`requestSubmit()` attempts)
+— a sharper case of the same "pane not focused/displayed" limitation
+Phase 9's IntersectionObserver work hit on 2026-08-15. Credentials and the
+Keycloak realm were independently confirmed live via a direct `curl` token
+request (password grant succeeded, real JWT returned), and the page itself
+was verified via a direct authenticated `curl` to `/replenishment` using
+that token as a cookie: **500 → real server-only bundling error → fixed →
+200**, with the server's own `[perf] replenishment:compute` timing log
+confirming the real network-allocation engine ran end-to-end. What is
+**not** verified this session: the actual rendered grid in a live browser
+(sorting, row-click dialog, column resize) — that needs either this Browser
+pane's compositing issue to clear or the user's own browser.
+
+## Stock Details — per-store tables consolidated into one AG Grid, 2026-08-20
+
+Third table converted to AG Grid, but a different shape of fix than the
+other two: `/stock-details`'s "Current stock vs planned display capacity"
+section wasn't one dense table — it was **one small table per store**,
+stacked vertically (`storesInView.map(...)`). That's the OTHER scale
+problem the Scale target section names explicitly ("a wall of cards at 100
+stores"), not the "one wide table with too many rows" problem the
+Replenishment/Store-League conversions solved. New
+`StockVsCapacityGrid.tsx` + a `buildCapacityGridRows()` helper in `page.tsx`
+flatten every store × segment combination into ONE sortable/filterable
+grid (Store is now a real column, not a section header) instead of
+requiring a store-by-store scroll to compare status. `capacityStatus`/
+`splitCells` (the actual Short/Excess/On-target logic) are untouched —
+only the presentation layer changed.
+
+**Deliberately NOT converted this pass, stated plainly**: the Replenishment
+page's "Where should we send stock?" top-10 table (always exactly ≤10 rows
+— no scale problem to fix) and the Targets page's monthly tracker (bounded
+to ≤31 rows for one store, and its Remarks column is a live inline-editable
+cell — `RemarkCell` — that would need real design work to reproduce
+correctly as an AG Grid cell editor; converting it for its own sake without
+that care would risk breaking a real edit affordance for zero benefit).
+Both were the original punch list's remaining AG Grid candidates; neither
+fit the stated reason (scale) for doing this work in the first place.
+
+## `replenishment_kpi_grid` — Workspace's fourth component family, 2026-08-20
+
+Revisits and closes a gap the 2026-08-15 entry above deliberately left
+open. That entry didn't build this component because it looked like it
+needed a new, lighter SQL aggregate to avoid running the network allocation
+engine a third time per workspace render (after Sales and Mix, when both
+are present). Re-examined: the registry's own catalogued description for
+this component is verbatim `/replenishment`'s own KPI card row, and a
+hand-written SQL replica of the JS engine's priority classification risked
+silently diverging from it — exactly the "two sources disagree" failure
+mode the semantic layer exists to prevent — for a savings that was never
+real, since the 40k/100k-row FETCH (not the classification loop) is the
+actual cost regardless of where the counting happens.
+
+New `lib/workspace/renderReplenishmentComponents.tsx` reuses
+`computeReplenishmentRows()` **verbatim**, the same function
+`/replenishment` itself calls, with that page's own default what-if
+assumptions (21d cover / 5d lead time / 3d safety, default score weights) —
+there's no per-tile what-if UI, same "component defaults its own scope"
+posture `sale_stock_mix_table` already established. Gated by
+`needsReplenishmentData` in `page.tsx`, identical "pay only for what's
+added" pattern as Sales/Stock/Mix. Scope is deliberately network-wide,
+**not** filtered by the workspace's store selector — matches
+`/replenishment`'s own KPI row, which the page itself computes over the
+full unfiltered row set before its own store/priority/action filters
+apply; scoping the tile to the workspace's stores would make it disagree
+with the page it summarizes.
+
+Verified via `tsc --noEmit` (clean) and a direct authenticated `curl` to
+`/workspace` confirming the picker now offers `replenishment_kpi_grid` and
+the page compiles/renders with zero server errors — the same Browser-pane
+compositing limitation recorded above meant the actual "add it and see the
+tile render" click-through could not be done live this session.
+
+## Phase 8 drilldown extended to a second Sales component, 2026-08-20
+
+Store League (2026-08-15) was the only Sales component wired with a
+click-through detail panel; this pass extends the same pattern to
+**Weekly Sales Table**. New `WeeklyRowDrilldown.tsx` (client) makes each
+per-store week row clickable, opening a Dialog with that store's own daily
+net-sales trend **for just that one retail week** — fetched only on click,
+via the exact same `getStoreDrilldownTrend` server action the League table
+already uses, just called with a 7-day range instead of the workspace's
+whole period. No new server action was needed.
+
+Kept honest, matching the Mix component's own precedent: the "Network
+total" table `WeeklySalesTable` renders when 2+ stores are selected sums
+across stores, so there's no single store to drill into — it stays a
+plain, inert table rather than pretending a click on it means something.
+
+Not yet extended to the other 4 Sales components (`sales_kpi_grid`,
+`sales_trend_chart`, `hourly_sales_chart`, `scheme_penetration`) —
+deliberately, not an oversight: the KPI grid has no natural "row" to drill
+into, and a trend/scheme drilldown would need actual product judgment
+about what detail is worth surfacing (e.g. click a day on the trend chart
+→ that day's hourly split), which is a real design decision, not a
+mechanical repeat of this pattern. Flagged as follow-up, not silently
+done.
+
+## `mix_status_kpi_grid` — second Mix-family component, 2026-08-20
+
+Cheapest possible addition to the 16-components-with-no-renderer backlog:
+`computeSaleStockMix()` already returns every style-color's `MixStatus`
+(`high_priority`/`opportunity`/`balanced`/`stock_heavy`/`overstocked`) for
+`sale_stock_mix_table`, but only the top-15-by-gap slice was ever kept —
+the full-set status tally the registry's own description calls for
+("Counts by mix-gap status") was being computed and then thrown away.
+`MixComponentData` gained a `statusCounts` field (tallied over the FULL
+row set, before the top-15 cap) and a new `MixStatusKpiGrid` renderer, both
+in the existing `renderMixComponents.tsx` — no new query, no change to
+`page.tsx`'s fetch/gating logic at all, since this reuses the exact same
+`needsMixData`-gated `mixData` fetch `sale_stock_mix_table` already
+triggers. Two components can now share one workspace's Mix data without
+one silently disagreeing with the other, since both read from the same
+full row set.
+
+14 more registered components remain unwired: `agent_sales_table` (sales);
+`footfall_kpi_grid`, `footfall_quality_kpi_grid`, `network_insights_kpi_grid`,
+`suggested_actions`, `footfall_conversion_matrix`, `traffic_sales_matrix`,
+`store_diagnosis_table` (footfall — 7 components, all sourced from
+`/network`'s `FootfallSection`, none built yet); `fresh_discounted_tracker`,
+`upload_history_list` (targets); `stock_vs_capacity_table`,
+`capacity_editor`, `stock_breakdown_table` (stock); `top_supply_moves_table`,
+`replenishment_recommendations_table` (replenishment — the latter is the
+registry's own most expensive entry, `is_interactive: true`, the full
+allocation-engine table itself).
+
+## Footfall family — all 7 remaining `/network` components, 2026-08-20
+
+The biggest single addition to the Workspace component backlog: all 7
+`footfall`-category components (`footfall_kpi_grid`,
+`footfall_quality_kpi_grid`, `network_insights_kpi_grid`,
+`suggested_actions`, `footfall_conversion_matrix`, `traffic_sales_matrix`,
+`store_diagnosis_table`), closing the largest remaining cluster from the
+16-components-with-no-renderer backlog in one pass.
+
+**A real refactor had to happen first, and did.** Unlike Sales/Stock/Mix/
+Replenishment, `/network`'s `FootfallSection` had never had its business
+logic extracted into a shared `lib/` module — the store-classification
+rules (`assess()`), the two quadrant-matrix bucketing functions, and the
+opportunity-sizing math all lived inline in `app/(ho)/network/page.tsx`,
+~500 lines deep. Building 7 new components against that would have meant
+either duplicating all of it (real risk of silent drift between `/network`
+and the Workspace — exactly the failure mode the semantic layer exists to
+prevent) or reaching into a page file as a module, which isn't how this
+codebase is structured. So the actual first step was extracting it
+**verbatim** into new `lib/network/footfall.ts` (`computeFootfallInsights()`,
+matching `lib/sales/aggregate.ts`'s Phase 5 precedent exactly) and a new
+`components/ui/FootfallMatrixCells.tsx` for the two matrix-cell renderers
+(presentation-only, but still shared rather than resynced, since a color/
+threshold drift between two copies would be the same class of bug).
+`network/page.tsx`'s `FootfallSection` now calls the shared function too —
+it was rewritten to consume `computeFootfallInsights()`'s output rather than
+compute it inline, so `/network` and the Workspace are now provably reading
+the same code path, not just historically-identical copies.
+
+New `lib/workspace/renderFootfallComponents.tsx` runs the same 6 queries
+`FootfallSection` does (conversion x2, completeness, daily/weeks/scheme —
+same disclosed duplication with the Sales family's own fetch that
+`FootfallSection` itself already carries and explains), scoped to the
+workspace's own store/date filter, then calls `computeFootfallInsights()`.
+All 7 components share this ONE fetch, gated by `needsFootfallData` in
+`page.tsx` — same "pay only for what's added" posture as every other
+family. Verified end-to-end: `tsc --noEmit` clean, `/network` itself
+confirmed still rendering correctly after the extraction (real content,
+zero new server errors), and — since the Browser pane couldn't be used
+live this session — two of the more complex components
+(`store_diagnosis_table`, `footfall_conversion_matrix`) were temporarily
+inserted directly into the test account's default workspace via SQL,
+confirmed to fetch real data (`[perf] workspace:footfall-components` in the
+server log) and render their correct empty-state fallbacks (this dataset
+currently has no footfall entered for a comparable prior period — the same
+reason `/network`'s own Store diagnosis section is empty right now, which
+is itself evidence the two are agreeing), then removed.
+
+Of the registry's 25 components, 17 now have a renderer. 8 remain unwired:
+`agent_sales_table` (sales); `fresh_discounted_tracker`,
+`upload_history_list` (targets); `stock_vs_capacity_table`,
+`capacity_editor`, `stock_breakdown_table` (stock); `top_supply_moves_table`,
+`replenishment_recommendations_table` (replenishment).
+
+## Final 8 components — every registered component now has a renderer, 2026-08-20
+
+Closed the rest of the backlog in one pass: `agent_sales_table` (Sales),
+`top_supply_moves_table` + `replenishment_recommendations_table`
+(Replenishment), `stock_vs_capacity_table` + `stock_breakdown_table` +
+`capacity_editor` (Stock), `fresh_discounted_tracker` +
+`upload_history_list` (Targets). All 25 registered components
+(`workspace.component_definitions`) now render.
+
+**More shared-function extractions, same discipline as the footfall
+refactor**: `computeAgentRows()` (Sales' agent aggregation) joined
+`lib/sales/aggregate.ts`; `computeReplenishmentKpis()`/
+`computeTopSupplyMoves()` joined `lib/replenishment/compute.ts`;
+`capacityStatus()`/`buildCapacityGridRows()` joined
+`lib/stockDetails/aggregate.ts`; `CategoryTracker` (the Fresh/Discounted
+table + heat map) moved to a new `app/(ho)/targets/CategoryTracker.tsx`.
+Each source page (`/network`, `/replenishment`, `/stock-details`,
+`/targets`) was rewritten to call its own extracted function rather than
+compute inline — every one of these pages is now provably reading the same
+code path as its Workspace counterpart, not a historically-identical copy.
+
+**The Replenishment family was restructured to share ONE fetch across all
+3 components** (previously `replenishment_kpi_grid` alone had already
+special-cased around the "don't run the engine 3 times" cost concern) —
+`fetchReplenishmentComponentData` now returns the full `{rows,
+totalWarehouseUnits}`, and each renderer derives what it needs
+(`computeReplenishmentKpis`, `computeTopSupplyMoves`, or the raw grid) from
+that one shared result. Adding all 3 replenishment components to one
+workspace still only runs the 40k/100k-row engine once.
+
+**A real bug, caught by the same live-verification method used all
+session**: `StockVsCapacityTable` and `ReplenishmentRecommendationsTable`
+were first built by constructing AG Grid `columnDefs` (which contain
+functions — `cellRenderer`, `valueFormatter`, `cellClass`) inside the
+*server* module and passing them as props into the `DataGrid` *client*
+component. Next.js's server→client prop boundary requires serializable
+values; functions can't cross it, and this failed at request time with
+`Functions cannot be passed directly to Client Components` — `tsc --noEmit`
+does not catch this class of bug, since it's a runtime serialization
+boundary, not a type error. Caught via the same "temporarily SQL-insert the
+component into the test workspace, curl it, read the dev server log" method
+used for the footfall components (the Browser pane still would not
+composite this session). Fixed by reusing the EXISTING client components
+that already build these column defs internally
+(`ReplenishmentGrid.tsx`, `StockVsCapacityGrid.tsx` — both already built
+for their standalone pages) instead of rebuilding them in a server module —
+the same "reuse the client component, don't resync its internals" pattern
+`CapacityEditorCard` already followed successfully for `capacity_editor`.
+
+**Scope, stated plainly for the 3 components that needed it**:
+`capacity_editor` and `fresh_discounted_tracker` are fundamentally
+per-store data (one edit form / one day-by-day table for ONE store) — both
+require the workspace's store filter to resolve to exactly one store, and
+show a plain message instead of guessing otherwise. `fresh_discounted_tracker`
+is also read-only in the workspace (no Remarks column, no write
+affordance) — `CategoryTracker` already supported this as an existing mode
+(remarks/storeId/canWriteRemarks were already optional props), not a new
+capability built for the occasion. `stock_breakdown_table` defaults to the
+Season dimension only (no per-tile "choose a dimension" config surface
+exists yet).
+
+All 25 components verified via the same method: `tsc --noEmit` clean, all
+5 source pages (`/network`, `/stock-details`, `/replenishment`, `/targets`,
+`/workspace`) confirmed still rendering correctly after their respective
+extractions, and every new component individually confirmed rendering real
+data (or its correct scope-fallback message) by temporarily inserting it
+into the test account's workspace via SQL, curling the page, reading the
+dev server's compile/perf/error log, then removing the test rows.
+
+## UI polish, phase 1 — shared form primitives, 2026-08-20
+
+First slice of the "full-app UI polish beyond typography" item left open
+from the 2026-08-15 UI critique. New `components/ui/input.tsx`
+(`Input`/`Select`/`Label`) joins `button.tsx`/`card.tsx`/`dialog.tsx` from
+the earlier shadcn/AG Grid foundation pass — same posture: authored
+directly against the app's existing tokens, no parallel `--primary`/
+`--input` variable set.
+
+The gap this closes is real, not cosmetic: every form control across the
+app (Replenishment's filters/what-if/weights forms, Targets' several
+forms, Sale vs Stock Mix's filters, the login form, both upload forms) had
+independently converged on the same hand-typed class string —
+`min-h-[34px] border border-line bg-surface px-2 py-1.5` or a close
+variant — copy-pasted into each file rather than shared. That convergence
+was itself the evidence a shared component was overdue: any future visual
+change (focus ring, sizing, a dark-mode token) meant editing N files
+identically and hoping none were missed.
+
+Converted this pass: the login page (highest-visibility, first
+impression); all 3 Replenishment page forms (filters, what-if assumptions,
+priority-score weights); the Targets page's month-picker form,
+`MonthlyTargetForm`, `BulkUploadForm`, `UploadTargetsForm`; the Data
+Upload page's `UploadReportForm`; Sale vs Stock Mix's filter form. Every
+`<input>`/`<select>`/submit `<button>` in those files now goes through
+`Input`/`Select`/`Button` — hidden inputs and file inputs (no shared
+primitive built for those) left as plain HTML, correctly.
+
+**A second real fix along the way, not just a style swap**:
+`MonthlyTargetForm`'s confirm/overwrite modal was hand-rolled
+(`fixed inset-0 z-50 ...`, the exact pattern already identified as a bug
+class in the 2026-08-15 pass — no real focus trap, no ESC-to-close). Now
+uses the real `Dialog` component (Radix primitives, already built and
+proven for `StoreLeagueDrilldown`), care taken to keep it non-dismissible
+while a save is in flight (`onOpenChange` ignores close attempts during the
+`"saving"` step, matching the original's `disabled` semantics on Cancel).
+
+Verified: `tsc --noEmit` clean, and all 5 touched pages
+(`/login`, `/replenishment`, `/targets`, `/sale-stock-mix`, `/data-upload`)
+confirmed rendering correctly via authenticated `curl` with zero new
+server errors — the Browser pane still would not composite this session,
+confirmed via a fresh `screenshot` attempt before starting this batch, so
+the actual click-through (dialog open/close, form submission) could not be
+tested live.
+
+## UI polish, phase 2 — remaining forms, 2026-08-20
+
+Closed out the form-control survey: `WorkspaceFiltersBar.tsx` (date
+inputs + the store-search box — the pill chips, "+Add store" trigger, and
+the various small text-link buttons inside its popover were deliberately
+left alone, see below), `RenameUserButton`, `InviteUserForm`,
+`LogicErpForm` (integrations), `FreshDiscSourceForm` (Configurations),
+and the "another date" half of the footfall counter (`FootfallCounter`'s
+backfill form — the live-counter half, with its giant tap targets and
+6xl-text number display, is bespoke mobile UI by design and correctly
+untouched).
+
+**Deliberately left hand-rolled, and why — this is a judgment call, not an
+oversight**: several small, compact inline controls don't map cleanly onto
+`Button`'s size scale (its smallest size is `min-h-[32px]`, sized for a
+standalone control) — `WorkspaceFiltersBar`'s pill-shaped chip-remove ✕
+and text-link "Select all/Clear/Done" buttons, `RenameUserButton`'s
+inline `text-[11px] underline` Save/Cancel, and `remark-cell.tsx`'s
+tracker-cell textarea (no `Textarea` primitive exists, and its one caller
+is the only textarea in the app — nothing to converge with). Forcing these
+into the generic primitives would visually break table-row-scale,
+already-compact UI for the sake of consistency with a component whose
+whole point was to STOP hand-typing full-size form-control CSS. Converting
+selectively, not mechanically, was the right call.
+
+## UI polish, phase 3 — remaining tables, 2026-08-20
+
+- **Sale vs Stock Mix's main table** (`/sale-stock-mix`) — same shape as
+  the Replenishment/Store-League/Stock-capacity conversions: server-paginated
+  over potentially hundreds of style-colors, the real scale problem AG Grid
+  solves. New `SaleStockMixGrid.tsx` (client), server-side filter/pagination
+  in `page.tsx` unchanged. Hit the exact same `server-only` import bug
+  documented earlier this session (`MIX_STATUS_META` pulled in as a value
+  from `lib/replenishment/mix.ts` into a client component) — fixed the same
+  way, duplicating the tiny lookup table locally with a comment pointing at
+  the precedent.
+- **`/network`'s own Store League table** — this was a real, standing gap:
+  the Workspace's `store_league_table` component got the AG Grid +
+  click-to-drill treatment back on 2026-08-15, but `/network` itself, the
+  page that treatment was modeled on, was never updated to match and was
+  still a plain `<table>` with no drilldown. Now reuses
+  `StoreLeagueDrilldown.tsx` directly — same component, not a rebuild.
+  Caught a real gap in that component while reusing it: its columns were
+  Store/Net/ATV/UPT/Disc, missing Bills/Units, which both `/network`'s own
+  original table AND the component's own catalogued registry description
+  ("Per-store net sales, **bills, units**, ATV, UPT, discount %...") already
+  called for — added both columns, so the Workspace tile gained fidelity
+  as a side effect of this reuse, not a regression.
+
+Both verified: `tsc --noEmit` clean, both pages return 200 with real
+content via authenticated `curl`. (One transient `ReferenceError:
+StoreLeagueDrilldown is not defined` appeared once in the dev log mid-edit
+— a stale HMR-compiled chunk served before the import landed, not a real
+bug; confirmed gone on the next request and has not recurred.)
+
+**Still untouched, stated plainly**: the Targets tracker (bounded to ≤31
+rows for one store, has a live remarks edit affordance — same reasoning
+already recorded for why this one is correctly NOT an AG Grid candidate)
+and the Users list (not yet surveyed for row count/scale).
+
 ## Open decisions (not mine to make)
 
 1. ~~**Accessory-exclusion divergence**~~ — **resolved 2026-08-15**, see above.

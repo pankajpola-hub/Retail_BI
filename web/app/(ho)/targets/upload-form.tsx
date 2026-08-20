@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
 
 export function UploadTargetsForm() {
   const router = useRouter();
@@ -39,13 +40,9 @@ export function UploadTargetsForm() {
         </span>
         <input ref={fileRef} type="file" accept=".xlsx,.xls" required className="text-sm" />
       </label>
-      <button
-        type="submit"
-        disabled={status.state === "uploading"}
-        className="self-start bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-      >
+      <Button type="submit" disabled={status.state === "uploading"} className="self-start">
         {status.state === "uploading" ? "Uploading…" : "Upload"}
-      </button>
+      </Button>
       {status.state === "error" && (
         <p className="border-l-2 border-crit bg-crit-soft px-3 py-2 text-sm text-ink-2">{status.message}</p>
       )}

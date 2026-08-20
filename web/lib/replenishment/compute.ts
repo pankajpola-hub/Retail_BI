@@ -565,3 +565,52 @@ export function filterRows(
 }
 
 export const PRIORITY_ORDER: Priority[] = ["critical", "high", "medium", "healthy", "exhausted"];
+
+export type ReplenishmentKpis = {
+  needsReplenishment: number;
+  unitsRequired: number;
+  criticalCount: number;
+  storesAtRisk: number;
+  transferCount: number;
+  purchaseCount: number;
+  exhaustedCount: number;
+};
+
+/**
+ * The page's own KPI card row, extracted verbatim (2026-08-20) so the
+ * Workspace's replenishment_kpi_grid calls the same function
+ * app/(replenishment)/replenishment/page.tsx does. Computed over the FULL
+ * row set, before the page's own store/priority/action filters apply.
+ */
+export function computeReplenishmentKpis(rows: Row[]): ReplenishmentKpis {
+  const needsReplenishmentRows = rows.filter((r) => r.recommendedQty > 0);
+  return {
+    needsReplenishment: needsReplenishmentRows.length,
+    unitsRequired: needsReplenishmentRows.reduce((s, r) => s + r.recommendedQty, 0),
+    criticalCount: rows.filter((r) => r.priority === "critical").length,
+    storesAtRisk: new Set(rows.filter((r) => r.priority === "critical").map((r) => r.storeId)).size,
+    transferCount: rows.filter((r) => r.action === "TRANSFER FROM STORE").length,
+    purchaseCount: rows.filter((r) => r.action === "PURCHASE").length,
+    exhaustedCount: rows.filter((r) => r.priority === "exhausted").length,
+  };
+}
+
+/**
+ * "Where should we send stock?" — top N actionable moves by score, plus a
+ * rough revenue-protection estimate. Extracted verbatim (2026-08-20) from
+ * the same page, same reason as computeReplenishmentKpis above.
+ */
+export function computeTopSupplyMoves(rows: Row[], topN = 10): { top: Row[]; salesProtected: number } {
+  const actionable = rows
+    .filter((r) => r.action === "REPLENISH FROM WAREHOUSE" || r.action === "TRANSFER FROM STORE")
+    .sort((a, b) => b.score - a.score);
+  const top = actionable.slice(0, topN);
+  let salesProtected = 0;
+  for (const r of top) {
+    if (r.sales30d > 0 && r.salesValue30d !== 0) {
+      const asp = Math.abs(r.salesValue30d) / (r.sales30d || 1);
+      salesProtected += r.recommendedQty * asp;
+    }
+  }
+  return { top, salesProtected };
+}

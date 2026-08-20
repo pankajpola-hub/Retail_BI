@@ -4,6 +4,7 @@ import type { DataClient } from "@/lib/data/client";
 import { requirePageAccess } from "@/lib/auth/roles";
 import { MultiSelectFilter } from "@/components/ui/StoreFilter";
 import { CapacityEditorCard } from "./capacity-editor";
+import { StockVsCapacityGrid } from "./StockVsCapacityGrid";
 import { KpiGridSkeleton, TableSkeleton } from "@/components/ui/Skeleton";
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
 import { timeAll } from "@/lib/perf/timing";
@@ -13,12 +14,11 @@ import {
   buildNibmSummary,
   buildCapacityPlan,
   buildCapacityNibmSummary,
+  buildCapacityGridRows,
   groupByGenderAnd,
   type Gender,
   type StockRow,
   type CapacityRow,
-  type CapacityBlock,
-  type DcBlock,
 } from "@/lib/stockDetails/aggregate";
 
 export const dynamic = "force-dynamic";
@@ -35,137 +35,10 @@ function pct(n: number): string {
   return `${n.toFixed(1)}%`;
 }
 
-/**
- * Short / Excess / On target / Not set — the one column a store manager
- * actually needs from this whole page: "does what's on the floor match what
- * was planned?" `hasPlan` is false only when nobody has ever entered a base
- * capacity for this segment — flagged distinctly from "Excess" (which would
- * otherwise misleadingly claim the ENTIRE stock count as "excess" against a
- * planned figure of zero, when the real issue is just that no plan exists).
- */
-function capacityStatus(actual: number, planned: number, hasPlan: boolean): { label: string; className: string } {
-  if (!hasPlan) return { label: "Capacity not set", className: "text-ink-3" };
-  const diff = actual - planned;
-  if (diff === 0) return { label: "On target", className: "text-good" };
-  if (diff < 0) return { label: `Short by ${fmt(-diff)}`, className: "text-crit" };
-  return { label: `Excess by ${fmt(diff)}`, className: "text-warn" };
-}
-
-/**
- * The main "what should I do" table on this page: for one store, each
- * planned segment (Girls/Boys x Baby/Kids) next to the CURRENT actual stock
- * for that same segment, with a plain-language status. Replaces what used to
- * be a sentence buried inside each capacity-editor block ("Current actual
- * (live stock) 899 (F 331 / E 568) vs planned 344 — Excess by 555") — same
- * numbers, but as a table a store manager can scan in one glance instead of
- * parsing prose four times per store.
- */
-/** One row's worth of Fresh OR EOSS numbers — target (planned), actual, status. */
-type SplitCells = { target: number; actual: number; status: { label: string; className: string } };
-
-function splitCells(target: number, actual: number, hasPlan: boolean): SplitCells {
-  return { target, actual, status: capacityStatus(actual, target, hasPlan) };
-}
-
-function StockVsCapacityTable({
-  storeName,
-  storeId,
-  blocks,
-  actualBlocks,
-}: {
-  storeName: string;
-  storeId: string;
-  blocks: CapacityBlock[];
-  actualBlocks: DcBlock[];
-}) {
-  const rows = blocks.map((b) => {
-    const actual = actualBlocks.find((a) => a.gender === b.gender && a.ageSegment === b.ageSegment);
-    const hasPlan = b.baseCapacity > 0;
-    return {
-      block: b,
-      fresh: splitCells(b.freshCapacity, actual?.fresh ?? 0, hasPlan),
-      eoss: splitCells(b.eossCapacity, actual?.eoss ?? 0, hasPlan),
-    };
-  });
-  const totalBase = blocks.reduce((s, b) => s + b.baseCapacity, 0);
-  const totalHasPlan = blocks.some((b) => b.baseCapacity > 0);
-  const totalFresh = splitCells(
-    blocks.reduce((s, b) => s + b.freshCapacity, 0),
-    rows.reduce((s, r) => s + r.fresh.actual, 0),
-    totalHasPlan
-  );
-  const totalEoss = splitCells(
-    blocks.reduce((s, b) => s + b.eossCapacity, 0),
-    rows.reduce((s, r) => s + r.eoss.actual, 0),
-    totalHasPlan
-  );
-
-  return (
-    <div className="border border-line-soft">
-      <div className="flex items-baseline justify-between bg-surface-2 px-3 py-2">
-        <span className="text-sm font-semibold">{storeName}</span>
-        <span className="text-[11px] text-ink-3">{storeId}</span>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] text-[12.5px]">
-          <thead>
-            <tr className="border-b border-line-soft text-left text-[10px] uppercase tracking-wide text-ink-3">
-              <th className="px-3 py-2" rowSpan={2}>
-                Segment
-              </th>
-              <th className="px-3 py-2 text-right" rowSpan={2}>
-                Base capacity
-              </th>
-              <th className="px-3 py-2 text-right" rowSpan={2}>
-                Buffer %
-              </th>
-              <th className="border-l border-line-soft px-3 py-1.5 text-center" colSpan={3}>
-                Fresh
-              </th>
-              <th className="border-l border-line-soft px-3 py-1.5 text-center" colSpan={3}>
-                EOSS
-              </th>
-            </tr>
-            <tr className="border-b border-line-soft text-left text-[10px] uppercase tracking-wide text-ink-3">
-              <th className="border-l border-line-soft px-3 py-1.5 text-right">Planned</th>
-              <th className="px-3 py-1.5 text-right">Current stock</th>
-              <th className="px-3 py-1.5 text-right">Status</th>
-              <th className="border-l border-line-soft px-3 py-1.5 text-right">Planned</th>
-              <th className="px-3 py-1.5 text-right">Current stock</th>
-              <th className="px-3 py-1.5 text-right">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(({ block, fresh, eoss }) => (
-              <tr key={`${block.gender}-${block.ageSegment}`} className="border-b border-line-soft last:border-0">
-                <td className="px-3 py-2 font-medium text-ink-2">{block.label}</td>
-                <td className="px-3 py-2 text-right font-mono text-ink-2">{fmt(block.baseCapacity)}</td>
-                <td className="px-3 py-2 text-right font-mono text-ink-2">{block.bufferPct}%</td>
-                <td className="border-l border-line-soft px-3 py-2 text-right font-mono text-ink-2">{fmt(fresh.target)}</td>
-                <td className="px-3 py-2 text-right font-mono text-ink-2">{fmt(fresh.actual)}</td>
-                <td className={`px-3 py-2 text-right font-semibold ${fresh.status.className}`}>{fresh.status.label}</td>
-                <td className="border-l border-line-soft px-3 py-2 text-right font-mono text-ink-2">{fmt(eoss.target)}</td>
-                <td className="px-3 py-2 text-right font-mono text-ink-2">{fmt(eoss.actual)}</td>
-                <td className={`px-3 py-2 text-right font-semibold ${eoss.status.className}`}>{eoss.status.label}</td>
-              </tr>
-            ))}
-            <tr className="border-t-2 border-line bg-surface-2 font-semibold">
-              <td className="px-3 py-2">Total</td>
-              <td className="px-3 py-2 text-right font-mono">{fmt(totalBase)}</td>
-              <td className="px-3 py-2 text-right"></td>
-              <td className="border-l border-line-soft px-3 py-2 text-right font-mono">{fmt(totalFresh.target)}</td>
-              <td className="px-3 py-2 text-right font-mono">{fmt(totalFresh.actual)}</td>
-              <td className={`px-3 py-2 text-right ${totalFresh.status.className}`}>{totalFresh.status.label}</td>
-              <td className="border-l border-line-soft px-3 py-2 text-right font-mono">{fmt(totalEoss.target)}</td>
-              <td className="px-3 py-2 text-right font-mono">{fmt(totalEoss.actual)}</td>
-              <td className={`px-3 py-2 text-right ${totalEoss.status.className}`}>{totalEoss.status.label}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
+// capacityStatus/splitCells/buildCapacityGridRows moved to
+// lib/stockDetails/aggregate.ts (2026-08-20) — imported above — so the
+// Workspace's stock_vs_capacity_table calls the same functions this page
+// does.
 
 /** Girls vs Boys share of a total, shown as two big numbers side by side. */
 function GenderSplitCard({ title, note, data }: { title: string; note: string; data: { gender: Gender; label: string; total: number; sharePct: number }[] }) {
@@ -370,16 +243,14 @@ async function StockDetailsContent({
         For each store and segment: how much display capacity is planned, how much stock is actually on hand
         right now, and whether that&apos;s short of, in line with, or in excess of plan.
       </p>
-      <div className="mt-3 flex flex-col gap-4">
-        {storesInView.map((s) => (
-          <StockVsCapacityTable
-            key={s.store_id}
-            storeId={s.store_id}
-            storeName={s.store_name}
-            blocks={buildCapacityPlan(capacityRows.filter((r) => r.store_id === s.store_id))}
-            actualBlocks={buildDcMatrix(allGenderRows.filter((r) => r.branch_name === s.branch_name_erp))}
-          />
-        ))}
+      <div className="mt-3">
+        <StockVsCapacityGrid
+          rows={buildCapacityGridRows(
+            storesInView,
+            (s) => buildCapacityPlan(capacityRows.filter((r) => r.store_id === s.store_id)),
+            (s) => buildDcMatrix(allGenderRows.filter((r) => r.branch_name === s.branch_name_erp))
+          )}
+        />
       </div>
 
       {/* ---------------- gender split — planned vs current, side by side ---------------- */}

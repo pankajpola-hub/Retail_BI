@@ -97,6 +97,33 @@ Postgres crashed once this session with
 DLL-init failure, not data corruption) and took PostgREST with it; a plain
 restart recovered it cleanly with no data loss.
 
+**2026-08-20 — `nohup ... & disown` does not survive between Bash tool
+calls in this harness.** Starting PostgREST/Keycloak/MinIO that way looked
+fine (the process logged "started"/"listening") but was gone by the next
+tool call — each Bash invocation appears to run in its own subshell whose
+teardown kills children regardless of `disown`. Fixed by starting each with
+PowerShell's `Start-Process -WindowStyle Hidden -RedirectStandardOutput ...
+-RedirectStandardError ...` instead, which detaches properly. PostgREST
+still needs `-WorkingDirectory "D:\Programs\postgrest"` specifically
+(`postgrest.conf`'s `jwt-secret = "@jwk.json"` is a relative path, resolved
+against cwd, not the exe's location) — running it from any other cwd fails
+fast with `jwk.json: does not exist`, easy to misread as the already-fixed
+LIBPQ.dll issue if you don't read the log.
+
+**2026-08-20 — this session's Browser-pane tab would not composite
+frames at all.** `screenshot` always failed with "the Browser pane is not
+displayed"; clicks, Enter-key submits, and even a direct
+`element.requestSubmit()` via `javascript_tool` on the login form produced
+zero effect — no request ever reached the Next.js server (confirmed via an
+unchanged dev-server access log across several attempts). Verified this was
+a Browser-pane rendering limitation, not a real login bug, two ways: (1)
+`curl`-ing the Keycloak token endpoint directly with the test credentials
+returned a real JWT, and (2) `curl`-ing an app page with that JWT set as
+the `sh_access_token` cookie returned real server-rendered HTML. When this
+happens again: fall back to `curl` with a manually-obtained Keycloak token
+as a cookie to verify server-side rendering/compute, rather than assuming
+the app is broken or burning time retrying browser interaction.
+
 ## Verification harnesses (there is still no test framework)
 
 Four now exist. All are plain Node/psql, matching the project's existing

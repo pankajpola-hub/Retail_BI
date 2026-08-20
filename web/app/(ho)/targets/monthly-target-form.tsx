@@ -2,6 +2,9 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { Input, Select, Label } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 type Store = { store_id: string; store_name: string };
 
@@ -91,61 +94,29 @@ export function MonthlyTargetForm({
   return (
     <>
       <form onSubmit={onSubmit} className="flex flex-wrap items-end gap-3 border border-line-soft p-4">
-        <label className="flex flex-col gap-1 text-[12px]">
+        <Label className="flex flex-col gap-1">
           <span className="text-ink-3">Store</span>
-          <select
-            value={storeId}
-            onChange={(e) => setStoreId(e.target.value)}
-            className="min-h-[36px] border border-line bg-surface px-2 py-1.5 text-sm"
-          >
+          <Select value={storeId} onChange={(e) => setStoreId(e.target.value)}>
             {stores.map((s) => (
               <option key={s.store_id} value={s.store_id}>
                 {s.store_name}
               </option>
             ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-[12px]">
+          </Select>
+        </Label>
+        <Label className="flex flex-col gap-1">
           <span className="text-ink-3">Month</span>
-          <input
-            type="month"
-            value={month}
-            onChange={(e) => setMonth(e.target.value)}
-            required
-            className="min-h-[36px] border border-line bg-surface px-2 py-1.5 text-sm"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-[12px]">
+          <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} required />
+        </Label>
+        <Label className="flex flex-col gap-1">
           <span className="text-ink-3">Fresh target (units)</span>
-          <input
-            type="number"
-            min={0}
-            inputMode="numeric"
-            value={fresh}
-            onChange={(e) => setFresh(e.target.value)}
-            required
-            className="min-h-[36px] w-32 border border-line bg-surface px-2 py-1.5 text-sm"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-[12px]">
+          <Input type="number" min={0} inputMode="numeric" value={fresh} onChange={(e) => setFresh(e.target.value)} required className="w-32" />
+        </Label>
+        <Label className="flex flex-col gap-1">
           <span className="text-ink-3">Discounted target (units)</span>
-          <input
-            type="number"
-            min={0}
-            inputMode="numeric"
-            value={discounted}
-            onChange={(e) => setDiscounted(e.target.value)}
-            required
-            className="min-h-[36px] w-32 border border-line bg-surface px-2 py-1.5 text-sm"
-          />
-        </label>
-        <button
-          type="submit"
-          disabled={step.kind === "saving"}
-          className="min-h-[36px] bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-        >
-          Set targets
-        </button>
+          <Input type="number" min={0} inputMode="numeric" value={discounted} onChange={(e) => setDiscounted(e.target.value)} required className="w-32" />
+        </Label>
+        <Button type="submit" disabled={step.kind === "saving"}>Set targets</Button>
       </form>
 
       {step.kind === "error" && (
@@ -154,47 +125,42 @@ export function MonthlyTargetForm({
         </p>
       )}
 
-      {(step.kind === "confirm" || step.kind === "overwrite" || step.kind === "saving") && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-sm border border-line bg-surface p-5 shadow-lg">
-            {step.kind === "overwrite" ? (
-              <>
-                <p className="text-sm font-semibold text-warn">Targets already set</p>
-                <p className="mt-2 text-[13px] text-ink-2">{step.message}</p>
-                <p className="mt-2 text-[13px] text-ink-2">
-                  New values — Fresh <span className="font-mono">{pending?.fresh}</span>, Discounted{" "}
-                  <span className="font-mono">{pending?.discounted}</span>.
-                </p>
-              </>
-            ) : (
-              <>
-                <p className="text-sm font-semibold text-ink">Confirm targets</p>
-                <p className="mt-2 text-[13px] text-ink-2">
-                  Set {storeName} — {monthLabel} to Fresh{" "}
-                  <span className="font-mono">{pending?.fresh ?? ""}</span>, Discounted{" "}
-                  <span className="font-mono">{pending?.discounted ?? ""}</span>?
-                </p>
-              </>
-            )}
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                onClick={() => setStep({ kind: "closed" })}
-                disabled={step.kind === "saving"}
-                className="border border-line px-3 py-1.5 text-[13px] text-ink-2 disabled:opacity-60"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => save(step.kind === "overwrite")}
-                disabled={step.kind === "saving"}
-                className="bg-accent px-3 py-1.5 text-[13px] font-semibold text-white disabled:opacity-60"
-              >
-                {step.kind === "saving" ? "Saving…" : step.kind === "overwrite" ? "Overwrite" : "Confirm"}
-              </button>
-            </div>
+      <Dialog
+        open={step.kind === "confirm" || step.kind === "overwrite" || step.kind === "saving"}
+        onOpenChange={(open) => {
+          if (!open && step.kind !== "saving") setStep({ kind: "closed" });
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className={step.kind === "overwrite" ? "text-warn" : ""}>
+              {step.kind === "overwrite" ? "Targets already set" : "Confirm targets"}
+            </DialogTitle>
+          </DialogHeader>
+          {step.kind === "overwrite" ? (
+            <>
+              <p className="mt-2 text-[13px] text-ink-2">{step.message}</p>
+              <p className="mt-2 text-[13px] text-ink-2">
+                New values — Fresh <span className="font-mono">{pending?.fresh}</span>, Discounted{" "}
+                <span className="font-mono">{pending?.discounted}</span>.
+              </p>
+            </>
+          ) : (
+            <p className="mt-2 text-[13px] text-ink-2">
+              Set {storeName} — {monthLabel} to Fresh <span className="font-mono">{pending?.fresh ?? ""}</span>,
+              Discounted <span className="font-mono">{pending?.discounted ?? ""}</span>?
+            </p>
+          )}
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => setStep({ kind: "closed" })} disabled={step.kind === "saving"}>
+              Cancel
+            </Button>
+            <Button size="sm" onClick={() => save(step.kind === "overwrite")} disabled={step.kind === "saving"}>
+              {step.kind === "saving" ? "Saving…" : step.kind === "overwrite" ? "Overwrite" : "Confirm"}
+            </Button>
           </div>
-        </div>
-      )}
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { updateWorkspaceFilters } from "@/lib/workspace/actions";
+import { Input } from "@/components/ui/input";
 
 /**
  * Store scope as a searchable checkbox popover (same interaction pattern as
@@ -203,7 +204,7 @@ export function WorkspaceFiltersBar({
 
         {open && (
           <div className="absolute left-0 top-full z-20 mt-2 flex max-h-80 w-64 flex-col rounded-md border border-line bg-surface p-2 shadow-lg">
-            <input
+            <Input
               ref={searchRef}
               type="text"
               value={query}
@@ -213,7 +214,7 @@ export function WorkspaceFiltersBar({
               }}
               placeholder="Search stores…"
               aria-label="Search stores by name or ID"
-              className="min-h-[30px] w-full rounded border border-line bg-surface px-2 py-1 text-[12.5px] text-ink-2"
+              className="min-h-[30px] py-1 text-[12.5px]"
             />
 
             <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px]">
@@ -281,20 +282,20 @@ export function WorkspaceFiltersBar({
 
       <div className="flex items-center gap-2">
         <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Period</span>
-        <input
+        <Input
           type="date"
           value={from}
           onChange={(e) => setFrom(e.target.value)}
           onBlur={handleDateBlur}
-          className="min-h-[30px] rounded border border-line bg-surface px-2 py-1 text-[12.5px] text-ink-2"
+          className="min-h-[30px] w-auto py-1 text-[12.5px]"
         />
         <span className="text-ink-3">→</span>
-        <input
+        <Input
           type="date"
           value={to}
           onChange={(e) => setTo(e.target.value)}
           onBlur={handleDateBlur}
-          className="min-h-[30px] rounded border border-line bg-surface px-2 py-1 text-[12.5px] text-ink-2"
+          className="min-h-[30px] w-auto py-1 text-[12.5px]"
         />
       </div>
 
