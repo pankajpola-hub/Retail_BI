@@ -2,11 +2,12 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/data/client";
 import type { DataClient, QueryChain } from "@/lib/data/client";
 import { requirePageAccess } from "@/lib/auth/roles";
+import { resolveViewScope, type VerticalKey } from "@/lib/scope/resolveViewScope";
+import { ScopeBar } from "@/components/ui/ScopeBar";
 import { KpiCard } from "@/components/ui/KpiCard";
 import { Pill } from "@/components/ui/Pill";
 import { TrendChart } from "@/components/ui/TrendChart";
 import { HourlyBarChart } from "@/components/ui/HourlyBarChart";
-import { DateRangePicker } from "@/components/ui/DateRangePicker";
 import { MultiSelectFilter } from "@/components/ui/StoreFilter";
 import { KpiGridSkeleton, ChartSkeleton, TableSkeleton, MatrixSkeleton, SectionLabelSkeleton } from "@/components/ui/Skeleton";
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
@@ -54,8 +55,11 @@ type SchemeDailyRow = { scheme_group: string | null; quantity: number | string |
 type StoreRow = { store_id: string; store_name: string; city: string };
 type ActionSummary = { open_count: number | null; closed_unmeasured_count: number | null };
 type HourlyRow = { bill_hour: number | null; net_sales: number | string };
+// sales.vw_ecomm_daily (0067) — only the fields the rollup card below reads.
+type EcommDailyRow = { channel: string; order_date: string; net_selling_value: number | string };
 
 const INR = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
+const num = (v: number | string) => (typeof v === "string" ? Number(v) : v);
 const isoDate = (d: Date) => d.toISOString().slice(0, 10);
 
 type ApplyStore = <T extends { eq: (col: string, val: string) => T; in: (col: string, vals: string[]) => T }>(
@@ -76,6 +80,130 @@ type ApplyStore = <T extends { eq: (col: string, val: string) => T; in: (col: st
 // Builder's dynamically-rendered Sales components call the exact same
 // functions this page does, rather than a second hand-synced copy.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Vertical rollup + exceptions — independently streamed section, part of
+// Phase 1 of the BI UI/UX architecture work (see the plan file for the full
+// design). Deliberately its own small queries against the same cheap
+// pre-aggregated views SalesSection/FootfallSection already use, rather
+// than lifting shared state up a level — same "disclosed duplication to
+// preserve independent streaming" trade-off FootfallSection's own header
+// comment documents below.
+//
+// Exceptions here are EBO-only and WoW-sales-decline-only in this first
+// version: a per-store diagnosis needs footfall data too (see
+// FootfallSection's storeDiagnosis), which isn't cheap enough to duplicate
+// a third time — a real ECOM/stock-based exception feed is later work, not
+// faked here.
+// ---------------------------------------------------------------------------
+async function OverviewRollupSection({
+  supabase,
+  applyStore,
+  from,
+  to,
+  weeklyStart,
+  prevFrom,
+  prevTo,
+  storeNames,
+  businessUnits,
+  selectedVerticals,
+}: {
+  supabase: DataClient;
+  applyStore: ApplyStore;
+  from: string;
+  to: string;
+  weeklyStart: Date;
+  prevFrom: Date;
+  prevTo: Date;
+  storeNames: Map<string, string>;
+  businessUnits: string[];
+  selectedVerticals: VerticalKey[];
+}) {
+  const showEbo = selectedVerticals.length === 0 || selectedVerticals.includes("ebo");
+  const showEcomm = businessUnits.includes("ecomm") && (selectedVerticals.length === 0 || selectedVerticals.includes("ecomm"));
+
+  const [{ data: weeks }, { data: ecommNow }, { data: ecommPrev }] = await timeAll("network:rollup", [
+    applyStore(supabase.schema("sales").from<WeeklyRow>("vw_ebo_sales_weekly").select("*").gte("week_start", isoDate(weeklyStart)).lte("week_start", to) as unknown as QueryChain<WeeklyRow>),
+    showEcomm
+      ? (supabase.schema("sales").from<EcommDailyRow>("vw_ecomm_daily").select("channel, order_date, net_selling_value").gte("order_date", from).lte("order_date", to) as unknown as QueryChain<EcommDailyRow>)
+      : Promise.resolve({ data: [] as EcommDailyRow[] }),
+    showEcomm
+      ? (supabase.schema("sales").from<EcommDailyRow>("vw_ecomm_daily").select("channel, order_date, net_selling_value").gte("order_date", isoDate(prevFrom)).lte("order_date", isoDate(prevTo)) as unknown as QueryChain<EcommDailyRow>)
+      : Promise.resolve({ data: [] as EcommDailyRow[] }),
+  ] as const);
+
+  const { totalNetSales: eboNet, wow: eboWow, weekRows, storesInView } = computeSalesTotals(weeks, from);
+
+  const ecommNet = (ecommNow ?? []).reduce((s, r) => s + num(r.net_selling_value), 0);
+  const ecommPrevNet = (ecommPrev ?? []).reduce((s, r) => s + num(r.net_selling_value), 0);
+  const ecommDelta = ecommPrevNet > 0 ? ((ecommNet - ecommPrevNet) / ecommPrevNet) * 100 : null;
+
+  const networkNet = (showEbo ? eboNet : 0) + (showEcomm ? ecommNet : 0);
+
+  // Worst-performing stores by their own latest-week net-sales change —
+  // reuses buildWeekSeriesShared exactly as the week-wise table below does,
+  // just reading its last row instead of the whole series.
+  const exceptions = storesInView
+    .map((sid) => {
+      const series = buildWeekSeriesShared(weekRows, sid);
+      const latest = series[series.length - 1];
+      return latest?.netChangePct != null
+        ? { storeId: sid, name: storeNames.get(sid) ?? sid, netChangePct: latest.netChangePct, net: latest.net }
+        : null;
+    })
+    .filter((r): r is { storeId: string; name: string; netChangePct: number; net: number } => r !== null && r.netChangePct < -10)
+    .sort((a, b) => a.netChangePct - b.netChangePct);
+
+  return (
+    <>
+      <span className="mt-6 block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
+        Vertical rollup
+      </span>
+      <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <KpiCard label="Network · All" value={INR(networkNet)} sub={eboWow !== null ? `${eboWow >= 0 ? "+" : ""}${eboWow.toFixed(1)}% EBO WoW` : undefined} />
+        {showEbo && (
+          <KpiCard label="EBO" value={INR(eboNet)} sub={eboWow !== null ? `${eboWow >= 0 ? "+" : ""}${eboWow.toFixed(1)}% WoW` : "need 2 complete weeks"} />
+        )}
+        {showEcomm && (
+          <KpiCard
+            label="ECOM"
+            value={INR(ecommNet)}
+            sub={ecommDelta !== null ? `${ecommDelta >= 0 ? "+" : ""}${ecommDelta.toFixed(1)}% vs prior period` : undefined}
+          />
+        )}
+        <KpiCard label="MBO" value="—" sub="Pipeline not connected" tone="muted" />
+        <KpiCard label="LFS" value="—" sub="Pipeline not connected" tone="muted" />
+      </div>
+
+      {exceptions.length > 0 && (
+        <div className="mt-4 border border-line-soft">
+          <div className="flex items-center justify-between border-b border-line-soft bg-surface-2 px-3 py-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-2">Needs attention — EBO sales</span>
+            <span className="text-[11px] text-ink-3">{exceptions.length} store{exceptions.length === 1 ? "" : "s"}, latest week vs prior</span>
+          </div>
+          <ul>
+            {exceptions.map((e) => (
+              <li key={e.storeId} className="flex items-center gap-3 border-b border-line-soft px-3 py-2 text-[13px] last:border-0">
+                <Pill tone={e.netChangePct < -20 ? "crit" : "warn"}>{e.netChangePct.toFixed(1)}%</Pill>
+                <span className="flex-1">{e.name}</span>
+                <span className="font-mono text-ink-3">{INR(e.net)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </>
+  );
+}
+
+function OverviewRollupSectionSkeleton() {
+  return (
+    <>
+      <SectionLabelSkeleton />
+      <KpiGridSkeleton count={5} />
+    </>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Sales & Trends — independently streamed section.
@@ -813,14 +941,19 @@ function FootfallSectionSkeleton() {
 export default async function NetworkPage({
   searchParams,
 }: {
-  searchParams: { from?: string; to?: string; store?: string }; // store: comma-separated store_ids, multi-select (0038)
+  // store: comma-separated store_ids, multi-select (0038). bu: comma-
+  // separated vertical keys, multi-select (Phase 1 of the BI UI/UX work) —
+  // same convention, same "empty/absent = all granted" default.
+  searchParams: { from?: string; to?: string; store?: string; bu?: string };
 }) {
   // requirePageAccess (migration 0035) layers a per-user override on top of
   // the role default — (ho)/layout.tsx's gate is coarse (it also hosts
   // /targets, a different page_key), so the "network" page_key check has to
   // happen here instead. This page previously had no per-page gate of its
   // own (only the layout's), so this is a new check, not a swap.
-  await requirePageAccess("network");
+  const user = await requirePageAccess("network");
+  const { verticals } = resolveViewScope(user);
+  const selectedVerticals = (searchParams.bu ?? "").split(",").filter(Boolean) as VerticalKey[];
 
   const supabase = await createClient();
 
@@ -870,18 +1003,24 @@ export default async function NetworkPage({
 
   return (
     <main className="py-6">
-      <div className="flex items-baseline justify-between">
-        <h1 className="font-serif text-2xl">Executive dashboard</h1>
-        <div className="flex items-center gap-2">
-          <MultiSelectFilter
-            paramName="store"
-            options={(stores ?? []).map((s) => s.store_id)}
-            labels={Object.fromEntries((stores ?? []).map((s) => [s.store_id, s.store_name]))}
-            selected={storeFilters}
-            allLabel="All stores"
-          />
-          <DateRangePicker from={from} to={to} />
-        </div>
+      <h1 className="font-serif text-2xl">Overview</h1>
+
+      <div className="mt-3">
+        <ScopeBar
+          verticals={verticals}
+          selectedVerticals={selectedVerticals}
+          from={from}
+          to={to}
+          locationSlot={
+            <MultiSelectFilter
+              paramName="store"
+              options={(stores ?? []).map((s) => s.store_id)}
+              labels={Object.fromEntries((stores ?? []).map((s) => [s.store_id, s.store_name]))}
+              selected={storeFilters}
+              allLabel="All stores"
+            />
+          }
+        />
       </div>
 
       {actionSummary && (actionSummary.open_count ?? 0) > 0 && (
@@ -892,6 +1031,23 @@ export default async function NetworkPage({
             : ""}
         </p>
       )}
+
+      <SectionErrorBoundary label="Vertical rollup">
+        <Suspense fallback={<OverviewRollupSectionSkeleton />}>
+          <OverviewRollupSection
+            supabase={supabase}
+            applyStore={applyStore}
+            from={from}
+            to={to}
+            weeklyStart={weeklyStart}
+            prevFrom={prevFrom}
+            prevTo={prevTo}
+            storeNames={storeNames}
+            businessUnits={user.businessUnits}
+            selectedVerticals={selectedVerticals}
+          />
+        </Suspense>
+      </SectionErrorBoundary>
 
       <SectionErrorBoundary label="Sales & Trends">
         <Suspense fallback={<SalesSectionSkeleton />}>

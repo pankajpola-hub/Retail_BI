@@ -2,6 +2,7 @@ import { cache } from "react";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/data/client";
 import { getPermit } from "@/lib/permit/client";
+import { resolveViewScope } from "@/lib/scope/resolveViewScope";
 
 export type AppRole =
   | "super_admin"
@@ -128,8 +129,16 @@ function redirectForUnresolvedCaller(reason: "no_session" | "not_provisioned"): 
 //     unit, see 0061's header and createUserSchema's min(1)) -> ROLE_HOME[role]
 //     as a last-resort fallback rather than throwing.
 export function resolveHome(role: AppRole, businessUnits: BusinessUnit[]): string {
-  if (businessUnits.includes("retail")) return ROLE_HOME[role];
-  if (businessUnits.includes("ecomm") && PAGE_ROLE_DEFAULTS.ecomm.includes(role)) return "/ecomm";
+  // Reads the same grant facts through resolveViewScope (lib/scope) rather
+  // than re-deriving them inline, so there's one source of truth for "what
+  // can this user reach" shared with the scope bar — see that function's
+  // header for why MBO/LFS piggyback on the "retail" grant.
+  const { verticals } = resolveViewScope({ businessUnits });
+  const hasRetail = verticals.find((v) => v.key === "ebo")!.granted;
+  const hasEcomm = verticals.find((v) => v.key === "ecomm")!.granted;
+
+  if (hasRetail) return ROLE_HOME[role];
+  if (hasEcomm && PAGE_ROLE_DEFAULTS.ecomm.includes(role)) return "/ecomm";
   return ROLE_HOME[role];
 }
 
