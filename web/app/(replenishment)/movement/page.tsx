@@ -2,7 +2,6 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/data/client";
 import type { DataClient } from "@/lib/data/client";
 import { requirePageAccess } from "@/lib/auth/roles";
-import { RowsPerPageSelect } from "@/components/ui/RowsPerPageSelect";
 import { Input, Select, Label } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { KpiGridSkeleton, TableSkeleton } from "@/components/ui/Skeleton";
@@ -17,9 +16,9 @@ import {
   type Trend,
   type ScoreWeights,
 } from "@/lib/replenishment/compute";
-import { computeSaleStockMix, MIX_STATUS_META, type MixStatus, type SalesPeriodDays } from "@/lib/replenishment/mix";
+import { computeSaleStockMix, type MixStatus, type SalesPeriodDays } from "@/lib/replenishment/mix";
 import { ReplenishmentFacetedContent } from "./ReplenishmentFacetedContent";
-import { SaleStockMixGrid } from "../sale-stock-mix/SaleStockMixGrid";
+import { SaleStockMixFacetedContent } from "./SaleStockMixFacetedContent";
 
 export const dynamic = "force-dynamic";
 
@@ -433,6 +432,16 @@ async function SaleStockMixContent({
   supabase: DataClient;
   searchParams: MovementSearchParams;
 }) {
+  // `store` and `salesPeriodDays` stay real server params — unlike
+  // Replenishment's old q/store/priority/action, computeSaleStockMix
+  // genuinely AGGREGATES at the store scope (storeId="" means network-wide
+  // totals per style-color, not "all stores' own rows together" — see
+  // lib/replenishment/mix.ts's own comments), so there's no per-store
+  // breakdown to facet over client-side without changing what gets
+  // computed. Style/Color/Status were already plain post-filters on the
+  // fetched rows — those move to SaleStockMixFacetedContent.tsx instead
+  // (Phase 1 of the faceted-filtering system, second page after
+  // Replenishment).
   const storeId = searchParams.mix_store ?? "";
   const periodParam = Number(searchParams.mix_period) as SalesPeriodDays;
   const salesPeriodDays: SalesPeriodDays = PERIOD_OPTIONS.includes(periodParam) ? periodParam : 30;
@@ -442,17 +451,6 @@ async function SaleStockMixContent({
     computeSaleStockMix(supabase, { storeId, salesPeriodDays })
   );
 
-  const styleQ = (searchParams.mix_style ?? "").trim().toLowerCase();
-  const colorQ = (searchParams.mix_color ?? "").trim().toLowerCase();
-  const statusFilter = (searchParams.mix_status ?? "") as MixStatus | "";
-
-  const filtered = rows.filter((r) => {
-    if (styleQ && !r.styleNo.toLowerCase().includes(styleQ)) return false;
-    if (colorQ && !r.color.toLowerCase().includes(colorQ)) return false;
-    if (statusFilter && r.status !== statusFilter) return false;
-    return true;
-  });
-
   const counts: Record<MixStatus, number> = {
     high_priority: 0,
     opportunity: 0,
@@ -461,48 +459,6 @@ async function SaleStockMixContent({
     overstocked: 0,
   };
   for (const r of rows) counts[r.status]++;
-
-  const PER_PAGE_OPTIONS = ["10", "50", "100", "max"];
-  const perPageParam = PER_PAGE_OPTIONS.includes(searchParams.mix_perPage ?? "") ? (searchParams.mix_perPage as string) : "50";
-  const totalRows = filtered.length;
-  const perPageNum = perPageParam === "max" ? Math.max(1, totalRows) : Number(perPageParam);
-  const totalPages = Math.max(1, Math.ceil(totalRows / perPageNum));
-  const page = Math.min(totalPages, Math.max(1, Number(searchParams.mix_page) || 1));
-  const pageStart = (page - 1) * perPageNum;
-  const pageRows = filtered.slice(pageStart, pageStart + perPageNum);
-
-  function buildHref(overrides: Record<string, string | number>): string {
-    const params = new URLSearchParams();
-    const current: Record<string, string | undefined> = {
-      tab: "mix",
-      // Preserve the Replenishment tab's own state too.
-      q: searchParams.q,
-      store: searchParams.store,
-      priority: searchParams.priority,
-      action: searchParams.action,
-      targetCover: searchParams.targetCover,
-      leadTime: searchParams.leadTime,
-      safetyDays: searchParams.safetyDays,
-      wStockout: searchParams.wStockout,
-      wVelocity: searchParams.wVelocity,
-      wCover: searchParams.wCover,
-      wRevenue: searchParams.wRevenue,
-      wTrend: searchParams.wTrend,
-      wProductivity: searchParams.wProductivity,
-      perPage: searchParams.perPage,
-      page: searchParams.page,
-      mix_store: storeId || undefined,
-      mix_style: searchParams.mix_style,
-      mix_color: searchParams.mix_color,
-      mix_period: String(salesPeriodDays),
-      mix_status: statusFilter || undefined,
-      mix_perPage: perPageParam,
-      mix_page: String(page),
-    };
-    for (const [k, v] of Object.entries(current)) if (v) params.set(k, v);
-    for (const [k, v] of Object.entries(overrides)) params.set(k, String(v));
-    return `?${params.toString()}`;
-  }
 
   return (
     <>
@@ -539,7 +495,18 @@ async function SaleStockMixContent({
 
       <form className="mt-4 flex flex-wrap items-end gap-3 text-[12.5px]">
         <input type="hidden" name="tab" value="mix" />
-        <input type="hidden" name="mix_perPage" value={perPageParam} />
+        {/* Preserves the Replenishment tab's own server params across this
+            form's native GET submit — same "don't lose the other tab's
+            state" principle as tabHref/buildHref elsewhere in this file. */}
+        <input type="hidden" name="targetCover" value={searchParams.targetCover ?? ""} />
+        <input type="hidden" name="leadTime" value={searchParams.leadTime ?? ""} />
+        <input type="hidden" name="safetyDays" value={searchParams.safetyDays ?? ""} />
+        <input type="hidden" name="wStockout" value={searchParams.wStockout ?? ""} />
+        <input type="hidden" name="wVelocity" value={searchParams.wVelocity ?? ""} />
+        <input type="hidden" name="wCover" value={searchParams.wCover ?? ""} />
+        <input type="hidden" name="wRevenue" value={searchParams.wRevenue ?? ""} />
+        <input type="hidden" name="wTrend" value={searchParams.wTrend ?? ""} />
+        <input type="hidden" name="wProductivity" value={searchParams.wProductivity ?? ""} />
         <Label className="flex flex-col gap-1">
           Store
           <Select name="mix_store" defaultValue={storeId}>
@@ -552,14 +519,6 @@ async function SaleStockMixContent({
           </Select>
         </Label>
         <Label className="flex flex-col gap-1">
-          Style No.
-          <Input type="text" name="mix_style" defaultValue={searchParams.mix_style ?? ""} placeholder="style no." className="w-40" />
-        </Label>
-        <Label className="flex flex-col gap-1">
-          Color
-          <Input type="text" name="mix_color" defaultValue={searchParams.mix_color ?? ""} placeholder="color" className="w-40" />
-        </Label>
-        <Label className="flex flex-col gap-1">
           Sales period
           <Select name="mix_period" defaultValue={String(salesPeriodDays)}>
             {PERIOD_OPTIONS.map((p) => (
@@ -569,61 +528,12 @@ async function SaleStockMixContent({
             ))}
           </Select>
         </Label>
-        <Label className="flex flex-col gap-1">
-          Status
-          <Select name="mix_status" defaultValue={statusFilter}>
-            <option value="">All</option>
-            {(Object.keys(MIX_STATUS_META) as MixStatus[]).map((s) => (
-              <option key={s} value={s}>
-                {MIX_STATUS_META[s].label}
-              </option>
-            ))}
-          </Select>
-        </Label>
         <Button type="submit" variant="outline">Apply</Button>
       </form>
 
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-        <span className="text-[12px] text-ink-3">
-          {totalRows === 0 ? "0 rows" : `Showing ${fmt(pageStart + 1)}–${fmt(Math.min(pageStart + perPageNum, totalRows))} of ${fmt(totalRows)} rows`}
-        </span>
-        <RowsPerPageSelect selected={perPageParam} paramName="mix_perPage" pageParamName="mix_page" />
+      <div className="mt-4">
+        <SaleStockMixFacetedContent rows={rows} />
       </div>
-      <SaleStockMixGrid rows={pageRows} />
-
-      {totalPages > 1 && (
-        <div className="mt-2 flex flex-wrap items-center justify-center gap-1 text-[12.5px]">
-          <a
-            href={buildHref({ mix_page: Math.max(1, page - 1) })}
-            aria-disabled={page <= 1}
-            className={`border border-line px-3 py-1 ${page <= 1 ? "pointer-events-none opacity-40" : "text-ink-2 hover:bg-surface-2"}`}
-          >
-            ← Prev
-          </a>
-          {Array.from({ length: totalPages }, (_, i) => i + 1)
-            .filter((p) => p === 1 || p === totalPages || Math.abs(p - page) <= 2)
-            .map((p, i, arr) => (
-              <span key={p} className="flex items-center gap-1">
-                {i > 0 && arr[i - 1] !== p - 1 && <span className="px-1 text-ink-3">…</span>}
-                <a
-                  href={buildHref({ mix_page: p })}
-                  className={`border px-3 py-1 ${
-                    p === page ? "border-accent bg-accent text-white" : "border-line text-ink-2 hover:bg-surface-2"
-                  }`}
-                >
-                  {p}
-                </a>
-              </span>
-            ))}
-          <a
-            href={buildHref({ mix_page: Math.min(totalPages, page + 1) })}
-            aria-disabled={page >= totalPages}
-            className={`border border-line px-3 py-1 ${page >= totalPages ? "pointer-events-none opacity-40" : "text-ink-2 hover:bg-surface-2"}`}
-          >
-            Next →
-          </a>
-        </div>
-      )}
     </>
   );
 }

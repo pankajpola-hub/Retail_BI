@@ -4,6 +4,20 @@ import { useMemo } from "react";
 import type { ColDef, ICellRendererParams } from "ag-grid-community";
 import { DataGrid } from "@/components/ui/DataGrid";
 import type { MixStatus, MixRow } from "@/lib/replenishment/mix";
+import type { GroupHeaderRow } from "@/components/ui/FacetFilterBar";
+
+// Group-by (Phase 1 of the faceted-filtering system, ported from
+// ReplenishmentGrid.tsx — see that file's header for why this is a colSpan
+// banner row, not AG Grid's isFullWidthRow). Unlike Replenishment's grid,
+// no column here has a declarative default `sort`, so there's no
+// equivalent stale-sort-model issue to clear imperatively — the row order
+// buildGroupedRows produces is respected as-is. Optional and additive: no
+// other caller of this component exists yet outside this one tab.
+export type GridRow = MixRow | GroupHeaderRow;
+
+function isGroupHeader(row: GridRow | undefined): row is GroupHeaderRow {
+  return !!row && "__groupHeader" in row && row.__groupHeader === true;
+}
 
 // lib/replenishment/mix.ts is "server-only" — MIX_STATUS_META can't be
 // imported as a value into this client component (same lesson as
@@ -25,12 +39,19 @@ const pts = (n: number) => `${n > 0 ? "+" : ""}${n.toFixed(1)}pp`;
 
 /**
  * 2026-08-20 — same AG Grid conversion as the Replenishment/Store League/
- * Stock capacity tables: this page's main table is server-paginated over
- * potentially hundreds of style-colors, the exact scale problem AG Grid
- * solves. Server-side filter/pagination logic in page.tsx is unchanged —
- * this renders whatever page of rows the server already sliced.
+ * Stock capacity tables: this page's main table can span hundreds of
+ * style-colors, the exact scale problem AG Grid solves.
+ *
+ * Display filtering/search/pagination is NOT server-side anymore for the
+ * Movement tab that uses this (see SaleStockMixFacetedContent.tsx, Phase 1
+ * of the faceted-filtering system) — this grid just renders whatever full
+ * or grouped row array its caller hands it, AG Grid's own virtualized
+ * scrolling handling row count instead of a manual pager. `salesPeriodDays`
+ * is still a real server-side input (it changes which rows get computed at
+ * all, not just which are displayed), so that one stays a server
+ * round-trip in page.tsx.
  */
-export function SaleStockMixGrid({ rows }: { rows: MixRow[] }) {
+export function SaleStockMixGrid({ rows }: { rows: GridRow[] }) {
   const columnDefs = useMemo<ColDef<MixRow>[]>(
     () => [
       {
@@ -39,15 +60,31 @@ export function SaleStockMixGrid({ rows }: { rows: MixRow[] }) {
         flex: 1,
         sortable: true,
         cellClass: "font-mono text-[11.5px]",
+        // colSpan makes this cell cover every column for a group-header
+        // row (see the file header) — same technique as
+        // ReplenishmentGrid.tsx. 10 = total column count below.
+        colSpan: (p: { data?: GridRow }) => (isGroupHeader(p.data) ? 10 : 1),
         valueFormatter: (p) => p.value,
-        cellRenderer: (p: ICellRendererParams<MixRow>) => (
-          <span>
-            {p.data!.styleNo}
-            {p.data!.negativeStock && (
-              <span className="ml-1 text-crit" title="Negative stock in source data">⚠</span>
-            )}
-          </span>
-        ),
+        cellRenderer: (p: ICellRendererParams<GridRow>) => {
+          if (isGroupHeader(p.data)) {
+            const g = p.data;
+            return (
+              <div className="flex h-full items-center gap-2 bg-surface-2 px-1 text-[12px] font-semibold text-ink-2" style={{ paddingLeft: g.level * 16 }}>
+                <span>{g.label}</span>
+                <span className="font-mono font-normal text-ink-3">({g.count})</span>
+              </div>
+            );
+          }
+          const r = p.data as MixRow;
+          return (
+            <span>
+              {r.styleNo}
+              {r.negativeStock && (
+                <span className="ml-1 text-crit" title="Negative stock in source data">⚠</span>
+              )}
+            </span>
+          );
+        },
       },
       { field: "color", headerName: "Color", flex: 0.8, sortable: true, cellClass: "text-ink-2" },
       { field: "sales", headerName: "Sales", flex: 0.8, sortable: true, cellClass: "text-right font-mono", headerClass: "text-right", valueFormatter: (p) => fmt(p.value) },
@@ -95,10 +132,11 @@ export function SaleStockMixGrid({ rows }: { rows: MixRow[] }) {
   );
 
   return (
-    <DataGrid<MixRow>
+    <DataGrid<GridRow>
       rowData={rows}
-      columnDefs={columnDefs}
+      columnDefs={columnDefs as unknown as ColDef<GridRow>[]}
       heightPx={Math.min(640, Math.max(160, 46 + rows.length * 40))}
+      getRowId={(p) => (isGroupHeader(p.data) ? p.data.id : `${p.data.styleNo}|${p.data.color}`)}
       overlayNoRowsTemplate="No style-colors match these filters."
     />
   );
