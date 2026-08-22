@@ -15,7 +15,22 @@ export const maxDuration = 60;
 
 // Rolling window, not a cursor — see 0063_raw_uniware.sql's header for why
 // SearchSaleOrder has no "updated since" filter to track one against.
-const HEADER_SYNC_WINDOW_DAYS = 45;
+//
+// Cut 45 -> 7 (2026-08-22): the real production bottleneck turned out to be
+// HERE, not the item/returns batch sizes (those got cut 150->60->20 first,
+// with NO effect — still a flat 60s FUNCTION_INVOCATION_TIMEOUT every time,
+// which only makes sense if something ahead of them was already consuming
+// the whole budget). A 45-day window walked in 30-day chunks means ~45
+// sequential SearchSaleOrder page calls EVERY run, each a real network round
+// trip from Vercel's US datacenter to this India-hosted Uniware tenant —
+// plausibly slower per call than local dev's path, which is why this wasn't
+// caught until the real deploy. A short daily window is also just the
+// correct steady-state design once the historical backfill is done: nothing
+// about routine daily maintenance needs to re-walk 45 days of history every
+// single run. A separate, explicit backfill pass (a one-off wider-window
+// invocation, not the scheduled cron) is the right tool for catching up
+// further back, not this constant.
+const HEADER_SYNC_WINDOW_DAYS = 7;
 // SearchSaleOrder rejects any FromDate..ToDate span over ~31 days with a
 // generic "An internal error occurred" fault (no specific error code) —
 // confirmed live by binary search: 31 days succeeds, 32 fails. The total
@@ -30,7 +45,22 @@ const HEADER_SAFETY_CAP = 5000; // orders per chunk; comfortably above any 30-da
 // per invocation so a large backfill can't run into Vercel's function
 // duration limit. Whatever's left in the queue (items_synced_at is null) just
 // gets picked up on the next scheduled run.
-const ITEM_ENRICHMENT_BATCH_SIZE = 150;
+//
+// Lowered from 150 to 60 (2026-08-22): confirmed live in production that
+// 150+150 (items+returns) real sequential external-API calls in one
+// invocation blew past the Hobby-plan function duration ceiling — a real
+// FUNCTION_INVOCATION_TIMEOUT (504), not a maxDuration=60 config problem
+// (that export is already set; the platform ceiling wins regardless). Local
+// dev has no such ceiling, which is why this wasn't caught until the real
+// deploy. Smaller batches, more runs — same "whatever doesn't fit gets
+// picked up next time" design, just tuned to actually fit.
+// Cut again, 60 -> 20 (still timed out at 60): Vercel's US datacenter to
+// this India-hosted Uniware tenant is a much slower round trip per call than
+// local dev's network path was — the real bottleneck is per-call latency,
+// not raw batch size arithmetic. 20 is a deliberately conservative starting
+// point; can be tuned up once real production timing is measured (the
+// sync_runs log, 0068, records started_at/finished_at for exactly this).
+const ITEM_ENRICHMENT_BATCH_SIZE = 20;
 
 // Returns sync — same rolling-window-not-cursor shape as the header sync
 // (Search Return has no "updated since" filter either, see
@@ -45,7 +75,7 @@ const RETURNS_CHUNK_DAYS = 30;
 // protecting Vercel's function duration limit on a large backfill. Whatever
 // doesn't fit this run is simply re-found by the next run's Search Return
 // pass (the window is re-searched every time, nothing is queued).
-const RETURNS_DETAIL_BATCH_SIZE = 150;
+const RETURNS_DETAIL_BATCH_SIZE = 20; // lowered from 150 alongside ITEM_ENRICHMENT_BATCH_SIZE above — same reason
 
 function toUniwareDateOnly(d: Date): string {
   // Search Return's FromDate/ToDate accept "yyyy-MM-dd" ONLY — the more
