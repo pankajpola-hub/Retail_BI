@@ -12,17 +12,13 @@ import {
   computeReplenishmentRows,
   computeReplenishmentKpis,
   computeTopSupplyMoves,
-  filterRows,
   fmt,
   fmt1,
-  PRIORITY_ORDER,
-  type Priority,
   type Trend,
-  type Action,
   type ScoreWeights,
 } from "@/lib/replenishment/compute";
 import { computeSaleStockMix, MIX_STATUS_META, type MixStatus, type SalesPeriodDays } from "@/lib/replenishment/mix";
-import { ReplenishmentGrid } from "../replenishment/ReplenishmentGrid";
+import { ReplenishmentFacetedContent } from "./ReplenishmentFacetedContent";
 import { SaleStockMixGrid } from "../sale-stock-mix/SaleStockMixGrid";
 
 export const dynamic = "force-dynamic";
@@ -42,13 +38,6 @@ function inr(n: number): string {
   return `₹${Math.round(n).toLocaleString("en-IN")}`;
 }
 
-const PRIORITY_META: Record<Priority, { label: string; dot: string; className: string }> = {
-  critical: { label: "Critical", dot: "🔴", className: "text-crit font-semibold" },
-  high: { label: "High", dot: "🟠", className: "text-warn font-semibold" },
-  medium: { label: "Medium", dot: "🟡", className: "text-ink-2" },
-  healthy: { label: "Healthy", dot: "🟢", className: "text-good" },
-  exhausted: { label: "Exhausted", dot: "⚫", className: "text-ink-3" },
-};
 const TREND_META: Record<Trend, { label: string; className: string }> = {
   accelerating: { label: "↑ Accelerating", className: "text-good" },
   stable: { label: "→ Stable", className: "text-ink-3" },
@@ -152,7 +141,7 @@ async function ReplenishmentContent({
     productivity: nonNegNum(searchParams.wProductivity, 10),
   };
 
-  const { storeList, rows, totalWarehouseUnits } = await time(
+  const { rows, totalWarehouseUnits } = await time(
     "replenishment:compute",
     computeReplenishmentRows(supabase, {
       targetCoverDays,
@@ -162,33 +151,16 @@ async function ReplenishmentContent({
     })
   );
 
-  const q = searchParams.q ?? "";
-  const storeFilter = searchParams.store ?? "";
-  const priorityFilter = searchParams.priority ?? "";
-  const actionFilter = searchParams.action ?? "";
-
-  const filtered = filterRows(rows, { q, store: storeFilter, priority: priorityFilter, action: actionFilter });
-  filtered.sort((a, b) => PRIORITY_ORDER.indexOf(a.priority) - PRIORITY_ORDER.indexOf(b.priority) || b.score - a.score);
-
-  const PER_PAGE_OPTIONS = ["10", "50", "100", "max"];
-  const perPageParam = PER_PAGE_OPTIONS.includes(searchParams.perPage ?? "") ? (searchParams.perPage as string) : "50";
-  const totalRows = filtered.length;
-  const perPageNum = perPageParam === "max" ? Math.max(1, totalRows) : Number(perPageParam);
-  const totalPages = Math.max(1, Math.ceil(totalRows / perPageNum));
-  const page = Math.min(totalPages, Math.max(1, Number(searchParams.page) || 1));
-  const pageStart = (page - 1) * perPageNum;
-  const pageRows = filtered.slice(pageStart, pageStart + perPageNum);
-
-  // Preserves the mix_-prefixed params too (untouched), same "don't lose
-  // the other tab's state" principle as tabHref.
+  // Display filtering/search/pagination is no longer server-side for this
+  // tab (Phase 1 of the faceted-filtering system —
+  // ReplenishmentFacetedContent.tsx does it instantly, client-side, over
+  // the full row set below). Only the recompute inputs (what-if
+  // assumptions, priority weights) still round-trip the server, since
+  // those change the actual numbers.
   function buildHref(overrides: Record<string, string | number>): string {
     const params = new URLSearchParams();
     const current: Record<string, string | undefined> = {
       tab: "replenishment",
-      q: searchParams.q,
-      store: storeFilter || undefined,
-      priority: priorityFilter || undefined,
-      action: actionFilter || undefined,
       targetCover: String(targetCoverDays),
       leadTime: String(leadTimeDays),
       safetyDays: String(safetyDays),
@@ -198,8 +170,6 @@ async function ReplenishmentContent({
       wRevenue: String(SCORE_W.salesValue),
       wTrend: String(SCORE_W.trend),
       wProductivity: String(SCORE_W.productivity),
-      perPage: perPageParam,
-      page: String(page),
       mix_store: searchParams.mix_store,
       mix_style: searchParams.mix_style,
       mix_color: searchParams.mix_color,
@@ -213,23 +183,25 @@ async function ReplenishmentContent({
     return `?${params.toString()}`;
   }
 
+  // Download regenerates the full network dataset server-side for the
+  // current what-if/weight inputs — it does NOT know the client-side
+  // facet/search state (that's purely in the browser), so it always
+  // exports everything for those inputs, not just what's currently
+  // visible after faceting. Documented behavior change from before this
+  // phase, when q/store/priority/action were server params the download
+  // route could read directly.
   const downloadHref = (() => {
-    const params = new URLSearchParams(buildHref({}).slice(1));
-    params.delete("page");
-    params.delete("perPage");
-    params.delete("tab");
-    // downloadHref carries mix_-prefixed params too since buildHref
-    // preserves them — harmless (the download route only reads the names
-    // it knows), but strip them for a tidier query string.
-    params.delete("mix_store");
-    params.delete("mix_style");
-    params.delete("mix_color");
-    params.delete("mix_period");
-    params.delete("mix_status");
-    params.delete("mix_page");
-    params.delete("mix_perPage");
-    const qs = params.toString();
-    return `/api/replenishment/download${qs ? `?${qs}` : ""}`;
+    const params = new URLSearchParams();
+    params.set("targetCover", String(targetCoverDays));
+    params.set("leadTime", String(leadTimeDays));
+    params.set("safetyDays", String(safetyDays));
+    params.set("wStockout", String(SCORE_W.stockoutRisk));
+    params.set("wVelocity", String(SCORE_W.velocity));
+    params.set("wCover", String(SCORE_W.cover));
+    params.set("wRevenue", String(SCORE_W.salesValue));
+    params.set("wTrend", String(SCORE_W.trend));
+    params.set("wProductivity", String(SCORE_W.productivity));
+    return `/api/replenishment/download?${params.toString()}`;
   })();
 
   const { needsReplenishment, unitsRequired, criticalCount, storesAtRisk, transferCount, purchaseCount, exhaustedCount } =
@@ -307,17 +279,12 @@ async function ReplenishmentContent({
         </summary>
         <form className="mt-3 flex flex-wrap items-end gap-4 text-[12.5px]">
           <input type="hidden" name="tab" value="replenishment" />
-          <input type="hidden" name="q" value={searchParams.q ?? ""} />
-          <input type="hidden" name="store" value={storeFilter} />
-          <input type="hidden" name="priority" value={priorityFilter} />
-          <input type="hidden" name="action" value={actionFilter} />
           <input type="hidden" name="wStockout" value={SCORE_W.stockoutRisk} />
           <input type="hidden" name="wVelocity" value={SCORE_W.velocity} />
           <input type="hidden" name="wCover" value={SCORE_W.cover} />
           <input type="hidden" name="wRevenue" value={SCORE_W.salesValue} />
           <input type="hidden" name="wTrend" value={SCORE_W.trend} />
           <input type="hidden" name="wProductivity" value={SCORE_W.productivity} />
-          <input type="hidden" name="perPage" value={perPageParam} />
           <Label className="flex flex-col gap-1">
             Target cover (days)
             <Input type="number" name="targetCover" min={1} defaultValue={targetCoverDays} className="w-24" />
@@ -345,14 +312,9 @@ async function ReplenishmentContent({
         </p>
         <form className="mt-3 grid grid-cols-1 gap-4 text-[12.5px] sm:grid-cols-2 lg:grid-cols-3">
           <input type="hidden" name="tab" value="replenishment" />
-          <input type="hidden" name="q" value={searchParams.q ?? ""} />
-          <input type="hidden" name="store" value={storeFilter} />
-          <input type="hidden" name="priority" value={priorityFilter} />
-          <input type="hidden" name="action" value={actionFilter} />
           <input type="hidden" name="targetCover" value={targetCoverDays} />
           <input type="hidden" name="leadTime" value={leadTimeDays} />
           <input type="hidden" name="safetyDays" value={safetyDays} />
-          <input type="hidden" name="perPage" value={perPageParam} />
 
           <div>
             <Label className="flex items-center justify-between gap-2 font-semibold text-ink-2">
@@ -433,117 +395,15 @@ async function ReplenishmentContent({
         </form>
       </details>
 
-      <form className="mt-4 flex flex-wrap items-end gap-3 text-[12.5px]">
-        <input type="hidden" name="tab" value="replenishment" />
-        <input type="hidden" name="targetCover" value={targetCoverDays} />
-        <input type="hidden" name="leadTime" value={leadTimeDays} />
-        <input type="hidden" name="safetyDays" value={safetyDays} />
-        <input type="hidden" name="wStockout" value={SCORE_W.stockoutRisk} />
-        <input type="hidden" name="wVelocity" value={SCORE_W.velocity} />
-        <input type="hidden" name="wCover" value={SCORE_W.cover} />
-        <input type="hidden" name="wRevenue" value={SCORE_W.salesValue} />
-        <input type="hidden" name="wTrend" value={SCORE_W.trend} />
-        <input type="hidden" name="wProductivity" value={SCORE_W.productivity} />
-        <input type="hidden" name="perPage" value={perPageParam} />
-        <Label className="flex flex-col gap-1">
-          Search style / color
-          <Input type="text" name="q" defaultValue={searchParams.q ?? ""} placeholder="style no. or color" className="w-52" />
-        </Label>
-        <Label className="flex flex-col gap-1">
-          Store
-          <Select name="store" defaultValue={storeFilter}>
-            <option value="">All stores</option>
-            {storeList.map((s) => (
-              <option key={s.store_id} value={s.store_id}>
-                {s.store_name}
-              </option>
-            ))}
-          </Select>
-        </Label>
-        <Label className="flex flex-col gap-1">
-          Priority
-          <Select name="priority" defaultValue={priorityFilter}>
-            <option value="">All</option>
-            {PRIORITY_ORDER.map((p) => (
-              <option key={p} value={p}>
-                {PRIORITY_META[p].label}
-              </option>
-            ))}
-          </Select>
-        </Label>
-        <Label className="flex flex-col gap-1">
-          Action
-          <Select name="action" defaultValue={actionFilter}>
-            <option value="">All</option>
-            {(
-              [
-                "REPLENISH FROM WAREHOUSE",
-                "TRANSFER FROM STORE",
-                "PURCHASE",
-                "MONITOR",
-                "DO NOT REPLENISH",
-                "NO ACTION",
-                "EXHAUSTED",
-              ] as Action[]
-            ).map((a) => (
-              <option key={a} value={a}>
-                {a}
-              </option>
-            ))}
-          </Select>
-        </Label>
-        <Button type="submit" variant="outline">Apply</Button>
-      </form>
-
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-        <span className="text-[12px] text-ink-3">
-          {totalRows === 0 ? "0 rows" : `Showing ${fmt(pageStart + 1)}–${fmt(Math.min(pageStart + perPageNum, totalRows))} of ${fmt(totalRows)} rows`}
-        </span>
-        <span className="flex items-center gap-3">
-          <RowsPerPageSelect selected={perPageParam} />
-          <a
-            href={downloadHref}
-            className="min-h-[30px] border border-line px-3 py-1 text-[12px] text-ink-2 hover:bg-surface-2"
-          >
-            Download detailed report (.xlsx)
-          </a>
-        </span>
+      <div className="mt-4 flex justify-end">
+        <a href={downloadHref} className="min-h-[30px] border border-line px-3 py-1 text-[12px] text-ink-2 hover:bg-surface-2">
+          Download full report (.xlsx)
+        </a>
       </div>
-      <ReplenishmentGrid rows={pageRows} />
 
-      {totalPages > 1 && (
-        <div className="mt-2 flex flex-wrap items-center justify-center gap-1 text-[12.5px]">
-          <a
-            href={buildHref({ page: Math.max(1, page - 1) })}
-            aria-disabled={page <= 1}
-            className={`border border-line px-3 py-1 ${page <= 1 ? "pointer-events-none opacity-40" : "text-ink-2 hover:bg-surface-2"}`}
-          >
-            ← Prev
-          </a>
-          {Array.from({ length: totalPages }, (_, i) => i + 1)
-            .filter((p) => p === 1 || p === totalPages || Math.abs(p - page) <= 2)
-            .map((p, i, arr) => (
-              <span key={p} className="flex items-center gap-1">
-                {i > 0 && arr[i - 1] !== p - 1 && <span className="px-1 text-ink-3">…</span>}
-                <a
-                  href={buildHref({ page: p })}
-                  className={`border px-3 py-1 ${
-                    p === page ? "border-accent bg-accent text-white" : "border-line text-ink-2 hover:bg-surface-2"
-                  }`}
-                >
-                  {p}
-                </a>
-              </span>
-            ))}
-          <a
-            href={buildHref({ page: Math.min(totalPages, page + 1) })}
-            aria-disabled={page >= totalPages}
-            className={`border border-line px-3 py-1 ${page >= totalPages ? "pointer-events-none opacity-40" : "text-ink-2 hover:bg-surface-2"}`}
-          >
-            Next →
-          </a>
-        </div>
-      )}
+      <div className="mt-3">
+        <ReplenishmentFacetedContent rows={rows} />
+      </div>
     </>
   );
 }
