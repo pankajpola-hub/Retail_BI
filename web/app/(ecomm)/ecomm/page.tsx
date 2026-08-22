@@ -39,6 +39,22 @@ type LineRow = {
   discount: number | string;
 };
 
+// Row shape from sales.vw_ecomm_returns (0070) — only the fields this page
+// reads. status/created_on/updated_on carry 0069's UNVERIFIED-field-name
+// caveat (see that migration's header) — this page tallies whatever values
+// actually show up rather than assuming a known workflow.
+type ReturnRow = {
+  reverse_pickup_code: string;
+  sale_order_code: string;
+  display_order_code: string | null;
+  channel: string | null;
+  return_awb: string | null;
+  status: string | null;
+  created_on: string;
+  return_date: string;
+  updated_on: string | null;
+};
+
 const INR = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
 const isoDate = (d: Date) => d.toISOString().slice(0, 10);
 const num = (v: number | string) => (typeof v === "string" ? Number(v) : v);
@@ -102,6 +118,28 @@ export default async function EcommPage({
   const { data: lineRows, error: linesError } = await linesQuery;
   const lines = lineRows ?? [];
 
+  // Returns overview (Track A2) — filtered on return_date (created_on's date
+  // cast), same "date this happened" semantics as order_date above, not
+  // updated_on which would instead track when Uniware last touched the row.
+  const { data: returnRows, error: returnsError } = await (supabase
+    .schema("sales")
+    .from<ReturnRow>("vw_ecomm_returns")
+    .select("*")
+    .gte("return_date", from)
+    .lte("return_date", to) as unknown as QueryChain<ReturnRow>);
+  const returns = returnRows ?? [];
+
+  // Tally whatever status values actually appear — raw_uniware.returns.status
+  // (0069) is an unverified field-name guess, so this deliberately doesn't
+  // assume a fixed set of workflow stages.
+  const byReturnStatus = new Map<string, number>();
+  for (const r of returns) {
+    const key = r.status ?? "(no status)";
+    byReturnStatus.set(key, (byReturnStatus.get(key) ?? 0) + 1);
+  }
+  const returnStatusRows = [...byReturnStatus.entries()].sort((a, b) => b[1] - a[1]);
+  const totalReturns = returns.length;
+
   // Rows scoped to the selected channel (or every channel when none is
   // selected) — feeds the trend chart and the "incomplete" flag for the SKU
   // table. The by-channel table below deliberately keeps using the
@@ -125,6 +163,7 @@ export default async function EcommPage({
   const discountValue = daily.reduce((s, r) => s + num(r.discount_value), 0);
   const discountPct = grossMrpValue > 0 ? (100 * discountValue) / grossMrpValue : null;
   const anyIncomplete = daily.some((r) => r.revenue_incomplete);
+  const returnsPctOfOrders = totalOrders > 0 ? (100 * totalReturns) / totalOrders : null;
 
   // --- Daily trend (task 1) — net selling value per day, scoped to the
   // selected channel or summed network-wide when none is selected. Built
@@ -343,6 +382,54 @@ export default async function EcommPage({
                 <tr>
                   <td colSpan={4} className="px-3 py-4 text-center text-sm text-ink-3">
                     No enriched order lines in this range{channel ? ` for ${channel}` : ""}.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="mt-8">
+        <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Returns overview</span>
+        <p className="mt-1 text-[11.5px] text-ink-3">
+          Return status values are as reported by Uniware and haven&apos;t been mapped to a confirmed workflow
+          yet — shown as-is.
+        </p>
+
+        {returnsError && (
+          <p className="mt-2 border-l-2 border-crit bg-crit-soft px-3 py-2 text-sm text-ink-2">
+            Couldn&apos;t load returns data: {returnsError.message}
+          </p>
+        )}
+
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <KpiCard label="Returns" value={String(totalReturns)} />
+          <KpiCard
+            label="Returns % of orders"
+            value={returnsPctOfOrders !== null ? `${returnsPctOfOrders.toFixed(1)}%` : "—"}
+          />
+        </div>
+
+        <div className="mt-3 overflow-x-auto border border-line-soft">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-line-soft bg-surface-2 text-left text-[10px] uppercase tracking-wide text-ink-3">
+                <th className="px-3 py-2">Status</th>
+                <th className="px-3 py-2 text-right">Returns</th>
+              </tr>
+            </thead>
+            <tbody>
+              {returnStatusRows.map(([status, count]) => (
+                <tr key={status} className="border-b border-line-soft last:border-0">
+                  <td className="px-3 py-2">{status}</td>
+                  <td className="px-3 py-2 text-right font-mono">{count}</td>
+                </tr>
+              ))}
+              {returnStatusRows.length === 0 && !returnsError && (
+                <tr>
+                  <td colSpan={2} className="px-3 py-4 text-center text-sm text-ink-3">
+                    No returns in this range.
                   </td>
                 </tr>
               )}

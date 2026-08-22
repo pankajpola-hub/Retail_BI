@@ -49,31 +49,41 @@ const ICONS = {
   ),
 };
 
-export function SidebarNav({ links }: { links: SidebarLink[] }) {
+export function SidebarNav({ groups }: { groups: { group: string; links: SidebarLink[] }[] }) {
   const pathname = usePathname();
 
   return (
-    <nav className="flex flex-col gap-0.5 px-2">
-      {links.map((l) => {
-        const active = pathname === l.href;
-        return (
-          <a
-            key={l.href}
-            href={l.href}
-            aria-current={active ? "page" : undefined}
-            className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-[13.5px] font-medium transition-colors ${
-              active
-                ? "bg-sidebar-active-bg text-sidebar-ink-active shadow-sm"
-                : "text-sidebar-ink hover:bg-surface-2 hover:text-ink"
-            }`}
-          >
-            <span className={`h-[18px] w-[18px] shrink-0 ${active ? "text-sidebar-ink-active" : "text-ink-3"}`}>
-              {ICONS[l.icon]}
-            </span>
-            {l.label}
-          </a>
-        );
-      })}
+    <nav className="flex flex-col gap-4 px-2">
+      {groups.map(({ group, links }) => (
+        <div key={group} className="flex flex-col gap-0.5">
+          {/* Section label — same 10.5px/uppercase/tracking-wide/ink-3
+              treatment used for the existing card-section labels elsewhere
+              in this app (e.g. "By channel" on the Ecomm page). */}
+          <span className="px-3 pb-1 text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
+            {group}
+          </span>
+          {links.map((l) => {
+            const active = pathname === l.href;
+            return (
+              <a
+                key={l.href}
+                href={l.href}
+                aria-current={active ? "page" : undefined}
+                className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-[13.5px] font-medium transition-colors ${
+                  active
+                    ? "bg-sidebar-active-bg text-sidebar-ink-active shadow-sm"
+                    : "text-sidebar-ink hover:bg-surface-2 hover:text-ink"
+                }`}
+              >
+                <span className={`h-[18px] w-[18px] shrink-0 ${active ? "text-sidebar-ink-active" : "text-ink-3"}`}>
+                  {ICONS[l.icon]}
+                </span>
+                {l.label}
+              </a>
+            );
+          })}
+        </div>
+      ))}
     </nav>
   );
 }
