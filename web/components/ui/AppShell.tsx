@@ -51,7 +51,7 @@ const NAV_LINKS: NavLink[] = [
   { href: "/integrations", labelKey: "navIntegrations", icon: "integrations", roles: ["super_admin"] },
   { href: "/data-upload", labelKey: "navDataUpload", icon: "upload", roles: ["ho_admin", "super_admin"] },
   { href: "/configurations", labelKey: "navConfigurations", icon: "configurations", roles: ["super_admin"] },
-  { href: "/ecomm", labelKey: "navEcomm", icon: "ecomm", roles: ["ho_admin", "super_admin"] },
+  { href: "/ecomm", labelKey: "navEcomm", icon: "ecomm", roles: ["ho_admin", "super_admin", "marketing"] },
 ];
 
 function initials(name: string): string {

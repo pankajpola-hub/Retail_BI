@@ -57,7 +57,7 @@ const PAGE_ROLE_DEFAULTS = {
   "data-upload": ["ho_admin", "super_admin"],
   workspace: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"],
   configurations: ["super_admin"],
-  ecomm: ["ho_admin", "super_admin"],
+  ecomm: ["ho_admin", "super_admin", "marketing"],
 };
 
 const ROLES = [
