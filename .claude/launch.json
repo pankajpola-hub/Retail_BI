@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "web-dev",
-      "cwd": "web",
+      "cwd": "D:\\Py\\Sales & Marketing dashboard_Test\\.claude\\worktrees\\agent-a173c48c55caaf2f8\\web",
       "runtimeExecutable": "node",
       "runtimeArgs": ["node_modules/next/dist/bin/next", "dev"],
       "port": 3000,

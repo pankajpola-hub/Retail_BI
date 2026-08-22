@@ -53,6 +53,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: { code: "unauthorized", message: "Not authorized." } }, { status: 401 });
   }
 
+  const startedAt = new Date();
   const admin = await createAdminClient();
   const summary: SyncSummary = {
     headerSync: { pagesFetched: 0, ordersUpserted: 0, totalRecordsInWindow: 0 },
@@ -150,5 +151,26 @@ export async function GET(request: Request) {
     errors.push(`item sync queue read: ${message}`);
   }
 
-  return NextResponse.json({ ok: errors.length === 0, data: summary, errors });
+  const ok = errors.length === 0;
+
+  // Log this invocation regardless of outcome — see 0068_uniware_sync_runs.sql's
+  // header for why nothing else was reading this response before now. Best-effort:
+  // a logging failure shouldn't turn a real (or already-failed) sync into a 500,
+  // so it's appended to `errors` (visible in this response) rather than thrown.
+  try {
+    await admin.schema("ops").rpc("fn_log_uniware_sync_run", {
+      p_started_at: startedAt.toISOString(),
+      p_finished_at: new Date().toISOString(),
+      p_header_orders_upserted: summary.headerSync.ordersUpserted,
+      p_item_orders_processed: summary.itemSync.ordersProcessed,
+      p_item_orders_failed: summary.itemSync.ordersFailed,
+      p_errors: errors,
+      p_success: ok,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    errors.push(`sync_runs log write: ${message}`);
+  }
+
+  return NextResponse.json({ ok, data: summary, errors });
 }
