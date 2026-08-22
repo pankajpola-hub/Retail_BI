@@ -37,22 +37,29 @@ const HREF_PAGE_KEY: Record<string, PageKey> = {
   "/ecomm": "ecomm",
 };
 
-type NavLink = { href: string; labelKey: keyof Dict; icon: SidebarLink["icon"]; roles: AppRole[] };
+type NavLink = { href: string; labelKey: keyof Dict; icon: SidebarLink["icon"]; roles: AppRole[]; group: string };
 
+// Group order below the array is the display order used by SidebarNav
+// (Overview → Sales → Stock → Movement → Marketing → Workspace → Admin) —
+// see NAV_GROUP_ORDER. Grouping is a pure visual reorganization: it doesn't
+// touch href/labelKey/icon/roles or the business_unit/override/role filter
+// below, which runs first and unmodified.
 const NAV_LINKS: NavLink[] = [
-  { href: "/network", labelKey: "navNetwork", icon: "network", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"] },
-  { href: "/stock-details", labelKey: "navStockDetails", icon: "stock", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"] },
-  { href: "/replenishment", labelKey: "navReplenishment", icon: "replenishment", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"] },
-  { href: "/sale-stock-mix", labelKey: "navSaleStockMix", icon: "mix", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"] },
-  { href: "/footfall", labelKey: "navFootfall", icon: "footfall", roles: ["ebo_manager", "ho_admin", "super_admin"] },
-  { href: "/targets", labelKey: "navTargets", icon: "targets", roles: ["ho_admin", "super_admin"] },
-  { href: "/workspace", labelKey: "navWorkspace", icon: "workspace", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"] },
-  { href: "/users", labelKey: "navUsers", icon: "users", roles: ["super_admin"] },
-  { href: "/integrations", labelKey: "navIntegrations", icon: "integrations", roles: ["super_admin"] },
-  { href: "/data-upload", labelKey: "navDataUpload", icon: "upload", roles: ["ho_admin", "super_admin"] },
-  { href: "/configurations", labelKey: "navConfigurations", icon: "configurations", roles: ["super_admin"] },
-  { href: "/ecomm", labelKey: "navEcomm", icon: "ecomm", roles: ["ho_admin", "super_admin", "marketing"] },
+  { href: "/network", labelKey: "navNetwork", icon: "network", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Overview" },
+  { href: "/stock-details", labelKey: "navStockDetails", icon: "stock", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Stock" },
+  { href: "/replenishment", labelKey: "navReplenishment", icon: "replenishment", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Movement" },
+  { href: "/sale-stock-mix", labelKey: "navSaleStockMix", icon: "mix", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Movement" },
+  { href: "/footfall", labelKey: "navFootfall", icon: "footfall", roles: ["ebo_manager", "ho_admin", "super_admin"], group: "Overview" },
+  { href: "/targets", labelKey: "navTargets", icon: "targets", roles: ["ho_admin", "super_admin"], group: "Overview" },
+  { href: "/workspace", labelKey: "navWorkspace", icon: "workspace", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Workspace" },
+  { href: "/users", labelKey: "navUsers", icon: "users", roles: ["super_admin"], group: "Admin" },
+  { href: "/integrations", labelKey: "navIntegrations", icon: "integrations", roles: ["super_admin"], group: "Admin" },
+  { href: "/data-upload", labelKey: "navDataUpload", icon: "upload", roles: ["ho_admin", "super_admin"], group: "Admin" },
+  { href: "/configurations", labelKey: "navConfigurations", icon: "configurations", roles: ["super_admin"], group: "Admin" },
+  { href: "/ecomm", labelKey: "navEcomm", icon: "ecomm", roles: ["ho_admin", "super_admin", "marketing"], group: "Sales" },
 ];
+
+const NAV_GROUP_ORDER = ["Overview", "Sales", "Stock", "Movement", "Marketing", "Workspace", "Admin"];
 
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/);
@@ -95,7 +102,7 @@ export async function AppShell({
     overrideMap = new Map((overrides ?? []).map((o) => [o.page_key, o.allowed]));
   }
 
-  const links: SidebarLink[] = NAV_LINKS.filter((l) => {
+  const filteredNavLinks = NAV_LINKS.filter((l) => {
     const pageKey = HREF_PAGE_KEY[l.href];
     // Business unit gates first — same "which business at all, before role/
     // override even apply" ordering as requirePageAccess() in
@@ -105,7 +112,19 @@ export async function AppShell({
     if (pageKey && !businessUnits.includes(PAGE_BUSINESS_UNIT[pageKey])) return false;
     if (pageKey && overrideMap.has(pageKey)) return overrideMap.get(pageKey)!;
     return l.roles.includes(role);
-  }).map((l) => ({ href: l.href, label: t[l.labelKey], icon: l.icon }));
+  });
+  const links: SidebarLink[] = filteredNavLinks.map((l) => ({ href: l.href, label: t[l.labelKey], icon: l.icon }));
+
+  // Grouping is a pure post-processing step on the already-filtered links —
+  // it never changes which links are visible, only how they're clustered.
+  // NAV_GROUP_ORDER fixes the section order; groups with no visible links
+  // (e.g. "Marketing" until a Campaigns link exists) are simply omitted.
+  const groupedLinks: { group: string; links: SidebarLink[] }[] = NAV_GROUP_ORDER.map((group) => ({
+    group,
+    links: filteredNavLinks
+      .filter((l) => l.group === group)
+      .map((l) => ({ href: l.href, label: t[l.labelKey], icon: l.icon })),
+  })).filter((g) => g.links.length > 0);
 
   const hue = avatarHue(fullName);
 
@@ -143,7 +162,7 @@ export async function AppShell({
       {/* Sidebar — fixed below the top bar. */}
       <aside className="fixed inset-y-0 left-0 top-14 z-40 hidden w-60 flex-col border-r border-line-soft bg-sidebar-bg md:flex">
         <div className="flex-1 overflow-y-auto py-3">
-          <SidebarNav links={links} />
+          <SidebarNav groups={groupedLinks} />
         </div>
 
         <div className="border-t border-line-soft p-3">
