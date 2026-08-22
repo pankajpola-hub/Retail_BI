@@ -1,6 +1,7 @@
 import { cache } from "react";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/data/client";
+import { getPermit } from "@/lib/permit/client";
 
 export type AppRole =
   | "super_admin"
@@ -27,11 +28,19 @@ export const ROLE_HOME: Record<AppRole, string> = {
   marketing: "/network",
 };
 
+// 0061_business_unit.sql — the gate checked BEFORE role/store: can this user
+// see this BUSINESS at all. Retail is everything that exists today; Ecomm
+// (Uniware) has no pages yet, so PAGE_BUSINESS_UNIT below tags every current
+// page "retail" — this becomes load-bearing the moment a real Ecomm page is
+// added, not before.
+export type BusinessUnit = "retail" | "ecomm";
+
 export type CurrentUser = {
   id: string;
   fullName: string;
   role: AppRole;
   storeIds: string[]; // from core.fn_user_store_ids() — [] means "no stores granted", not "all stores"
+  businessUnits: BusinessUnit[]; // from core.fn_user_business_units() — explicit-grant-only, no role-based auto-all (see 0061's header)
 };
 
 // Shared by requireRole and requirePageAccess below — resolves the caller's
@@ -86,6 +95,14 @@ const resolveCallerStoreIds = cache(async (): Promise<string[]> => {
   return data ?? [];
 });
 
+// Same pattern as resolveCallerStoreIds, for core.fn_user_business_units()
+// (0061_business_unit.sql).
+const resolveCallerBusinessUnits = cache(async (): Promise<BusinessUnit[]> => {
+  const supabase = await createClient();
+  const { data } = await supabase.schema("core").rpc<BusinessUnit[]>("fn_user_business_units");
+  return data ?? [];
+});
+
 function redirectForUnresolvedCaller(reason: "no_session" | "not_provisioned"): never {
   redirect(reason === "no_session" ? "/login" : "/login?error=not_provisioned");
 }
@@ -108,12 +125,14 @@ export async function requireRole(...allowed: AppRole[]): Promise<CurrentUser> {
   }
 
   const storeIds = await resolveCallerStoreIds();
+  const businessUnits = await resolveCallerBusinessUnits();
 
   return {
     id: userId,
     fullName,
     role,
     storeIds,
+    businessUnits,
   };
 }
 
@@ -131,7 +150,8 @@ export type PageKey =
   | "integrations"
   | "data-upload"
   | "workspace"
-  | "configurations";
+  | "configurations"
+  | "ecomm";
 
 export const PAGE_KEYS: PageKey[] = [
   "network",
@@ -144,6 +164,7 @@ export const PAGE_KEYS: PageKey[] = [
   "data-upload",
   "workspace",
   "configurations",
+  "ecomm",
 ];
 
 export const PAGE_LABELS: Record<PageKey, string> = {
@@ -157,6 +178,7 @@ export const PAGE_LABELS: Record<PageKey, string> = {
   "data-upload": "Data Upload",
   workspace: "Workspace",
   configurations: "Configurations",
+  ecomm: "Ecomm",
 };
 
 // Role defaults mirrored from each route group's requireRole() call /
@@ -199,6 +221,31 @@ export const PAGE_ROLE_DEFAULTS: Record<PageKey, AppRole[]> = {
   // it; store/sales roles have no access at all unless a future per-user
   // override widens it, same override mechanism as every other page here.
   configurations: ["super_admin"],
+  // First Ecomm page (0067's semantic layer) — deliberately narrow to start:
+  // no dedicated Ecomm staff/roles exist yet, only the same two roles that
+  // get data-upload. Widen this (or add an ecomm-specific role) once real
+  // Ecomm users are provisioned, same as every other role list here.
+  ecomm: ["ho_admin", "super_admin"],
+};
+
+// Which business unit each page belongs to — checked in requirePageAccess()
+// alongside (not instead of) PAGE_ROLE_DEFAULTS: role decides WHAT within a
+// business a caller can see, this decides WHICH business they're in at all.
+// "ecomm" below is the first page this map actually does anything for —
+// every user must hold an explicit 'ecomm' grant (core.user_business_units,
+// 0061) to reach it, on top of the role check above.
+export const PAGE_BUSINESS_UNIT: Record<PageKey, BusinessUnit> = {
+  network: "retail",
+  "stock-details": "retail",
+  replenishment: "retail",
+  footfall: "retail",
+  targets: "retail",
+  users: "retail",
+  integrations: "retail",
+  "data-upload": "retail",
+  workspace: "retail",
+  configurations: "retail",
+  ecomm: "ecomm",
 };
 
 /**
@@ -219,7 +266,7 @@ export const PAGE_ROLE_DEFAULTS: Record<PageKey, AppRole[]> = {
  * Wired up for: (ho)/network, (ho)/targets, (ebo)/footfall,
  * (stock-details)/stock-details (via its layout, since that route group has
  * exactly one page), (data-upload)/data-upload (ditto), (admin)/users,
- * (admin)/integrations. Every other page.tsx in the app (my-store,
+ * (admin)/integrations, (ecomm)/ecomm. Every other page.tsx in the app (my-store,
  * campaigns, and anything without a nav entry) still only respects
  * requireRole's plain role check — see the report for the full list.
  */
@@ -239,13 +286,53 @@ const resolveOverride = cache(async (userId: string, pageKey: PageKey): Promise<
   return override ? override.allowed : null;
 });
 
+/**
+ * Permit.io gate (promoted from shadow mode 2026-08-22, now that
+ * core.user_page_overrides is mirrored into Permit.io too — see
+ * syncPermitOverridesForUser in users/actions.ts). A second, independent
+ * "is this allowed" answer, ANDed into the Postgres decision in
+ * requirePageAccess below rather than trusted alone — matching the app's
+ * existing UX-convenience-not-sole-security-boundary posture (the comment on
+ * requirePageAccess itself), just with two systems agreeing instead of one.
+ *
+ * FAILS OPEN on any Permit.io error (network, outage, auth) — returns `true`
+ * and only logs. Postgres/RLS remains the actual security boundary
+ * regardless of what this returns, so a third-party SaaS outage must not be
+ * able to take the whole app down; it can only ever narrow what Postgres
+ * already decided, via a real (non-error) `false`, never by failing.
+ * Mismatches are still logged either way, so a real policy drift between the
+ * two systems stays visible rather than silently swallowed.
+ */
+async function checkPermitGate(userId: string, pageKey: PageKey, postgresAllowed: boolean): Promise<boolean> {
+  try {
+    const permit = getPermit();
+    const permitAllowed = await permit.check(userId, "view", pageKey);
+    if (permitAllowed !== postgresAllowed) {
+      console.warn(
+        `[permit] mismatch: page="${pageKey}" user=${userId} postgres=${postgresAllowed} permit=${permitAllowed}`
+      );
+    }
+    return permitAllowed;
+  } catch (err) {
+    console.warn(`[permit] check failed, failing OPEN: page="${pageKey}" user=${userId}`, err);
+    return true;
+  }
+}
+
 export async function requirePageAccess(pageKey: PageKey): Promise<CurrentUser> {
   const resolved = await resolveCallerProfile();
   if (!resolved.ok) redirectForUnresolvedCaller(resolved.reason);
   const { userId, fullName, role } = resolved;
 
   const override = await resolveOverride(userId, pageKey);
-  const allowed = override !== null ? override : PAGE_ROLE_DEFAULTS[pageKey].includes(role);
+  const roleAllowed = override !== null ? override : PAGE_ROLE_DEFAULTS[pageKey].includes(role);
+
+  const permitAllowed = await checkPermitGate(userId, pageKey, roleAllowed);
+
+  const businessUnits = await resolveCallerBusinessUnits();
+  const businessUnitAllowed = businessUnits.includes(PAGE_BUSINESS_UNIT[pageKey]);
+
+  const allowed = roleAllowed && permitAllowed && businessUnitAllowed;
 
   if (!allowed) {
     redirect(ROLE_HOME[role]);
@@ -258,5 +345,6 @@ export async function requirePageAccess(pageKey: PageKey): Promise<CurrentUser> 
     fullName,
     role,
     storeIds,
+    businessUnits,
   };
 }

@@ -1,11 +1,12 @@
 import { createClient } from "@/lib/data/client";
-import type { AppRole, PageKey } from "@/lib/auth/roles";
+import type { AppRole, BusinessUnit, PageKey } from "@/lib/auth/roles";
 import { requirePageAccess } from "@/lib/auth/roles";
 import { InviteUserForm } from "./invite-user-form";
 import { ResetPasswordButton } from "./reset-password-button";
 import { RenameUserButton } from "./rename-user-button";
 import { StoreAccessButton } from "./store-access-button";
 import { PageAccessButton } from "./page-access-button";
+import { BusinessUnitButton } from "./business-unit-button";
 
 import { getDict } from "@/lib/i18n/server";
 
@@ -15,6 +16,7 @@ type Profile = { user_id: string; full_name: string; role: AppRole };
 type Store = { store_id: string; store_name: string };
 type Grant = { user_id: string; store_id: string };
 type PageOverride = { user_id: string; page_key: PageKey; allowed: boolean };
+type BusinessUnitGrant = { user_id: string; business_unit: BusinessUnit };
 
 export default async function UsersPage() {
   // requirePageAccess (migration 0035) layers a per-user override on top of
@@ -26,12 +28,14 @@ export default async function UsersPage() {
   const supabase = await createClient();
   const t = await getDict();
 
-  const [{ data: profiles }, { data: stores }, { data: grants }, { data: pageOverrides }] = await Promise.all([
-    supabase.schema("core").from<Profile>("profiles").select("user_id, full_name, role"),
-    supabase.schema("core").from<Store>("stores").select("store_id, store_name").order("store_id"),
-    supabase.schema("core").from<Grant>("user_store_access").select("user_id, store_id"),
-    supabase.schema("core").from<PageOverride>("user_page_overrides").select("user_id, page_key, allowed"),
-  ]);
+  const [{ data: profiles }, { data: stores }, { data: grants }, { data: pageOverrides }, { data: businessUnitGrants }] =
+    await Promise.all([
+      supabase.schema("core").from<Profile>("profiles").select("user_id, full_name, role"),
+      supabase.schema("core").from<Store>("stores").select("store_id, store_name").order("store_id"),
+      supabase.schema("core").from<Grant>("user_store_access").select("user_id, store_id"),
+      supabase.schema("core").from<PageOverride>("user_page_overrides").select("user_id, page_key, allowed"),
+      supabase.schema("core").from<BusinessUnitGrant>("user_business_units").select("user_id, business_unit"),
+    ]);
 
   // BO-004 (Phoenix Palassio, Lucknow) is discontinued — kept visible only
   // on /network for historical reference; not offered as a store to grant
@@ -48,6 +52,11 @@ export default async function UsersPage() {
     const existing = pageOverridesByUser.get(o.user_id) ?? {};
     existing[o.page_key] = o.allowed;
     pageOverridesByUser.set(o.user_id, existing);
+  }
+
+  const businessUnitsByUser = new Map<string, BusinessUnit[]>();
+  for (const g of businessUnitGrants ?? []) {
+    businessUnitsByUser.set(g.user_id, [...(businessUnitsByUser.get(g.user_id) ?? []), g.business_unit]);
   }
 
   return (
@@ -69,11 +78,19 @@ export default async function UsersPage() {
             <span className="flex items-center justify-between">
               <span>{p.full_name}</span>
               <span className="flex items-center gap-3 text-ink-3">
+                <span className="text-[12px] uppercase tracking-wide">
+                  {(businessUnitsByUser.get(p.user_id) ?? []).join(" + ") || "no business unit"}
+                </span>
                 {storesByUser.get(p.user_id)?.length ? (
                   <span className="text-[12px]">{storesByUser.get(p.user_id)!.join(", ")}</span>
                 ) : null}
                 <span className="font-mono text-[11px] uppercase tracking-wide">{p.role}</span>
                 <RenameUserButton userId={p.user_id} fullName={p.full_name} />
+                <BusinessUnitButton
+                  userId={p.user_id}
+                  userName={p.full_name}
+                  currentBusinessUnits={businessUnitsByUser.get(p.user_id) ?? []}
+                />
                 <StoreAccessButton
                   userId={p.user_id}
                   userName={p.full_name}

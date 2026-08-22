@@ -1,4 +1,5 @@
-import type { AppRole, PageKey } from "@/lib/auth/roles";
+import type { AppRole, BusinessUnit, PageKey } from "@/lib/auth/roles";
+import { PAGE_BUSINESS_UNIT } from "@/lib/auth/roles";
 import { SidebarNav, type SidebarLink } from "./SidebarNav";
 import { SignOutButton } from "./SignOutButton";
 import { ThemeToggle } from "./ThemeToggle";
@@ -33,6 +34,7 @@ const HREF_PAGE_KEY: Record<string, PageKey> = {
   "/data-upload": "data-upload",
   "/workspace": "workspace",
   "/configurations": "configurations",
+  "/ecomm": "ecomm",
 };
 
 type NavLink = { href: string; labelKey: keyof Dict; icon: SidebarLink["icon"]; roles: AppRole[] };
@@ -49,6 +51,7 @@ const NAV_LINKS: NavLink[] = [
   { href: "/integrations", labelKey: "navIntegrations", icon: "integrations", roles: ["super_admin"] },
   { href: "/data-upload", labelKey: "navDataUpload", icon: "upload", roles: ["ho_admin", "super_admin"] },
   { href: "/configurations", labelKey: "navConfigurations", icon: "configurations", roles: ["super_admin"] },
+  { href: "/ecomm", labelKey: "navEcomm", icon: "ecomm", roles: ["ho_admin", "super_admin"] },
 ];
 
 function initials(name: string): string {
@@ -69,11 +72,13 @@ export async function AppShell({
   role,
   fullName,
   userId,
+  businessUnits,
   children,
 }: {
   role: AppRole;
   fullName: string;
   userId?: string;
+  businessUnits: BusinessUnit[];
   children: React.ReactNode;
 }) {
   const lang = await getLang();
@@ -92,6 +97,12 @@ export async function AppShell({
 
   const links: SidebarLink[] = NAV_LINKS.filter((l) => {
     const pageKey = HREF_PAGE_KEY[l.href];
+    // Business unit gates first — same "which business at all, before role/
+    // override even apply" ordering as requirePageAccess() in
+    // lib/auth/roles.ts. /sale-stock-mix has no PAGE_KEY entry (pre-existing
+    // gap, not introduced here) so it skips this check same as it already
+    // skipped the override check below.
+    if (pageKey && !businessUnits.includes(PAGE_BUSINESS_UNIT[pageKey])) return false;
     if (pageKey && overrideMap.has(pageKey)) return overrideMap.get(pageKey)!;
     return l.roles.includes(role);
   }).map((l) => ({ href: l.href, label: t[l.labelKey], icon: l.icon }));

@@ -42,6 +42,11 @@ const ICONS = {
   configurations: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.5-2-3.5-2.4.7a7.7 7.7 0 0 0-1.7-1L14.9 3h-4l-.4 2.7a7.7 7.7 0 0 0-1.7 1l-2.4-.7-2 3.5L6.4 11a7.6 7.6 0 0 0 0 2l-2 1.5 2 3.5 2.4-.7c.5.4 1.1.75 1.7 1l.4 2.7h4l.4-2.7c.6-.25 1.2-.6 1.7-1l2.4.7 2-3.5-2-1.5Z"/></svg>
   ),
+  // Globe — Ecomm is channel/marketplace sales (Myntra, Ajio, Shopify, ...),
+  // not a physical place the way every other nav icon here represents one.
+  ecomm: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.9 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.9-3.8-9s1.3-6.4 3.8-9Z"/></svg>
+  ),
 };
 
 export function SidebarNav({ links }: { links: SidebarLink[] }) {
