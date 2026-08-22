@@ -13,10 +13,12 @@ import { fetchReplenishmentComponentData, REPLENISHMENT_COMPONENT_RENDERERS } fr
 import { fetchFootfallComponentData, FOOTFALL_COMPONENT_RENDERERS } from "@/lib/workspace/renderFootfallComponents";
 import { fetchTargetsComponentData, TARGETS_COMPONENT_RENDERERS } from "@/lib/workspace/renderTargetsComponents";
 import { listMetricDefinitionsByIds, listDimensionDefinitions } from "@/lib/workspace/semantic";
+import { listMyScheduledExports } from "@/lib/exports/actions";
 import { WorkspaceGridClient, type GridItemMeta } from "./WorkspaceGridClient";
 import { AddComponentPicker, type PickableComponent } from "./AddComponentPicker";
 import { WorkspaceFiltersBar } from "./WorkspaceFiltersBar";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
+import { ScheduledExportsPanel } from "./ScheduledExportsPanel";
 import { LazyMount } from "./LazyMount";
 import { ChartSkeleton } from "@/components/ui/Skeleton";
 
@@ -53,11 +55,12 @@ export default async function WorkspacePage({
   // workspace (own or shared, RLS decides); absent, or an id the caller
   // can't read, falls back to the default exactly as before this feature
   // existed, so nothing changes for anyone who never touches it.
-  const [{ data: storesData }, requestedSnapshot, myWorkspaces, sharedWithMe] = await Promise.all([
+  const [{ data: storesData }, requestedSnapshot, myWorkspaces, sharedWithMe, myScheduledExports] = await Promise.all([
     supabase.schema("core").from<StoreRow>("stores").select("store_id, store_name").order("store_id"),
     searchParams.workspaceId ? getWorkspaceById(searchParams.workspaceId) : Promise.resolve(null),
     listMyWorkspaces(),
     listSharedWithMe(),
+    listMyScheduledExports(),
   ]);
   const snapshot = requestedSnapshot ?? (await getOrCreateDefaultWorkspace());
   const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004");
@@ -278,6 +281,10 @@ export default async function WorkspacePage({
           initialFrom={from}
           initialTo={to}
         />
+      </div>
+
+      <div className="mt-5">
+        <ScheduledExportsPanel initialSchedules={myScheduledExports} />
       </div>
 
       <div className="mt-5">
