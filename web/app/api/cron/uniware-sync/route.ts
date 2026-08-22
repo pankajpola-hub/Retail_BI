@@ -1,6 +1,14 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/data/admin";
-import { searchSaleOrders, getSaleOrderItems, UniwareSoapError } from "@/lib/uniware/client";
+import {
+  searchSaleOrders,
+  getSaleOrderItems,
+  searchReturns,
+  getReturn,
+  uniwareRestEnabled,
+  UniwareSoapError,
+  UniwareRestError,
+} from "@/lib/uniware/client";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -24,9 +32,32 @@ const HEADER_SAFETY_CAP = 5000; // orders per chunk; comfortably above any 30-da
 // gets picked up on the next scheduled run.
 const ITEM_ENRICHMENT_BATCH_SIZE = 150;
 
+// Returns sync — same rolling-window-not-cursor shape as the header sync
+// (Search Return has no "updated since" filter either, see
+// 0069_raw_uniware_returns.sql's header) and the same <=30-day chunk cap as
+// Search Order (see HEADER_CHUNK_DAYS above), confirmed live by
+// D:\Py\VMS_Peppermint against this same tenant's Search Return endpoint.
+const RETURNS_SYNC_WINDOW_DAYS = 45;
+const RETURNS_CHUNK_DAYS = 30;
+// Get Return is one REST call PER RETURN CODE (Search Return gives back bare
+// codes only, see client.ts's searchReturns) — same per-item cost shape and
+// same reason for a per-invocation cap as ITEM_ENRICHMENT_BATCH_SIZE above,
+// protecting Vercel's function duration limit on a large backfill. Whatever
+// doesn't fit this run is simply re-found by the next run's Search Return
+// pass (the window is re-searched every time, nothing is queued).
+const RETURNS_DETAIL_BATCH_SIZE = 150;
+
+function toUniwareDateOnly(d: Date): string {
+  // Search Return's FromDate/ToDate accept "yyyy-MM-dd" ONLY — the more
+  // common "yyyy-MM-dd HH:mm:ss" form is rejected (confirmed live by VMS
+  // against this tenant). Date.toISOString() always starts with that shape.
+  return d.toISOString().slice(0, 10);
+}
+
 type SyncSummary = {
   headerSync: { pagesFetched: number; ordersUpserted: number; totalRecordsInWindow: number };
   itemSync: { ordersProcessed: number; ordersFailed: number; itemsUpserted: number };
+  returnsSync: { enabled: boolean; codesFound: number; returnsProcessed: number; returnsFailed: number; returnsUpserted: number };
 };
 
 /**
@@ -36,16 +67,22 @@ type SyncSummary = {
  * anything else (a stray request, a manual curl without the secret) is
  * rejected before any Uniware call is made.
  *
- * Two independent phases, run sequentially in one invocation:
+ * Three independent phases, run sequentially in one invocation:
  *   1. Header sync  — SearchSaleOrder over a rolling window, upserted via
  *      ops.fn_upsert_uniware_orders.
  *   2. Item sync    — GetSaleOrder for whatever's still queued
  *      (items_synced_at is null), oldest-first-priority via
  *      ops.fn_uniware_orders_needing_items, upserted via
  *      ops.fn_upsert_uniware_order_items.
- * Both phases are individually resilient: one bad order/page is logged and
- * skipped rather than aborting the whole run, since a partial sync now
- * followed by a clean one on the next scheduled tick beats a hard failure.
+ *   3. Returns sync — a DIFFERENT Uniware API (REST v1 OAuth2, not SOAP —
+ *      see lib/uniware/client.ts's Returns section header): Search Return
+ *      over a rolling window for return codes, then Get Return per code,
+ *      upserted via ops.fn_upsert_uniware_returns. Skipped (not failed)
+ *      when UNIWARE_REST_USERNAME/PASSWORD aren't configured yet.
+ * All three phases are individually resilient: one bad order/page/return is
+ * logged and skipped rather than aborting the whole run, since a partial
+ * sync now followed by a clean one on the next scheduled tick beats a hard
+ * failure.
  */
 export async function GET(request: Request) {
   const auth = request.headers.get("authorization");
@@ -57,6 +94,7 @@ export async function GET(request: Request) {
   const summary: SyncSummary = {
     headerSync: { pagesFetched: 0, ordersUpserted: 0, totalRecordsInWindow: 0 },
     itemSync: { ordersProcessed: 0, ordersFailed: 0, itemsUpserted: 0 },
+    returnsSync: { enabled: uniwareRestEnabled(), codesFound: 0, returnsProcessed: 0, returnsFailed: 0, returnsUpserted: 0 },
   };
   const errors: string[] = [];
 
@@ -148,6 +186,78 @@ export async function GET(request: Request) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     errors.push(`item sync queue read: ${message}`);
+  }
+
+  // ---- Phase 3: returns sync ----
+  // A different API from phases 1/2 (REST v1 OAuth2, not SOAP — see
+  // client.ts's Returns section header) with its own credential pair, so it
+  // may not be configured yet even when the SOAP side is fully working;
+  // that's a deliberately quiet skip, not an error, since this route runs
+  // unattended on a schedule.
+  if (!summary.returnsSync.enabled) {
+    // Deliberately NOT pushed to `errors` — this would flip `ok: false` on
+    // every scheduled run until REST credentials are configured, misreporting
+    // a benign, expected skip as a failure. summary.returnsSync.enabled is
+    // the machine-readable signal; nothing else needs to change to pick this
+    // phase back up once UNIWARE_REST_USERNAME/PASSWORD are set.
+  } else {
+    const returnsWindowEnd = new Date();
+    const returnsWindowStart = new Date(returnsWindowEnd.getTime() - RETURNS_SYNC_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+    const codes: string[] = [];
+    let returnsChunkFrom = returnsWindowStart;
+    while (returnsChunkFrom < returnsWindowEnd) {
+      const returnsChunkTo = new Date(
+        Math.min(returnsChunkFrom.getTime() + RETURNS_CHUNK_DAYS * 24 * 60 * 60 * 1000, returnsWindowEnd.getTime())
+      );
+      try {
+        const chunkCodes = await searchReturns(toUniwareDateOnly(returnsChunkFrom), toUniwareDateOnly(returnsChunkTo));
+        codes.push(...chunkCodes);
+      } catch (err) {
+        const message = err instanceof UniwareRestError ? err.message : err instanceof Error ? err.message : String(err);
+        errors.push(
+          `returns search (${toUniwareDateOnly(returnsChunkFrom)}..${toUniwareDateOnly(returnsChunkTo)}): ${message}`
+        );
+      }
+      returnsChunkFrom = returnsChunkTo;
+    }
+
+    // De-dupe (adjacent chunks can share their boundary day, same as VMS's
+    // sync_return_tracking_numbers) before spending a Get Return call on each.
+    const uniqueCodes = Array.from(new Set(codes));
+    summary.returnsSync.codesFound = uniqueCodes.length;
+
+    // Capped per invocation for the same duration-limit reason as
+    // ITEM_ENRICHMENT_BATCH_SIZE — nothing is queued for "the rest", the next
+    // run's Search Return pass simply re-finds whatever didn't fit this time.
+    for (const code of uniqueCodes.slice(0, RETURNS_DETAIL_BATCH_SIZE)) {
+      try {
+        const detail = await getReturn(code);
+        if (!detail) continue;
+
+        const payload = [
+          {
+            reverse_pickup_code: detail.reversePickupCode,
+            sale_order_code: detail.saleOrderCode,
+            return_awb: detail.returnAwb,
+            status: detail.status,
+            created_on: detail.createdOn,
+            updated_on: detail.updatedOn,
+            raw_response: detail.raw,
+          },
+        ];
+        const { data: upserted, error } = await admin
+          .schema("ops")
+          .rpc<number>("fn_upsert_uniware_returns", { p_rows: payload });
+        if (error) throw new Error(error.message);
+
+        summary.returnsSync.returnsProcessed += 1;
+        summary.returnsSync.returnsUpserted += upserted ?? 0;
+      } catch (err) {
+        summary.returnsSync.returnsFailed += 1;
+        const message = err instanceof UniwareRestError ? err.message : err instanceof Error ? err.message : String(err);
+        errors.push(`returns detail (${code}): ${message}`);
+      }
+    }
   }
 
   return NextResponse.json({ ok: errors.length === 0, data: summary, errors });
