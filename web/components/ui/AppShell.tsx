@@ -27,6 +27,7 @@ const HREF_PAGE_KEY: Record<string, PageKey> = {
   "/network": "network",
   "/stock-details": "stock-details",
   "/replenishment": "replenishment",
+  "/movement": "replenishment",
   "/footfall": "footfall",
   "/targets": "targets",
   "/users": "users",
@@ -47,8 +48,7 @@ type NavLink = { href: string; labelKey: keyof Dict; icon: SidebarLink["icon"]; 
 const NAV_LINKS: NavLink[] = [
   { href: "/network", labelKey: "navNetwork", icon: "network", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Overview" },
   { href: "/stock-details", labelKey: "navStockDetails", icon: "stock", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Stock" },
-  { href: "/replenishment", labelKey: "navReplenishment", icon: "replenishment", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Movement" },
-  { href: "/sale-stock-mix", labelKey: "navSaleStockMix", icon: "mix", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Movement" },
+  { href: "/movement", labelKey: "navMovement", icon: "replenishment", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Movement" },
   { href: "/footfall", labelKey: "navFootfall", icon: "footfall", roles: ["ebo_manager", "ho_admin", "super_admin"], group: "Overview" },
   { href: "/targets", labelKey: "navTargets", icon: "targets", roles: ["ho_admin", "super_admin"], group: "Overview" },
   { href: "/workspace", labelKey: "navWorkspace", icon: "workspace", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Workspace" },

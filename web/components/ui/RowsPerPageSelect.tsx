@@ -10,15 +10,26 @@ const OPTIONS = ["10", "50", "100", "max"];
 // end of the now-shorter result set. Page-number links themselves stay
 // plain server-rendered <a> tags (see page.tsx's buildPageHref) since they
 // don't need this reset behavior.
-export function RowsPerPageSelect({ selected }: { selected: string }) {
+export function RowsPerPageSelect({
+  selected,
+  paramName = "perPage",
+  pageParamName = "page",
+}: {
+  selected: string;
+  // Namespaced param names — e.g. /movement's Sale vs Stock Mix tab uses
+  // mix_perPage/mix_page so its pagination state can't collide with the
+  // Replenishment tab's identically-shaped perPage/page on the same URL.
+  paramName?: string;
+  pageParamName?: string;
+}) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
   function onChange(value: string) {
     const params = new URLSearchParams(searchParams.toString());
-    params.set("perPage", value);
-    params.delete("page");
+    params.set(paramName, value);
+    params.delete(pageParamName);
     router.push(`${pathname}?${params.toString()}`);
   }
 
