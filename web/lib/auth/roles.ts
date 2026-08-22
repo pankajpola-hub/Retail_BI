@@ -20,6 +20,14 @@ export type AppRole =
 // now includes ebo_manager and marketing) and TopNav's NAV_LINKS (same
 // widened role list), which were both loosened together with this change so
 // a role that lands here by default can also always navigate back to it.
+//
+// NOT used directly for redirects anymore (see resolveHome below) — this is
+// only the retail-side default a role falls back to. A plain ROLE_HOME[role]
+// redirect assumed every role could reach /network, which stopped being true
+// the moment a user could hold 'ecomm' without 'retail' (0061): denying such
+// a user access to /network and then redirecting them BACK to /network
+// produced a blank page (redirect target = the page that just denied them).
+// Confirmed live 2026-08-22 testing an ecomm-only marketing user.
 export const ROLE_HOME: Record<AppRole, string> = {
   super_admin: "/network",
   ho_admin: "/network",
@@ -107,6 +115,24 @@ function redirectForUnresolvedCaller(reason: "no_session" | "not_provisioned"): 
   redirect(reason === "no_session" ? "/login" : "/login?error=not_provisioned");
 }
 
+// The actual redirect target for "not allowed here" — business-unit-aware,
+// unlike a bare ROLE_HOME[role] lookup (see that const's comment for the bug
+// this replaces). Picks the first page the caller can actually reach given
+// BOTH their role and their business_unit grants, so the redirect can never
+// point back at a page that would just deny them again:
+//   - holds 'retail' -> ROLE_HOME[role] (today, always /network — every
+//     retail-tagged page's role lists were already satisfiable by every role
+//     that reaches this branch, so this preserves existing behavior exactly)
+//   - else holds 'ecomm' (and the role can reach /ecomm) -> /ecomm
+//   - else (shouldn't happen — every user is provisioned with >=1 business
+//     unit, see 0061's header and createUserSchema's min(1)) -> ROLE_HOME[role]
+//     as a last-resort fallback rather than throwing.
+export function resolveHome(role: AppRole, businessUnits: BusinessUnit[]): string {
+  if (businessUnits.includes("retail")) return ROLE_HOME[role];
+  if (businessUnits.includes("ecomm") && PAGE_ROLE_DEFAULTS.ecomm.includes(role)) return "/ecomm";
+  return ROLE_HOME[role];
+}
+
 /**
  * Layer 2 from docs/rbac-auth-setup.md §4: given a session already confirmed
  * valid by middleware.ts, fetch the role and redirect away from route groups
@@ -121,7 +147,9 @@ export async function requireRole(...allowed: AppRole[]): Promise<CurrentUser> {
   const { userId, fullName, role } = resolved;
 
   if (!allowed.includes(role)) {
-    redirect(ROLE_HOME[role]);
+    // businessUnits fetched here (not after, as this used to) so the
+    // redirect target itself is business-unit-aware — see resolveHome.
+    redirect(resolveHome(role, await resolveCallerBusinessUnits()));
   }
 
   const storeIds = await resolveCallerStoreIds();
@@ -349,7 +377,7 @@ export async function requirePageAccess(pageKey: PageKey): Promise<CurrentUser> 
   const allowed = roleAllowed && permitAllowed && businessUnitAllowed;
 
   if (!allowed) {
-    redirect(ROLE_HOME[role]);
+    redirect(resolveHome(role, businessUnits));
   }
 
   const storeIds = await resolveCallerStoreIds();
