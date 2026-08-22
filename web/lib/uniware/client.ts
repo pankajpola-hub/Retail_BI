@@ -74,6 +74,7 @@ async function soapCall(
     method: "POST",
     headers: { "Content-Type": "text/xml; charset=utf-8" },
     body: envelope,
+    cache: "no-store", // Next.js patches global fetch and caches by default even for non-GET requests in some cases — every call here must hit Uniware live, never a stale/memoized response.
   });
 
   const text = await res.text();
@@ -277,15 +278,19 @@ export async function getSaleOrderItems(saleOrderCode: string): Promise<UniwareO
 // restCall/searchReturns/getReturn mirror that project's proven
 // _rest_token/_rest_call/search_returns/get_return implementation.
 //
-// UNVERIFIED against live data at authoring time (no REST credentials
-// available — see 0069_raw_uniware_returns.sql's header for the exact
-// caveat): the request shapes and the two confirmed response fields
-// (returnSaleOrderValue.trackingNumber/saleOrderCode) come from VMS's
-// already-working integration against this same tenant, so those are
-// trustworthy. status/createdOn/updatedOn are a best-effort guess at common
-// Unicommerce REST field naming that VMS's get_return never needed and never
-// confirmed — getReturn() also returns the full raw payload so nothing is
-// lost if that guess is wrong.
+// VERIFIED live 2026-08-22 (real REST credentials + UNIWARE_FACILITY_CODE,
+// see .env.local's comments) — 1706 real return codes found, 150 fetched via
+// Get Return, all fields below confirmed against real response payloads, not
+// the originally-authored guess. Two things worth remembering from getting
+// this working: (1) grant_type=password's OAuth token step failed with a
+// generic "Invalid credentials" until UNIWARE_REST_PASSWORD was double-quoted
+// in .env.local — an unquoted trailing `#` is parsed as a comment by .env
+// loaders, silently truncating the password; (2) the search itself then
+// failed with "403 Illegal Access, facility is required" until
+// UNIWARE_FACILITY_CODE was set (required by restCall's Facility header,
+// this tenant's single warehouse is WH-PNQ-DH). getReturn() still returns the
+// full raw payload regardless, so any field this doesn't model explicitly
+// isn't lost.
 // -----------------------------------------------------------------------------
 
 export class UniwareRestError extends Error {}
@@ -317,7 +322,7 @@ async function restToken(): Promise<string | null> {
   url.searchParams.set("username", process.env.UNIWARE_REST_USERNAME!);
   url.searchParams.set("password", process.env.UNIWARE_REST_PASSWORD!);
 
-  const res = await fetch(url.toString(), { method: "POST" });
+  const res = await fetch(url.toString(), { method: "POST", cache: "no-store" });
   const text = await res.text();
   if (!res.ok) {
     throw new UniwareRestError(`OAuth2 token request failed (HTTP ${res.status}): ${text.slice(0, 300)}`);
@@ -355,6 +360,7 @@ async function restCall(path: string, payload: Record<string, unknown>): Promise
     method: "POST",
     headers,
     body: JSON.stringify(payload),
+    cache: "no-store",
   });
   const text = await res.text();
   if (!res.ok) {
@@ -409,11 +415,19 @@ export type UniwareReturnDetail = {
 };
 
 /**
- * Get Return — per-code detail. Confirmed live (by VMS, this tenant):
- * returnSaleOrderValue.{trackingNumber,saleOrderCode}. status/createdOn/
- * updatedOn below are an UNVERIFIED best-effort guess (see this section's
- * header) — `raw` always carries the full response so callers/migrations can
- * be corrected later without having lost data.
+ * Get Return — per-code detail. Field mapping CONFIRMED against a real
+ * response (2026-08-22, once REST credentials + UNIWARE_FACILITY_CODE were
+ * both correctly configured): everything relevant lives under
+ * returnSaleOrderValue — .saleOrderCode, .trackingNumber, .returnStatus
+ * (e.g. "COURIER_ALLOCATED"), .returnCreatedDate ("yyyy-MM-dd HH:mm:ss").
+ * The earlier version of this function guessed at a top-level data.status/
+ * data.createdDate shape that doesn't exist in the real payload — those
+ * always resolved to null (caught by inspecting `raw` on real rows, not by
+ * an error, since the upsert never rejects a null). No generic "updated"
+ * timestamp exists on a return the way SaleOrder/SaleOrderItem have
+ * CreatedOn/UpdatedOn — returnDeliveryDate/returnCompletedDate are
+ * milestone-specific instead, not modeled as a single column here; `raw`
+ * carries them if ever needed.
  */
 export async function getReturn(reversePickupCode: string): Promise<UniwareReturnDetail | null> {
   const data = await restCall("/services/rest/v1/oms/return/get", {
@@ -427,11 +441,11 @@ export async function getReturn(reversePickupCode: string): Promise<UniwareRetur
 
   return {
     reversePickupCode,
-    saleOrderCode: textOrNull(orderValue.saleOrderCode) ?? textOrNull(data.saleOrderCode),
+    saleOrderCode: textOrNull(orderValue.saleOrderCode),
     returnAwb: textOrNull(orderValue.trackingNumber),
-    status: textOrNull(data.status) ?? textOrNull(orderValue.status),
-    createdOn: textOrNull(data.createdDate) ?? textOrNull(data.createdOn),
-    updatedOn: textOrNull(data.updatedDate) ?? textOrNull(data.updatedOn),
+    status: textOrNull(orderValue.returnStatus),
+    createdOn: textOrNull(orderValue.returnCreatedDate),
+    updatedOn: null,
     raw: data,
   };
 }
