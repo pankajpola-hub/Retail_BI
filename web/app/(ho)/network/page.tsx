@@ -24,6 +24,9 @@ import {
   HOUR_END,
   type AgentDailyRow,
 } from "@/lib/sales/aggregate";
+import { computeStoreExceptions } from "@/lib/sales/exceptions";
+import { getMyAlertSubscription } from "@/lib/alerts/actions";
+import { AlertSubscriptionToggle } from "./AlertSubscriptionToggle";
 import {
   computeFootfallInsights,
   type MatrixEntry,
@@ -140,19 +143,10 @@ async function OverviewRollupSection({
 
   const networkNet = (showEbo ? eboNet : 0) + (showEcomm ? ecommNet : 0);
 
-  // Worst-performing stores by their own latest-week net-sales change —
-  // reuses buildWeekSeriesShared exactly as the week-wise table below does,
-  // just reading its last row instead of the whole series.
-  const exceptions = storesInView
-    .map((sid) => {
-      const series = buildWeekSeriesShared(weekRows, sid);
-      const latest = series[series.length - 1];
-      return latest?.netChangePct != null
-        ? { storeId: sid, name: storeNames.get(sid) ?? sid, netChangePct: latest.netChangePct, net: latest.net }
-        : null;
-    })
-    .filter((r): r is { storeId: string; name: string; netChangePct: number; net: number } => r !== null && r.netChangePct < -10)
-    .sort((a, b) => a.netChangePct - b.netChangePct);
+  // Worst-performing stores by their own latest-week net-sales change — see
+  // lib/sales/exceptions.ts for why this is a shared extraction (the
+  // threshold-alerts email digest reuses the exact same definition).
+  const exceptions = computeStoreExceptions(weekRows, storesInView, storeNames);
 
   return (
     <>
@@ -175,12 +169,14 @@ async function OverviewRollupSection({
         <KpiCard label="LFS" value="—" sub="Pipeline not connected" tone="muted" />
       </div>
 
-      {exceptions.length > 0 && (
-        <div className="mt-4 border border-line-soft">
-          <div className="flex items-center justify-between border-b border-line-soft bg-surface-2 px-3 py-2">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-2">Needs attention — EBO sales</span>
-            <span className="text-[11px] text-ink-3">{exceptions.length} store{exceptions.length === 1 ? "" : "s"}, latest week vs prior</span>
-          </div>
+      <div className="mt-4 border border-line-soft">
+        <div className="flex items-center justify-between border-b border-line-soft bg-surface-2 px-3 py-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-2">Needs attention — EBO sales</span>
+          <span className="text-[11px] text-ink-3">
+            {exceptions.length > 0 ? `${exceptions.length} store${exceptions.length === 1 ? "" : "s"}, latest week vs prior` : "latest week vs prior"}
+          </span>
+        </div>
+        {exceptions.length > 0 ? (
           <ul>
             {exceptions.map((e) => (
               <li key={e.storeId} className="flex items-center gap-3 border-b border-line-soft px-3 py-2 text-[13px] last:border-0">
@@ -190,8 +186,11 @@ async function OverviewRollupSection({
               </li>
             ))}
           </ul>
-        </div>
-      )}
+        ) : (
+          <p className="px-3 py-3 text-[12.5px] text-ink-3">No stores below threshold right now.</p>
+        )}
+        <AlertSubscriptionToggle initial={await getMyAlertSubscription()} />
+      </div>
     </>
   );
 }

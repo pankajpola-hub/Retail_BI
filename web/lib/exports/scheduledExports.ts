@@ -64,9 +64,10 @@ function ddmmyyyy(isoDateStr: string): string {
  * Which stores an owner can see — the same role/user_store_access logic
  * core.fn_user_store_ids() (0003) encodes as SQL, evaluated here explicitly
  * because the admin client has no session for that function's
- * core.current_user_id() to resolve.
+ * core.current_user_id() to resolve. Exported: lib/alerts/runDueAlerts.ts
+ * reuses this for the same reason (an unattended cron run, no session).
  */
-async function resolveOwnerStoreIds(admin: DataClient, ownerId: string): Promise<string[]> {
+export async function resolveOwnerStoreIds(admin: DataClient, ownerId: string): Promise<string[]> {
   const { data: profile } = await admin
     .schema("core")
     .from<{ role: string }>("profiles")
@@ -175,7 +176,7 @@ async function buildFootfallCompletenessReport(admin: DataClient, ownerId: strin
   const fromStr = isoDate(from);
   const toStr = isoDate(to);
 
-  const [{ data: stores }, { data: completeness }, { data: daily }] = await Promise.all([
+  const [{ data: stores }, { data: completeness, error: completenessError }, { data: daily, error: dailyError }] = await Promise.all([
     admin.schema("core").from<{ store_id: string; store_name: string }>("stores").select("store_id, store_name"),
     storeIds.length > 0
       ? admin
@@ -186,7 +187,7 @@ async function buildFootfallCompletenessReport(admin: DataClient, ownerId: strin
           .gte("date", fromStr)
           .lte("date", toStr)
           .order("date")
-      : Promise.resolve({ data: [] as CompletenessRow[] }),
+      : Promise.resolve({ data: [] as CompletenessRow[], error: null }),
     storeIds.length > 0
       ? admin
           .schema("sales")
@@ -195,8 +196,13 @@ async function buildFootfallCompletenessReport(admin: DataClient, ownerId: strin
           .in("store_id", storeIds)
           .gte("bill_date", fromStr)
           .lte("bill_date", toStr)
-      : Promise.resolve({ data: [] as DailySalesRow[] }),
+      : Promise.resolve({ data: [] as DailySalesRow[], error: null }),
   ]);
+  // Surfaced live (0073's header): a permission/schema issue against these
+  // admin-context queries previously came back as a silently-empty report
+  // rather than a failure — check explicitly rather than repeat that.
+  if (completenessError) throw new Error(`vw_footfall_completeness: ${completenessError.message}`);
+  if (dailyError) throw new Error(`vw_ebo_sales_daily: ${dailyError.message}`);
 
   const storeNames = new Map((stores ?? []).map((s) => [s.store_id, s.store_name]));
   const salesByKey = new Map(

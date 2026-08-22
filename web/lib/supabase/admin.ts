@@ -10,10 +10,15 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js";
  *
  * Same restricted-import posture as the self-hosted admin client it
  * replaces (`lib/postgrest/admin.ts`, now retired): user provisioning
- * (`app/(admin)/users/actions.ts`) and the integrations credential write.
- * If you're importing this from anywhere else, the query almost certainly
- * belongs behind the caller's own session (`lib/data/client.ts`) with an
- * RLS policy doing the actual gating.
+ * (`app/(admin)/users/actions.ts`), the integrations credential write,
+ * `lib/storage/supabase.ts`'s Storage calls, and
+ * `lib/alerts/runDueAlerts.ts`'s `auth.admin.getUserById` lookup (an
+ * unattended cron run resolving a subscriber's real email to send a digest
+ * to — `core.profiles` has no email column and `auth.users` isn't
+ * PostgREST-exposed, so there's no RLS-scoped path that could do this
+ * instead). If you're importing this from anywhere else, the query almost
+ * certainly belongs behind the caller's own session (`lib/data/client.ts`)
+ * with an RLS policy doing the actual gating.
  */
 export function createAdminClient() {
   return createSupabaseClient(
