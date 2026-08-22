@@ -221,11 +221,25 @@ export const PAGE_ROLE_DEFAULTS: Record<PageKey, AppRole[]> = {
   // it; store/sales roles have no access at all unless a future per-user
   // override widens it, same override mechanism as every other page here.
   configurations: ["super_admin"],
-  // First Ecomm page (0067's semantic layer) — deliberately narrow to start:
-  // no dedicated Ecomm staff/roles exist yet, only the same two roles that
-  // get data-upload. Widen this (or add an ecomm-specific role) once real
-  // Ecomm users are provisioned, same as every other role list here.
-  ecomm: ["ho_admin", "super_admin"],
+  // First Ecomm page (0067's semantic layer). No dedicated "Ecomm manager"
+  // role exists (and adding a new core.app_role enum value is a bigger,
+  // harder-to-reverse change than this warrants) — so this reuses the two
+  // existing roles that already fit: ho_admin/super_admin (retained for
+  // admin oversight, same as data-upload/configurations), plus `marketing`,
+  // which is the closest existing role semantically — it already gates a
+  // sales-channel page (/campaigns, see (marketing)/layout.tsx) and, unlike
+  // ebo_manager/regional_manager, is NOT store-scoped (no
+  // core.fn_user_store_ids() dependency anywhere marketing writes data), so
+  // it doesn't carry retail-store baggage that doesn't apply to Ecomm.
+  // Business unit (PAGE_BUSINESS_UNIT.ecomm = "ecomm", checked below) is the
+  // real, primary gate here — a `marketing` user only reaches this page if
+  // they *also* hold an explicit 'ecomm' grant in core.user_business_units;
+  // this role list is just the coarser second filter on top of that, same
+  // relationship every other PAGE_ROLE_DEFAULTS entry already has to its
+  // business_unit. ebo_manager was deliberately left out: it's the role that
+  // writes daily footfall/remarks scoped to physical stores (0032) — Ecomm
+  // has no store concept, so that role doesn't fit even though it exists.
+  ecomm: ["ho_admin", "super_admin", "marketing"],
 };
 
 // Which business unit each page belongs to — checked in requirePageAccess()
