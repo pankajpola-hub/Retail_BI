@@ -4,8 +4,10 @@ import { z } from "zod";
 import { createClient } from "@/lib/data/client";
 import { createAdminClient } from "@/lib/data/admin";
 import { createSupabaseUser, setSupabaseUserPassword, updateSupabaseUserName } from "@/lib/supabase/userAdmin";
-import type { AppRole, PageKey } from "@/lib/auth/roles";
-import { PAGE_KEYS } from "@/lib/auth/roles";
+import { syncPermitUserAccess } from "@/lib/permit/client";
+import type { AppRole, BusinessUnit, PageKey } from "@/lib/auth/roles";
+import { PAGE_KEYS, PAGE_ROLE_DEFAULTS } from "@/lib/auth/roles";
+import type { DataClient } from "@/lib/data/client";
 
 const createUserSchema = z.object({
   email: z.string().email(),
@@ -13,6 +15,12 @@ const createUserSchema = z.object({
   password: z.string().min(8, "Password must be at least 8 characters."),
   role: z.enum(["super_admin", "ho_admin", "regional_manager", "ebo_manager", "marketing"]),
   storeIds: z.array(z.string()),
+  // 0061_business_unit.sql: explicit-grant-only, no role-based auto-all — a
+  // brand-new user (even super_admin) gets exactly what's checked here, not
+  // an implicit "both". min(1): a user with zero business units can't see
+  // any page at all (PAGE_BUSINESS_UNIT gates before role/store even apply),
+  // which is never what an admin creating an account actually wants.
+  businessUnits: z.array(z.enum(["retail", "ecomm"])).min(1, "Select at least one business unit."),
 });
 
 /**
@@ -31,7 +39,7 @@ const createUserSchema = z.object({
  * id IS the join the entire RLS model rests on.
  */
 export async function createUser(input: z.infer<typeof createUserSchema>) {
-  const { email, fullName, password, role, storeIds } = createUserSchema.parse(input);
+  const { email, fullName, password, role, storeIds, businessUnits } = createUserSchema.parse(input);
 
   const supabase = await createClient();
   const {
@@ -63,6 +71,22 @@ export async function createUser(input: z.infer<typeof createUserSchema>) {
     .insert({ user_id: newUserId, full_name: fullName, role });
   if (profileError) throw new Error(profileError.message);
 
+  // Permit.io sync (page-access gate, promoted from shadow mode 2026-08-22 —
+  // see checkPermitGate in lib/auth/roles.ts). check() can only evaluate a
+  // role it already knows about, so every user created from here on is
+  // synced and role-assigned immediately. `effectivePages: null` — a
+  // brand-new user has no core.user_page_overrides rows yet, so the plain
+  // role assignment is the whole story; see syncPermitUserAccess's doc
+  // comment for why an override changes this to a synthesized per-user role
+  // instead. Non-fatal: checkPermitGate fails OPEN on its own errors, so a
+  // Permit.io outage here would only mean a not-yet-synced user briefly
+  // relies on that fail-open behavior, not a blocked account creation.
+  try {
+    await syncPermitUserAccess(newUserId, fullName, role, null);
+  } catch (err) {
+    console.warn(`[permit] sync failed for new user ${newUserId}:`, err);
+  }
+
   if (storeIds.length > 0) {
     const { error: grantError } = await admin
       .schema("core")
@@ -70,6 +94,15 @@ export async function createUser(input: z.infer<typeof createUserSchema>) {
       .insert(storeIds.map((store_id) => ({ user_id: newUserId, store_id })));
     if (grantError) throw new Error(grantError.message);
   }
+
+  // 0061_business_unit.sql — required by the schema above (min(1)), so this
+  // always has at least one row, unlike storeIds which can legitimately be
+  // empty (a role that doesn't need store scoping).
+  const { error: businessUnitError } = await admin
+    .schema("core")
+    .from<{ user_id: string; business_unit: BusinessUnit }>("user_business_units")
+    .insert(businessUnits.map((business_unit) => ({ user_id: newUserId, business_unit })));
+  if (businessUnitError) throw new Error(businessUnitError.message);
 }
 
 /**
@@ -192,6 +225,77 @@ export async function updateUserStoreAccess(userId: string, storeIds: string[]):
 }
 
 /**
+ * Edits a user's core.user_business_units grants (0061_business_unit.sql) —
+ * same delete-then-insert shape and tradeoff as updateUserStoreAccess above,
+ * and the same reasoning for why that moment of zero grants mid-update is
+ * acceptable (infrequent admin action, not a hot path). Unlike store/page
+ * access, this is NOT mirrored into Permit.io — business_unit stays a
+ * Postgres-only check (core.fn_user_business_units(), read directly in
+ * requirePageAccess/AppShell) by design, so there's only one place this rule
+ * lives; see lib/permit/client.ts's module doc for the reasoning.
+ */
+export async function updateUserBusinessUnits(userId: string, businessUnits: BusinessUnit[]): Promise<void> {
+  await requireSuperAdminCaller();
+
+  if (businessUnits.length === 0) {
+    throw new Error("A user needs at least one business unit — otherwise every page is unreachable.");
+  }
+
+  const admin = await createAdminClient();
+
+  const { error: deleteError } = await admin
+    .schema("core")
+    .from<{ user_id: string; business_unit: BusinessUnit }>("user_business_units")
+    .delete()
+    .eq("user_id", userId);
+  if (deleteError) throw new Error(deleteError.message);
+
+  const { error: insertError } = await admin
+    .schema("core")
+    .from<{ user_id: string; business_unit: BusinessUnit }>("user_business_units")
+    .insert(businessUnits.map((business_unit) => ({ user_id: userId, business_unit })));
+  if (insertError) throw new Error(insertError.message);
+}
+
+/**
+ * Re-reads a user's FULL current override set (not just the delta a single
+ * updateUserPageOverrides call touched — Permit.io needs the complete
+ * effective picture, not an incremental patch) and mirrors it into
+ * Permit.io's shadow-mode check via syncPermitUserAccess. Non-fatal by
+ * design, same reasoning as createUser's sync call above.
+ */
+async function syncPermitOverridesForUser(admin: DataClient, userId: string): Promise<void> {
+  const { data: profile } = await admin
+    .schema("core")
+    .from<{ full_name: string; role: AppRole }>("profiles")
+    .select("full_name, role")
+    .eq("user_id", userId)
+    .single();
+  if (!profile) return;
+
+  const { data: overrideRows } = await admin
+    .schema("core")
+    .from<{ page_key: PageKey; allowed: boolean }>("user_page_overrides")
+    .select("page_key, allowed")
+    .eq("user_id", userId);
+
+  try {
+    if (!overrideRows || overrideRows.length === 0) {
+      await syncPermitUserAccess(userId, profile.full_name, profile.role, null);
+      return;
+    }
+
+    const overrideMap = new Map(overrideRows.map((r) => [r.page_key, r.allowed]));
+    const effectivePages = PAGE_KEYS.filter((k) =>
+      overrideMap.has(k) ? overrideMap.get(k)! : PAGE_ROLE_DEFAULTS[k].includes(profile.role)
+    );
+    await syncPermitUserAccess(userId, profile.full_name, profile.role, effectivePages);
+  } catch (err) {
+    console.warn(`[permit-shadow] override sync failed for ${userId}:`, err);
+  }
+}
+
+/**
  * User feedback #16b ("the menu pages rights"): writes core.user_page_overrides
  * (migration 0035) — per-user exceptions on top of the role-based page
  * defaults (lib/auth/roles.ts PAGE_ROLE_DEFAULTS). `overrides` covers every
@@ -232,4 +336,6 @@ export async function updateUserPageOverrides(
       .insert(rows);
     if (insertError) throw new Error(insertError.message);
   }
+
+  await syncPermitOverridesForUser(admin, userId);
 }

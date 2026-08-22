@@ -19,6 +19,16 @@ export function createAdminClient() {
   return createSupabaseClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { autoRefreshToken: false, persistSession: false } }
+    {
+      auth: { autoRefreshToken: false, persistSession: false },
+      // Next.js's patched global fetch caches requests by default — confirmed
+      // live (2026-08-22) to bite even a same-shape POST .rpc() call made
+      // more than once with different arguments within one request: an
+      // RPC call with p_limit=150 silently returned a cached empty result
+      // while the identical call outside Next (or with p_limit=5) returned
+      // real rows. An admin client exists specifically to make fresh,
+      // authoritative writes/reads — it must never serve a cached response.
+      global: { fetch: (input, init) => fetch(input, { ...init, cache: "no-store" }) },
+    }
   );
 }
