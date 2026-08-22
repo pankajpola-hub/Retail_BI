@@ -261,3 +261,177 @@ export async function getSaleOrderItems(saleOrderCode: string): Promise<UniwareO
     };
   });
 }
+
+// -----------------------------------------------------------------------------
+// Returns — REST v1, OAuth2 `password` grant. A COMPLETELY SEPARATE API from
+// everything above: different auth (OAuth2, not WS-Security), different
+// transport (JSON over REST, not SOAP), different credential pair
+// (UNIWARE_REST_USERNAME/PASSWORD, not the Search/GetOrder SOAP keys).
+//
+// Why a separate API at all: the SOAP API (VERIFIED live, see this file's
+// header) has no way to search returns — SearchShippingPackage only indexes
+// forward shipments, and GetSaleOrder's <Returns> block needs a sale order
+// code you already have. Confirmed by D:\Py\VMS_Peppermint's
+// backend/app/services/uniware.py (same tenant, same company) hitting exactly
+// this wall and building this REST path instead — this file's restToken/
+// restCall/searchReturns/getReturn mirror that project's proven
+// _rest_token/_rest_call/search_returns/get_return implementation.
+//
+// UNVERIFIED against live data at authoring time (no REST credentials
+// available — see 0069_raw_uniware_returns.sql's header for the exact
+// caveat): the request shapes and the two confirmed response fields
+// (returnSaleOrderValue.trackingNumber/saleOrderCode) come from VMS's
+// already-working integration against this same tenant, so those are
+// trustworthy. status/createdOn/updatedOn are a best-effort guess at common
+// Unicommerce REST field naming that VMS's get_return never needed and never
+// confirmed — getReturn() also returns the full raw payload so nothing is
+// lost if that guess is wrong.
+// -----------------------------------------------------------------------------
+
+export class UniwareRestError extends Error {}
+
+let restTokenCache: { accessToken: string; expiresAt: number } | null = null;
+
+/** Whether UNIWARE_REST_USERNAME/PASSWORD are configured — lets the cron job skip the returns phase quietly instead of failing every run when they're not set yet. */
+export function uniwareRestEnabled(): boolean {
+  return Boolean(process.env.UNIWARE_REST_USERNAME && process.env.UNIWARE_REST_PASSWORD);
+}
+
+/**
+ * Fetches (and caches for its lifetime) an OAuth2 access token via the
+ * `password` grant. Mirrors VMS's _rest_token(): POST {base}/oauth/token
+ * with grant_type=password&client_id=my-trusted-client&username=...&password=...
+ * as query params (confirmed live by VMS against this same tenant — not
+ * a JSON body).
+ */
+async function restToken(): Promise<string | null> {
+  const nowSeconds = Date.now() / 1000;
+  if (restTokenCache && restTokenCache.expiresAt > nowSeconds + 30) {
+    return restTokenCache.accessToken;
+  }
+  if (!uniwareRestEnabled()) return null;
+
+  const url = new URL(`${process.env.UNIWARE_BASE_URL}/oauth/token`);
+  url.searchParams.set("grant_type", "password");
+  url.searchParams.set("client_id", "my-trusted-client");
+  url.searchParams.set("username", process.env.UNIWARE_REST_USERNAME!);
+  url.searchParams.set("password", process.env.UNIWARE_REST_PASSWORD!);
+
+  const res = await fetch(url.toString(), { method: "POST" });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new UniwareRestError(`OAuth2 token request failed (HTTP ${res.status}): ${text.slice(0, 300)}`);
+  }
+
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new UniwareRestError(`Non-JSON OAuth2 token response (HTTP ${res.status}): ${text.slice(0, 300)}`);
+  }
+
+  const token = data.access_token;
+  if (typeof token !== "string" || !token) return null;
+
+  restTokenCache = { accessToken: token, expiresAt: nowSeconds + Number(data.expires_in ?? 0) };
+  return token;
+}
+
+/** POSTs a JSON REST v1 request with the OAuth2 bearer token; returns the parsed JSON body. */
+async function restCall(path: string, payload: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+  const token = await restToken();
+  if (!token) return null;
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
+  // Same facility-scoping header VMS sends on every REST call when configured
+  // (UNIWARE_FACILITY_CODE — already present in this project's .env.local for
+  // the SOAP side per D:\Py\VMS_Peppermint, harmless to omit if unset).
+  if (process.env.UNIWARE_FACILITY_CODE) headers["Facility"] = process.env.UNIWARE_FACILITY_CODE;
+
+  const res = await fetch(`${process.env.UNIWARE_BASE_URL}${path}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new UniwareRestError(`${path} failed (HTTP ${res.status}): ${text.slice(0, 300)}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new UniwareRestError(`Non-JSON response from ${path} (HTTP ${res.status}): ${text.slice(0, 300)}`);
+  }
+}
+
+function textOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/**
+ * Search Return — returns the bare list of return codes created in
+ * [fromDate, toDate]. fromDate/toDate MUST be "yyyy-MM-dd" (date-only;
+ * "yyyy-MM-dd HH:mm:ss" is rejected — confirmed live by VMS against this
+ * tenant) and the window MUST be <=30 days (Search Return rejects wider
+ * spans with INVALID_TIME_INTERVAL, confirmed live: 30 days OK, 45 days
+ * fails) — callers (the cron job) are responsible for chunking a wider
+ * lookback into <=30-day windows, same responsibility split as
+ * searchSaleOrders' caller owning HEADER_CHUNK_DAYS.
+ *
+ * No pagination parameters exist on this endpoint at all (confirmed live by
+ * VMS: displayStart/displayLength are rejected as unrecognized fields) — the
+ * full result for the window comes back in one call.
+ */
+export async function searchReturns(fromDate: string, toDate: string): Promise<string[]> {
+  const data = await restCall("/services/rest/v1/oms/return/search", {
+    returnType: "CIR",
+    createdFrom: fromDate,
+    createdTo: toDate,
+  });
+  if (!data) return [];
+  const returnOrders = Array.isArray(data.returnOrders) ? data.returnOrders : [];
+  return returnOrders
+    .map((row) => (row && typeof row === "object" ? (row as Record<string, unknown>).code : undefined))
+    .filter((code): code is string => typeof code === "string" && code.length > 0);
+}
+
+export type UniwareReturnDetail = {
+  reversePickupCode: string;
+  saleOrderCode: string | null;
+  returnAwb: string | null;
+  status: string | null;
+  createdOn: string | null;
+  updatedOn: string | null;
+  raw: Record<string, unknown>;
+};
+
+/**
+ * Get Return — per-code detail. Confirmed live (by VMS, this tenant):
+ * returnSaleOrderValue.{trackingNumber,saleOrderCode}. status/createdOn/
+ * updatedOn below are an UNVERIFIED best-effort guess (see this section's
+ * header) — `raw` always carries the full response so callers/migrations can
+ * be corrected later without having lost data.
+ */
+export async function getReturn(reversePickupCode: string): Promise<UniwareReturnDetail | null> {
+  const data = await restCall("/services/rest/v1/oms/return/get", {
+    reversePickupCode,
+  });
+  if (!data) return null;
+
+  const orderValue = (data.returnSaleOrderValue && typeof data.returnSaleOrderValue === "object"
+    ? (data.returnSaleOrderValue as Record<string, unknown>)
+    : {}) as Record<string, unknown>;
+
+  return {
+    reversePickupCode,
+    saleOrderCode: textOrNull(orderValue.saleOrderCode) ?? textOrNull(data.saleOrderCode),
+    returnAwb: textOrNull(orderValue.trackingNumber),
+    status: textOrNull(data.status) ?? textOrNull(orderValue.status),
+    createdOn: textOrNull(data.createdDate) ?? textOrNull(data.createdOn),
+    updatedOn: textOrNull(data.updatedDate) ?? textOrNull(data.updatedOn),
+    raw: data,
+  };
+}
