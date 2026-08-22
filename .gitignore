@@ -1,7 +1,13 @@
 # Local-only test upload artifacts — the app writes here in older/dev
 # configs; nothing under this path is source. See web/.gitignore for the
-# app's own build/dependency ignores.
-storage/
+# app's own build/dependency ignores. Anchored to the repo root (leading
+# slash) — an earlier bare "storage/" pattern matched ANY directory named
+# "storage" anywhere in the tree, which silently untracked the real source
+# directory web/lib/storage/ (supabase.ts etc.) for the entire project
+# history. Confirmed via `git ls-files` returning nothing under that path
+# despite 6 real API routes importing from it — it only "worked" because
+# `vercel deploy --prod` uploads the actual filesystem, not a git checkout.
+/storage/
 
 # OS/editor cruft
 .DS_Store
