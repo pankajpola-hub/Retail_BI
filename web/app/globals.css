@@ -10,33 +10,50 @@
  * component.
  */
 :root {
-  /* Shopify Admin-inspired palette (2026-08-15 redesign) — ground is the
-     admin's characteristic light neutral gray (not white), surfaces are
-     white cards, accent is Shopify's own green. Token NAMES are unchanged
-     from the original mock so every component that already references
-     var(--accent) etc. via tailwind.config.ts repaints automatically. */
-  --ground: #f1f2f4;
+  /* Monochrome palette (2026-08-23), replacing the Shopify-admin-derived
+     green scheme. The UI SHELL is achromatic — black, white and greys only
+     — and semantic colour survives on DATA ONLY (sales deltas, priority
+     badges, footfall quadrants), deliberately desaturated so it reads
+     serious rather than loud. An achromatic shell makes the data the only
+     coloured thing on screen, which is the whole point.
+
+     Token NAMES are unchanged, so every component that already references
+     var(--accent) etc. via tailwind.config.ts repaints automatically —
+     --accent simply IS black now. That single line is what converts every
+     primary button, active nav pill, selected facet chip and focus ring
+     across the app, with no component edits. */
+  --ground: #f6f6f7;
   --surface: #ffffff;
-  --surface-2: #f6f6f7;
-  --line: #c9cccf;
-  --line-soft: #e3e4e6;
-  --ink: #1a1c1d;
-  --ink-2: #4a4e50;
-  --ink-3: #6d7175;
-  --accent: #008060;
-  --accent-soft: #e3f3ef;
-  --accent-ink: #004c3f;
-  --good: #008060;
-  --good-soft: #e3f3ef;
-  --warn: #966300;
-  --warn-soft: #fff4e0;
-  --crit: #d82c0d;
-  --crit-soft: #fbeae9;
+  --surface-2: #f1f1f2;
+  --line: #d2d2d5;
+  --line-soft: #e6e6e8;
+  /* Not pure #000 — pure black on white is harsh at this body size. */
+  --ink: #111113;
+  --ink-2: #46464b;
+  /* #6b6b72, not a lighter grey — this is measured against --surface-2 (the
+     pairing used by the neutral Pill and every muted caption), where it
+     clears AA at 4.63:1. Lighter values looked fine by eye but tested at
+     3.99 and 4.48. Don't lighten without re-measuring that pair. */
+  --ink-3: #6b6b72;
+  --accent: #111113;
+  --accent-soft: #eaeaec;
+  --accent-ink: #111113;
+  /* Foreground for text/icons sitting ON --accent. Needed because --accent
+     inverts to white in dark mode, and the old hardcoded `text-white`
+     alongside `bg-accent` would then be white-on-white. See button.tsx. */
+  --accent-fg: #ffffff;
+  /* Semantic — data only. Desaturated from the original Shopify values. */
+  --good: #276749;
+  --good-soft: #e9efeb;
+  --warn: #8a6d1f;
+  --warn-soft: #f3efe4;
+  --crit: #a02c22;
+  --crit-soft: #f6eae8;
 
   --sidebar-bg: #ffffff;
-  --sidebar-active-bg: #f1f1f1;
-  --sidebar-ink: #4a4e50;
-  --sidebar-ink-active: #1a1c1d;
+  --sidebar-active-bg: #f1f1f2;
+  --sidebar-ink: #46464b;
+  --sidebar-ink-active: #111113;
   --topbar-bg: #000000;
   --topbar-ink: #e3e3e3;
 
@@ -59,28 +76,37 @@
  * unless the user opts in; the choice persists in localStorage.
  */
 :root[data-theme="dark"] {
-  --ground: #0e1512;
-  --surface: #151e1a;
-  --surface-2: #1c2622;
-  --line: #2a3833;
-  --line-soft: #212d28;
-  --ink: #e4ebe7;
-  --ink-2: #a9b8b1;
-  --ink-3: #7c8b85;
-  --accent: #4fbfb0;
-  --accent-soft: #12312d;
-  --accent-ink: #8ad8cc;
-  --good: #5cbe8b;
-  --good-soft: #14301f;
-  --warn: #dfa63a;
-  --warn-soft: #33260c;
-  --crit: #e4796b;
-  --crit-soft: #381914;
+  --ground: #0b0b0c;
+  --surface: #141416;
+  --surface-2: #1c1c1f;
+  --line: #35353a;
+  --line-soft: #26262a;
+  --ink: #f2f2f4;
+  --ink-2: #b0b0b8;
+  /* #8b8b94 not #7e7e87 — the darker value measured 4.23:1 against
+     --surface-2, just under AA for the 11px semibold Pill text that uses
+     this pair. This clears 4.5:1. */
+  --ink-3: #8b8b94;
+  /* --accent INVERTS to white here: on a near-black ground, "the emphasis
+     colour" is white, exactly as it's black on a white ground. The token
+     names carry the meaning, so every accent usage inverts correctly — and
+     --accent-fg flips with it so text on a filled accent stays legible. */
+  --accent: #ffffff;
+  --accent-soft: #26262a;
+  --accent-ink: #ffffff;
+  --accent-fg: #111113;
+  /* Semantic — lifted for legibility on a dark ground, same desaturation. */
+  --good: #5fb98a;
+  --good-soft: #16281f;
+  --warn: #cfa54a;
+  --warn-soft: #2b2413;
+  --crit: #e07a6d;
+  --crit-soft: #2e1917;
 
-  --sidebar-bg: #151e1a;
-  --sidebar-active-bg: #12312d;
-  --sidebar-ink: #a9b8b1;
-  --sidebar-ink-active: #8ad8cc;
+  --sidebar-bg: #141416;
+  --sidebar-active-bg: #26262a;
+  --sidebar-ink: #b0b0b8;
+  --sidebar-ink-active: #ffffff;
 }
 
 body {

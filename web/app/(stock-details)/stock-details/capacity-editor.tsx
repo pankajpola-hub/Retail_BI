@@ -239,7 +239,7 @@ export function CapacityEditorCard({
             type="button"
             onClick={onSave}
             disabled={isPending}
-            className="min-h-[34px] bg-accent px-4 py-1.5 text-[13px] font-semibold text-white disabled:opacity-60"
+            className="min-h-[34px] bg-accent px-4 py-1.5 text-[13px] font-semibold text-accent-fg disabled:opacity-60"
           >
             {isPending ? "Saving…" : `Save ${storeName} capacity`}
           </button>

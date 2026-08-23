@@ -11,7 +11,9 @@ ModuleRegistry.registerModules([AllCommunityModule]);
  * values below, which mirror app/globals.css's --accent/--surface/--ink/etc;
  * Tailwind CSS custom properties aren't readable from AG Grid's own
  * JS-evaluated theming system, so these are pinned literals, deliberately
- * matching the light-mode token values). First real usage:
+ * matching the light-mode token values — they must be updated BY HAND
+ * whenever globals.css's palette changes, as they were for the 2026-08-23
+ * monochrome pass). First real usage:
  * StoreLeagueDrilldown.tsx, replacing a plain &lt;table&gt; — gives real
  * column sort/resize and virtualized rows for free, which is the actual
  * point: Objective.md's Scale target flags that this app has no
@@ -19,12 +21,12 @@ ModuleRegistry.registerModules([AllCommunityModule]);
  * this eventually, not just the six-row fixture data today.
  */
 const appQuartzTheme = themeQuartz.withParams({
-  accentColor: "#008060",
+  accentColor: "#111113",
   backgroundColor: "#ffffff",
-  foregroundColor: "#1a1c1d",
-  borderColor: "#e3e4e6",
-  headerBackgroundColor: "#f6f6f7",
-  headerTextColor: "#4a4e50",
+  foregroundColor: "#111113",
+  borderColor: "#e6e6e8",
+  headerBackgroundColor: "#f1f1f2",
+  headerTextColor: "#46464b",
   oddRowBackgroundColor: "#ffffff",
   fontFamily: "inherit",
   fontSize: 13,

@@ -26,7 +26,13 @@ export function TrendChart({ points, ariaLabel }: { points: Point[]; ariaLabel: 
         data={data}
         index="date"
         categories={["Net sales"]}
-        colors={["emerald"]}
+        // 2026-08-23 monochrome pass: was "emerald". This is a SINGLE-series
+        // chart, so its colour was arbitrary decoration, not semantic — grey
+        // is correct on an achromatic shell. Tremor's own palette names are
+        // the only thing accepted here (see tailwind.config.ts's safelist);
+        // "zinc" is the closest match to this app's --ink-3 (#76767d vs
+        // zinc-500 #71717a). Semantic red/green stays on deltas and badges.
+        colors={["zinc"]}
         valueFormatter={inr}
         showLegend={false}
         showAnimation
