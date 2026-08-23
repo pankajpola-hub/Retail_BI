@@ -31,11 +31,11 @@ export type AppRole =
 // produced a blank page (redirect target = the page that just denied them).
 // Confirmed live 2026-08-22 testing an ecomm-only marketing user.
 export const ROLE_HOME: Record<AppRole, string> = {
-  super_admin: "/network",
-  ho_admin: "/network",
-  regional_manager: "/network",
-  ebo_manager: "/network",
-  marketing: "/network",
+  super_admin: "/sales",
+  ho_admin: "/sales",
+  regional_manager: "/sales",
+  ebo_manager: "/sales",
+  marketing: "/sales",
 };
 
 // 0061_business_unit.sql — the gate checked BEFORE role/store: can this user
@@ -139,7 +139,7 @@ export function resolveHome(role: AppRole, businessUnits: BusinessUnit[]): strin
   const hasEcomm = verticals.find((v) => v.key === "ecomm")!.granted;
 
   if (hasRetail) return ROLE_HOME[role];
-  if (hasEcomm && PAGE_ROLE_DEFAULTS.ecomm.includes(role)) return "/ecomm";
+  if (hasEcomm && PAGE_ROLE_DEFAULTS.ecomm.includes(role)) return "/sales?bu=ecomm";
   return ROLE_HOME[role];
 }
 

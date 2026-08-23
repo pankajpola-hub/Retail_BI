@@ -145,7 +145,7 @@ export type Dict = {
 
 const en: Dict = {
   appName: "EBO Sales Intelligence",
-  navNetwork: "Network",
+  navNetwork: "Sales",
   navFootfall: "Footfall",
   navTargets: "Targets",
   navUsers: "Users",
@@ -248,7 +248,7 @@ const en: Dict = {
 
 const hi: Dict = {
   appName: "EBO Sales Intelligence",
-  navNetwork: "Network",
+  navNetwork: "Sales",
   navFootfall: "Footfall",
   navTargets: "Targets",
   navUsers: "Users",
@@ -350,7 +350,7 @@ const hi: Dict = {
 
 const mr: Dict = {
   appName: "EBO Sales Intelligence",
-  navNetwork: "Network",
+  navNetwork: "Sales",
   navFootfall: "Footfall",
   navTargets: "Targets",
   navUsers: "Users",

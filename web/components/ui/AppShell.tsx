@@ -25,7 +25,6 @@ import { resolveAccess } from "@/lib/auth/access";
  * nothing would be a worse "missing feature" than not having it at all.
  */
 const HREF_PAGE_KEY: Record<string, PageKey> = {
-  "/network": "network",
   "/stock-details": "stock-details",
   "/replenishment": "replenishment",
   "/movement": "replenishment",
@@ -36,7 +35,13 @@ const HREF_PAGE_KEY: Record<string, PageKey> = {
   "/data-upload": "data-upload",
   "/workspace": "workspace",
   "/configurations": "configurations",
-  "/ecomm": "ecomm",
+  // /sales deliberately has NO entry here — it merges what "network" and
+  // "ecomm" used to gate separately, and each of those page_keys carries a
+  // single PAGE_BUSINESS_UNIT (retail vs ecomm) that would incorrectly
+  // exclude an ecomm-only or ebo-only user from the merged page. /sales
+  // does its own per-vertical narrowing internally (resolveViewScope), so
+  // it falls through to the plain role check below — same precedent
+  // /sale-stock-mix already established for a page with no page_key.
 };
 
 type NavLink = { href: string; labelKey: keyof Dict; icon: SidebarLink["icon"]; roles: AppRole[]; group: string };
@@ -47,7 +52,12 @@ type NavLink = { href: string; labelKey: keyof Dict; icon: SidebarLink["icon"]; 
 // touch href/labelKey/icon/roles or the business_unit/override/role filter
 // below, which runs first and unmodified.
 const NAV_LINKS: NavLink[] = [
-  { href: "/network", labelKey: "navNetwork", icon: "network", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Overview" },
+  // Replaces the old separate /network and /ecomm links (Phase 2 of the
+  // unified Sales explore) — one entry, role list is the UNION of both
+  // pages' old role lists, since /sales does its own per-vertical
+  // narrowing internally rather than relying on this nav filter or a
+  // single PAGE_BUSINESS_UNIT the way each separate page used to.
+  { href: "/sales", labelKey: "navNetwork", icon: "network", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Overview" },
   { href: "/stock-details", labelKey: "navStockDetails", icon: "stock", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Stock" },
   { href: "/movement", labelKey: "navMovement", icon: "replenishment", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Movement" },
   { href: "/footfall", labelKey: "navFootfall", icon: "footfall", roles: ["ebo_manager", "ho_admin", "super_admin"], group: "Overview" },
@@ -57,7 +67,6 @@ const NAV_LINKS: NavLink[] = [
   { href: "/integrations", labelKey: "navIntegrations", icon: "integrations", roles: ["super_admin"], group: "Admin" },
   { href: "/data-upload", labelKey: "navDataUpload", icon: "upload", roles: ["ho_admin", "super_admin"], group: "Admin" },
   { href: "/configurations", labelKey: "navConfigurations", icon: "configurations", roles: ["super_admin"], group: "Admin" },
-  { href: "/ecomm", labelKey: "navEcomm", icon: "ecomm", roles: ["ho_admin", "super_admin", "marketing"], group: "Sales" },
 ];
 
 const NAV_GROUP_ORDER = ["Overview", "Sales", "Stock", "Movement", "Marketing", "Workspace", "Admin"];
@@ -135,7 +144,7 @@ export async function AppShell({
     <div className="min-h-screen bg-ground">
       {/* Top bar — fixed, full width, above both sidebar and content. */}
       <header className="fixed inset-x-0 top-0 z-50 flex h-14 items-center justify-between gap-4 bg-topbar-bg px-4">
-        <a href="/network" className="flex shrink-0 items-center gap-2">
+        <a href="/sales" className="flex shrink-0 items-center gap-2">
           {/* On the black top bar specifically, the brandmark stays white-on
               -dark in both themes — it sits on --topbar-bg, not on a surface
               that flips, so it deliberately does NOT use bg-accent. */}
