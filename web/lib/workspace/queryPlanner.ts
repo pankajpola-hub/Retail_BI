@@ -30,9 +30,11 @@ import type { MetricDefinition, DimensionDefinition } from "./semantic";
  *     KPI grid/league table/weekly table stay on the hand-written weekly
  *     fetch, and scheme/hourly stay hand-written too (no metric_definitions
  *     rows point at vw_ebo_scheme_daily or vw_ebo_sales_hourly yet — adding
- *     those is a migration + parity-check exercise, not done here).
- *     Also proven correct by lib/workspace/__verify__/queryPlanner.mjs
- *     against the same synthetic fixture the Phase 3 parity harness uses.
+ *     those is a migration + verify-metrics.mjs exercise, not done here).
+ *     Also proven correct by web/scripts/verify-query-planner.mjs, whose
+ *     assertions are fixture-independent as of 2026-08-23 (they compare a
+ *     merged query's results against the same requirements run unmerged,
+ *     rather than against frozen literals).
  *
  * The governing invariant carried forward unchanged from Phase 0/1: filters
  * here can only NARROW within whatever RLS already permits for the caller.
@@ -59,8 +61,27 @@ const VIEW_DATE_COLUMN: Record<string, string> = {
   "sales.vw_ebo_sales_hourly": "bill_date", // app/(ho)/network/page.tsx SalesSection
   "ops.vw_ebo_conversion_daily": "bill_date", // app/(ho)/network/page.tsx FootfallSection
   "ops.vw_footfall_completeness": "date", // app/(ho)/network/page.tsx FootfallSection
+  // Ecomm (0067/0070), added by 0082 so the ECOM vertical is plannable at all.
+  "sales.vw_ecomm_daily": "order_date", // app/(ecomm)/ecomm/page.tsx
+  "sales.vw_ecomm_order_lines": "order_date", // app/(ecomm)/ecomm/page.tsx — line grain
+  "sales.vw_ecomm_returns": "return_date", // app/(ecomm)/ecomm/page.tsx — NOT updated_on, see that page
 };
-const VIEW_STORE_COLUMN: Record<string, string> = {
+
+/**
+ * A view's store axis, or null when the view genuinely HAS NO store concept.
+ *
+ * The distinction matters and is why this is an explicit null rather than an
+ * absent key: "not in the map" means "unknown view, refuse to plan it", while
+ * an explicit null means "known view, and store is not an axis it has". Ecomm
+ * is the latter — marketplace orders belong to a CHANNEL, not a store, so
+ * there is no store_id on any vw_ecomm_* view.
+ *
+ * A store filter against a null-axis view cannot be honoured, and is reported
+ * on ResolvedQuery.unappliedStoreFilter rather than quietly ignored — same
+ * rule as unappliedDimensionIds: silently returning unfiltered rows that look
+ * filtered is a correctness bug, not a missing feature.
+ */
+const VIEW_STORE_COLUMN: Record<string, string | null> = {
   "sales.vw_ebo_sales_daily": "store_id",
   "sales.vw_ebo_sales_weekly": "store_id",
   "sales.vw_ebo_scheme_daily": "store_id",
@@ -68,6 +89,9 @@ const VIEW_STORE_COLUMN: Record<string, string> = {
   "sales.vw_ebo_sales_hourly": "store_id",
   "ops.vw_ebo_conversion_daily": "store_id",
   "ops.vw_footfall_completeness": "store_id",
+  "sales.vw_ecomm_daily": null,
+  "sales.vw_ecomm_order_lines": null,
+  "sales.vw_ecomm_returns": null,
 };
 
 export type Period = { from: string; to: string }; // ISO dates, already resolved — "mtd"/"ytd" -> concrete range is the caller's job, same as every page today
@@ -129,7 +153,8 @@ export type ResolvedQuery = {
   sourceView: string; // 'schema.table'
   columns: string[]; // deduped source columns this query must select
   dateColumn: string;
-  storeColumn: string;
+  /** null when this view has no store axis at all (every ecomm view) — see VIEW_STORE_COLUMN. */
+  storeColumn: string | null;
   period: Period;
   periodRole: PeriodRole;
   filters: Filters;
@@ -147,6 +172,16 @@ export type ResolvedQuery = {
    * unplannableMetricIds is.
    */
   unappliedDimensionIds: string[];
+  /**
+   * True when the requirement asked for specific stores but this view has no
+   * store axis to apply them to (every ecomm view). Same contract as
+   * unappliedDimensionIds — a caller MUST treat this as "do not run", because
+   * the alternative is network-wide ecomm figures presented as one store's.
+   *
+   * Note this is only ever true when storeIds is NON-empty: an empty list
+   * means "whatever RLS allows", which a store-less view satisfies trivially.
+   */
+  unappliedStoreFilter: boolean;
   servedRequirements: string[]; // componentIds this query's result must be handed to — >1 after grouping
   unplannableMetricIds: string[]; // metrics on the parent requirement this query does NOT cover (sql_expression/js_computed) — surfaced, never silently dropped
 };
@@ -204,13 +239,21 @@ export function resolveRequirement(
   const resolved: ResolvedQuery[] = [];
   for (const [sourceView, columns] of byView) {
     const dateColumn = VIEW_DATE_COLUMN[sourceView];
-    const storeColumn = VIEW_STORE_COLUMN[sourceView];
-    if (!dateColumn || !storeColumn) {
+    // `in` rather than a truthiness check: an explicit null means "known view,
+    // no store axis" (ecomm) and must plan fine, while an ABSENT key means
+    // "unknown view" and must not. Testing !storeColumn would conflate them
+    // and make every ecomm metric permanently unplannable.
+    const hasKnownStoreAxis = sourceView in VIEW_STORE_COLUMN;
+    const storeColumn = hasKnownStoreAxis ? VIEW_STORE_COLUMN[sourceView]! : undefined;
+    if (!dateColumn || !hasKnownStoreAxis) {
       // View not in the lookup — cannot be planned safely, surface as
       // unplannable rather than guessing a column name.
       unplannable.push(...requirement.metricIds.filter((id) => metricsById.get(id)?.sourceView === sourceView));
       continue;
     }
+
+    // A store filter this view cannot express. Reported, never dropped.
+    const unappliedStoreFilter = storeColumn === null && (requirement.filters.storeIds?.length ?? 0) > 0;
     // The row shape every caller actually needs includes the date/store
     // columns used for grouping and display, not just the metric value
     // columns — select() always carries both, even if no requested metric
@@ -232,19 +275,29 @@ export function resolveRequirement(
     }
 
     const selectColumns = [
-      ...new Set([dateColumn, storeColumn, ...columns, ...(requirement.extraColumns ?? []), ...applied.map((p) => p.column)]),
+      ...new Set(
+        [
+          dateColumn,
+          // Only select a store column when the view actually has one.
+          ...(storeColumn ? [storeColumn] : []),
+          ...columns,
+          ...(requirement.extraColumns ?? []),
+          ...applied.map((p) => p.column),
+        ]
+      ),
     ];
     for (const { period, role } of periods) {
       resolved.push({
         sourceView,
         columns: [...selectColumns],
         dateColumn,
-        storeColumn,
+        storeColumn: storeColumn ?? null,
         period,
         periodRole: role,
         filters: requirement.filters,
         appliedPredicates: applied.map((p) => ({ ...p, values: [...p.values] })),
         unappliedDimensionIds: [...unapplied],
+        unappliedStoreFilter,
         servedRequirements: [requirement.componentId],
         unplannableMetricIds: unplannable,
       });
@@ -274,7 +327,10 @@ export function groupResolvedQueries(queries: ResolvedQuery[]): ResolvedQuery[] 
     // Unapplied dimensions also distinguish a query — an unsatisfiable query
     // must not merge into a satisfiable one and inherit its "runnable" status.
     const unappliedKey = [...q.unappliedDimensionIds].sort().join(",");
-    const key = `${q.sourceView}::${q.dateColumn}::${q.period.from}::${q.period.to}::${q.periodRole}::${storeKey}::${predicateKey}::${unappliedKey}`;
+    // Same reasoning as unappliedKey: a query whose store filter can't be
+    // applied must never merge into one where it can, or it inherits a
+    // "runnable" status it hasn't earned.
+    const key = `${q.sourceView}::${q.dateColumn}::${q.period.from}::${q.period.to}::${q.periodRole}::${storeKey}::${predicateKey}::${unappliedKey}::${q.unappliedStoreFilter}`;
     const existing = groups.get(key);
     if (!existing) {
       groups.set(key, {
@@ -313,7 +369,11 @@ export function planQueries(
  * separately and risking one being forgotten.
  */
 export function isSatisfiable(resolved: ResolvedQuery): boolean {
-  return resolved.unplannableMetricIds.length === 0 && resolved.unappliedDimensionIds.length === 0;
+  return (
+    resolved.unplannableMetricIds.length === 0 &&
+    resolved.unappliedDimensionIds.length === 0 &&
+    !resolved.unappliedStoreFilter
+  );
 }
 
 /**
@@ -333,6 +393,15 @@ export function buildQuery<T = unknown>(supabase: DataClient, resolved: Resolved
         `have no column on this view. Running it would silently return unfiltered rows.`
     );
   }
+  // Same refusal for the store axis. Ecomm views have no store_id at all, so
+  // a store-filtered ecomm query would return NETWORK-WIDE figures presented
+  // as one store's — a wrong number with nothing visibly broken.
+  if (resolved.unappliedStoreFilter) {
+    throw new Error(
+      `Cannot build query on ${resolved.sourceView}: a store filter was requested but this view has no store axis ` +
+        `(ecomm sales belong to a channel, not a store). Running it would silently return unfiltered rows.`
+    );
+  }
 
   const [schema, table] = resolved.sourceView.split(".") as [string, string];
   let query = supabase
@@ -342,11 +411,16 @@ export function buildQuery<T = unknown>(supabase: DataClient, resolved: Resolved
     .gte(resolved.dateColumn, resolved.period.from)
     .lte(resolved.dateColumn, resolved.period.to) as QueryChain<T>;
 
+  // storeColumn is null only on store-less views, and the guard above already
+  // refused any non-empty store filter against one — so this block simply
+  // doesn't run for them.
   const storeIds = resolved.filters.storeIds ?? [];
-  if (storeIds.length === 1) {
-    query = query.eq(resolved.storeColumn, storeIds[0]!);
-  } else if (storeIds.length > 1) {
-    query = query.in(resolved.storeColumn, storeIds);
+  if (resolved.storeColumn) {
+    if (storeIds.length === 1) {
+      query = query.eq(resolved.storeColumn, storeIds[0]!);
+    } else if (storeIds.length > 1) {
+      query = query.in(resolved.storeColumn, storeIds);
+    }
   }
 
   for (const predicate of resolved.appliedPredicates) {

@@ -45,6 +45,26 @@ export type MetricDefinition = {
   isVerified: boolean;
 };
 
+/**
+ * One physical home of a metric (migration 0082). A metric has ONE meaning
+ * but may live at several grains — net_sales exists on both
+ * sales.vw_ebo_sales_daily and sales.vw_ebo_sales_weekly. Before this, a
+ * metric carried a single source_view, which is why weekly-backed components
+ * could not honour a daily-grain filter and renderSalesComponents.tsx throws
+ * rather than render an unfiltered number beside a filtered one.
+ *
+ * `isDefault` marks the home a caller gets when it doesn't ask for a grain —
+ * exactly one per metric, enforced by a partial unique index.
+ */
+export type MetricSource = {
+  metricId: string;
+  grain: string;
+  sourceView: string;
+  sourceColumn: string;
+  isDefault: boolean;
+  provenance: string;
+};
+
 export type DimensionSourceKind = "view_column" | "calendar" | "lookup";
 
 export type DimensionDefinition = {
@@ -164,6 +184,81 @@ export async function listVerifiedMetricDefinitions(supabase: DataClient): Promi
     .order("id");
   if (error) throw new Error(`Failed to load verified metric definitions: ${error.message}`);
   return (data ?? []).map(mapMetric);
+}
+
+type MetricSourceRow = {
+  metric_id: string;
+  grain: string;
+  source_view: string;
+  source_column: string;
+  is_default: boolean;
+  provenance: string;
+};
+
+const METRIC_SOURCE_COLUMNS = "metric_id, grain, source_view, source_column, is_default, provenance";
+
+function mapMetricSource(row: MetricSourceRow): MetricSource {
+  return {
+    metricId: row.metric_id,
+    grain: row.grain,
+    sourceView: row.source_view,
+    sourceColumn: row.source_column,
+    isDefault: row.is_default,
+    provenance: row.provenance,
+  };
+}
+
+/** Every catalogued home of every metric (0082). One round trip — the catalogue is small and a planner needs the whole picture to choose a grain. */
+export async function listMetricSources(supabase: DataClient): Promise<MetricSource[]> {
+  const { data, error } = await supabase
+    .schema("workspace")
+    .from<MetricSourceRow>("metric_sources")
+    .select(METRIC_SOURCE_COLUMNS)
+    .order("metric_id");
+  if (error) throw new Error(`Failed to load metric sources: ${error.message}`);
+  return (data ?? []).map(mapMetricSource);
+}
+
+/**
+ * Homes for specific metrics, grouped by metric id — the shape a planner
+ * actually wants. Ids with no rows are simply absent, same convention as
+ * listMetricDefinitionsByIds.
+ */
+export async function listMetricSourcesByIds(
+  supabase: DataClient,
+  ids: string[]
+): Promise<Map<string, MetricSource[]>> {
+  const byMetric = new Map<string, MetricSource[]>();
+  if (ids.length === 0) return byMetric;
+
+  const { data, error } = await supabase
+    .schema("workspace")
+    .from<MetricSourceRow>("metric_sources")
+    .select(METRIC_SOURCE_COLUMNS)
+    .in("metric_id", ids);
+  if (error) throw new Error(`Failed to load metric sources [${ids.join(", ")}]: ${error.message}`);
+
+  for (const row of data ?? []) {
+    const source = mapMetricSource(row);
+    const list = byMetric.get(source.metricId) ?? [];
+    list.push(source);
+    byMetric.set(source.metricId, list);
+  }
+  return byMetric;
+}
+
+/**
+ * Pick the home to read a metric from.
+ *
+ * Returns null rather than falling back to *some* source when the requested
+ * grain doesn't exist — a caller that asked for weekly and silently got daily
+ * would produce a number that looks right and isn't, which is the failure this
+ * whole layer exists to prevent. `preferredGrain` omitted means "the default".
+ */
+export function pickMetricSource(sources: MetricSource[], preferredGrain?: string): MetricSource | null {
+  if (sources.length === 0) return null;
+  if (preferredGrain) return sources.find((s) => s.grain === preferredGrain) ?? null;
+  return sources.find((s) => s.isDefault) ?? null;
 }
 
 export async function listDimensionDefinitions(supabase: DataClient): Promise<DimensionDefinition[]> {
