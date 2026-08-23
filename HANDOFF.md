@@ -206,9 +206,16 @@ Four now exist. All are plain Node/psql, matching the project's existing
 convention rather than introducing Jest. Run from `web/` **invoking `node`
 directly** — the `&` in the repo path breaks npm `.cmd` shims:
 
-- `node --env-file=.env.local scripts/parity-check.mjs` — KPI parity against
-  the confirmed fixture, plus ATV grain discrimination. Marks metrics
-  `is_verified` on success.
+- `node --env-file=.env.local scripts/verify-metrics.mjs` — metric
+  cross-derivation: reads each metric from the source the CATALOGUE names and
+  independently recomputes it from component columns using the app's own
+  formula. Marks `is_verified` on success (add `--write`; without it, reports
+  only). Searches live data for a scope containing RETURN bills, and REFUSES
+  to verify `atv` without them — with zero returns the daily and weekly ATV
+  formulas coincide, which is how migration 0048 shipped a wrong
+  `source_column` past a green run. Replaced `parity-check.mjs`, deleted
+  2026-08-23: that script asserted literals from a fixture that no longer
+  exists, and rebaselining them to real data would have made it a tautology.
 - `node --env-file=.env.local scripts/verify-query-planner.mjs` — Phase 4
   planner: grouping, grain splitting, extraColumns.
 - `node --env-file=.env.local scripts/verify-filter-engine.mjs` — Phase 6

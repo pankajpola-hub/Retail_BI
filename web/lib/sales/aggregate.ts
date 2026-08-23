@@ -8,9 +8,9 @@
  * there is only one ATV calculation, here.
  *
  * Do not change these formulas without updating the Phase 0 business-logic
- * register and re-running the Phase 3 parity harness
- * (web/scripts/parity-check.mjs) — they're the ground truth it checks
- * against.
+ * register and re-running the metric verification harness
+ * (web/scripts/verify-metrics.mjs) — these formulas are the independent
+ * ground truth it cross-derives the semantic layer's catalogue against.
  */
 
 export type DailyRow = { store_id: string | null; bill_date: string | null; net_sales: number | string };

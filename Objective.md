@@ -26,7 +26,7 @@ rules, data relationships or user journeys unless explicitly approved.**
 Every KPI formula this project touches must trace to a cited source
 (SQL file:line or TS file:line) and, where practical, a parity check against
 production behavior. See `web/lib/workspace/semantic.ts` and
-`web/scripts/parity-check.mjs` for the mechanism.
+`web/scripts/verify-metrics.mjs` for the mechanism.
 
 ## Scale target — added 2026-08-15
 
@@ -419,11 +419,14 @@ category/scheme rules, per explicit user direction after real ERP data
 - **Follow-up resolved 2026-08-15**: the old synthetic parity fixture rows
   (`SB-1001`/`SB-1002` sale lines + the `BO-001`/2026-08-10 footfall row)
   were deleted per explicit direction, now that real data supersedes them.
-  `parity-check.mjs` and `verify-query-planner.mjs` are marked RETIRED in
-  their own headers for the literal-value assertions that depended on the
-  now-gone fixture (they will fail against real data by design, not as a
-  bug) — their grouping/structural/internal-consistency checks remain
-  meaningful and still pass. Restoring full parity coverage needs a new
+  **Resolved 2026-08-23.** `verify-query-planner.mjs`'s literal assertions
+  were replaced with fixture-independent equivalents (a merged query must
+  return the same values as the requirements run unmerged), so it passes in
+  full. `parity-check.mjs` was DELETED and replaced by `verify-metrics.mjs`,
+  which cross-derives each metric against the app's own formulas over a scope
+  it searches for at runtime — no fixture to go stale. Superseded note kept
+  below for history; it no longer describes the code. The old text read:
+  restoring full parity coverage needs a new
   fixture at a store/date confirmed to have zero real rows, independently
   verified against a live page render — not yet done, and not required
   unless full metric-parity coverage becomes a blocker again.

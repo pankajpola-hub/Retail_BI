@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 /**
- * PARTIALLY RETIRED — 2026-08-15. This script shares the Phase 3 parity
- * fixture (BO-001/Undri, 10/08/2026), which was deleted once real ERP data
- * made it redundant — real bills now also land on that date/store, so the
- * hardcoded expected literals below (search "1400") will fail against real
- * data, correctly. The GROUPING/mechanics assertions (merge vs. no-merge,
- * select-list column presence, extraColumns union/dedup) remain genuinely
- * meaningful and still pass — only the literal-value assertions are stale.
- * See parity-check.mjs's header for the full explanation and how to restore
- * a working fixture if full coverage is needed again.
+ * Was PARTIALLY RETIRED between 2026-08-15 and 2026-08-23: it asserted
+ * hardcoded literals from a synthetic fixture (BO-001/Undri, 10/08/2026)
+ * that was deleted once real ERP data landed on the same store/date, so
+ * those assertions were permanently red. They have been replaced with a
+ * fixture-INDEPENDENT equivalent — run each requirement unmerged and assert
+ * the merged query returns identical values, which tests the actual
+ * invariant (merging must not change results) and cannot rot. The script
+ * now passes in full.
+ *
+ * Metric correctness itself lives in verify-metrics.mjs, which cross-derives
+ * against the app's own formulas rather than comparing to frozen numbers.
  *
  * Phase 4 verification — exercises the REAL exported functions from
  * lib/workspace/queryPlanner.ts (not a reimplementation) against live
@@ -63,11 +65,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sourcePath = path.join(__dirname, "..", "lib", "workspace", "queryPlanner.ts");
 const scratchPath = path.join(__dirname, "..", "lib", "workspace", "__scratch_queryPlanner.ts");
 
-const POSTGREST_URL = process.env.SELFHOSTED_POSTGREST_URL;
-const KEYCLOAK_URL = process.env.SELFHOSTED_KEYCLOAK_URL;
-const REALM = process.env.SELFHOSTED_KEYCLOAK_REALM;
-const CLIENT_ID = process.env.SELFHOSTED_KEYCLOAK_CLIENT_ID;
-const CLIENT_SECRET = process.env.SELFHOSTED_KEYCLOAK_CLIENT_SECRET;
+// Auth + PostgREST access moved to scripts/_supabase-rest.mjs when this
+// project migrated off Keycloak — see that module's header.
+import { getAccessToken, restGet, restClient } from "./_supabase-rest.mjs";
 
 const FIXTURE_STORE = "BO-001";
 const FIXTURE_DATE = "2026-08-10";
@@ -80,40 +80,17 @@ const FIXTURE_RANGE_TO = FIXTURE_DATE;
 const SALES_DAILY_DATE_COLUMN = "bill_date";
 const SALES_DAILY_STORE_COLUMN = "store_id";
 
-async function getToken() {
-  const res = await fetch(`${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "password",
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
-      username: "testadmin",
-      password: "TestAdmin123!",
-    }),
-  });
-  const json = await res.json();
-  if (!res.ok) throw new Error(`Token request failed: ${json.error_description ?? json.error}`);
-  return json.access_token;
-}
+const getToken = () => getAccessToken();
 
 /** Plain PostgREST GET, for the few lookups that aren't planner output. */
-async function pgrstRaw(token, schema, path) {
-  const res = await fetch(`${POSTGREST_URL}/${path}`, {
-    headers: { Authorization: `Bearer ${token}`, "Accept-Profile": schema },
-  });
-  const json = await res.json();
-  if (!res.ok) throw new Error(`PostgREST error on ${path}: ${JSON.stringify(json)}`);
-  return json;
-}
+const pgrstRaw = (token, schema, path) => restGet(token, schema, path);
 
 async function fetchMetricDefinitions(token) {
-  const res = await fetch(
-    `${POSTGREST_URL}/metric_definitions?select=id,source_kind,source_view,source_column`,
-    { headers: { Authorization: `Bearer ${token}`, "Accept-Profile": "workspace" } }
+  const rows = await restGet(
+    token,
+    "workspace",
+    "metric_definitions?select=id,source_kind,source_view,source_column"
   );
-  const rows = await res.json();
-  if (!res.ok) throw new Error(`Failed to load metric_definitions: ${JSON.stringify(rows)}`);
   return new Map(
     rows.map((r) => [
       r.id,
@@ -122,55 +99,10 @@ async function fetchMetricDefinitions(token) {
   );
 }
 
-// Minimal DataClient stand-in — real HTTP calls to the same PostgREST
-// endpoint the app uses, just without the Next.js request-cookie plumbing
-// (this script authenticates once with the fixture user instead).
-function makeDataClient(token) {
-  return {
-    schema(schemaName) {
-      return {
-        from(table) {
-          const params = new URLSearchParams();
-          const chain = {
-            select(cols) {
-              params.set("select", cols);
-              return chain;
-            },
-            gte(col, val) {
-              params.append(col, `gte.${val}`);
-              return chain;
-            },
-            lte(col, val) {
-              params.append(col, `lte.${val}`);
-              return chain;
-            },
-            eq(col, val) {
-              params.append(col, `eq.${val}`);
-              return chain;
-            },
-            in(col, vals) {
-              params.append(col, `in.(${vals.join(",")})`);
-              return chain;
-            },
-            async _exec() {
-              const url = `${POSTGREST_URL}/${table}?${params.toString()}`;
-              const res = await fetch(url, {
-                headers: { Authorization: `Bearer ${token}`, "Accept-Profile": schemaName },
-              });
-              const data = await res.json();
-              if (!res.ok) throw new Error(`Query failed: ${JSON.stringify(data)}`);
-              return { data, error: null, _url: url };
-            },
-            then(onFulfilled, onRejected) {
-              return chain._exec().then(onFulfilled, onRejected);
-            },
-          };
-          return chain;
-        },
-      };
-    },
-  };
-}
+// DataClient stand-in now comes from scripts/_supabase-rest.mjs — same shape,
+// shared with verify-filter-engine.mjs and verify-metrics.mjs so the next auth
+// change breaks (and is fixed in) exactly one place.
+const makeDataClient = (token) => restClient(token);
 
 async function main() {
   // Strip the one line that only ever throws outside a Next.js server build.
@@ -359,16 +291,36 @@ async function main() {
           // query. Asserting them here would only ever prove that reqB had
           // silently pulled in the wrong grain. They are checked against the
           // weekly query below instead.
-          const checks = [
-            ["net_sales", row.net_sales, 1400],
-            ["gross_sales", row.gross_sales, 1500],
-            ["sale_bills", row.sale_bills, 2],
-            ["sale_quantity", row.sale_quantity, 3],
-            ["discount", row.discount, 100],
+          // These used to assert hardcoded literals (net_sales === 1400 etc.)
+          // from the Phase 3 parity fixture. That fixture was deleted in
+          // 2026-08 once real ERP data landed on the same store/date, so the
+          // literals had been permanently red ever since — the script's own
+          // header documented them as stale.
+          //
+          // Replaced with a FIXTURE-INDEPENDENT check of the thing this block
+          // is actually here to prove: that MERGING two requirements into one
+          // physical query doesn't change the values either would have got
+          // alone. Run each requirement unmerged and compare. This asserts the
+          // real invariant, survives any data change, and can't rot.
+          const soloA = await buildQuery(supabase, resolveRequirement(reqA, metricsById)[0]);
+          const soloB = await buildQuery(supabase, resolveRequirement(reqB, metricsById)[0]);
+          const rowOf = (res) =>
+            (res.data ?? []).find((r) => r[SALES_DAILY_DATE_COLUMN] === FIXTURE_DATE && r[SALES_DAILY_STORE_COLUMN] === FIXTURE_STORE);
+          const rowA = rowOf(soloA);
+          const rowB = rowOf(soloB);
+
+          const mergedMatches = [
+            ["net_sales", rowA?.net_sales],
+            ["gross_sales", rowA?.gross_sales],
+            ["sale_bills", rowA?.sale_bills],
+            ["sale_quantity", rowB?.sale_quantity],
+            ["discount", rowB?.discount],
           ];
-          for (const [label, actual, expected] of checks) {
-            const ok = Math.abs(Number(actual) - expected) <= 0.01;
-            console.log(`${ok ? "PASS" : "FAIL"}  merged query column ${label}: expected ${expected}, got ${actual}`);
+          for (const [label, soloValue] of mergedMatches) {
+            const ok = soloValue !== undefined && Number(row[label]) === Number(soloValue);
+            console.log(
+              `${ok ? "PASS" : "FAIL"}  merged query ${label} equals the unmerged value: ${row[label]} vs ${soloValue}`
+            );
             if (!ok) pass = false;
           }
         }
@@ -645,8 +597,7 @@ main()
     if (code === "ECONNREFUSED" || code === "ENOTFOUND") {
       console.error(
         `\nCannot reach the local stack (${code}).\n` +
-          `  Keycloak:  ${KEYCLOAK_URL}\n` +
-          `  PostgREST: ${POSTGREST_URL}\n` +
+          `  Supabase: ${process.env.NEXT_PUBLIC_SUPABASE_URL}\n` +
           "  Start the local dev stack and re-run. Nothing was verified."
       );
       process.exit(1);
