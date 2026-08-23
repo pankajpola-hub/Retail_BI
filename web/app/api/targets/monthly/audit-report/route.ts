@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { createClient } from "@/lib/data/client";
+import { resolveAccess } from "@/lib/auth/access";
 
 // Line-level detail behind ops.fn_monthly_fresh_disc_tracker (0029/0032) /
 // ops.vw_monthly_fresh_disc_tracker (0027), scoped to one store + month
@@ -79,6 +80,20 @@ export async function GET(request: NextRequest) {
         ok: false,
         error: { code: "forbidden", message: "Only HO Admin / Regional Manager / Super Admin can download this report." },
       },
+      { status: 403 }
+    );
+  }
+
+  // 0079 feature gate, ANDed with the deliberately-narrower role list above
+  // (see this file's header for why that list does NOT mirror the page's
+  // wider gate). Without this, revoking `targets.audit_report.export` would
+  // hide the button while leaving the URL fully working — a toggle that only
+  // appears to do something. Also requires page access: you cannot export a
+  // report you are not allowed to view.
+  const access = await resolveAccess();
+  if (access && (!access.can("targets.view") || !access.can("targets.audit_report.export"))) {
+    return NextResponse.json(
+      { ok: false, error: { code: "forbidden", message: "Not allowed to download this report." } },
       { status: 403 }
     );
   }
