@@ -61,3 +61,29 @@ export async function setSupabaseUserPassword(userId: string, newPassword: strin
   const { error } = await admin.auth.admin.updateUserById(userId, { password: newPassword });
   if (error) throw new Error(`Supabase password reset failed: ${error.message}`);
 }
+
+/**
+ * Bans/unbans a user at the IDENTITY PROVIDER, alongside the
+ * core.profiles.status flag that users/actions.ts setUserStatus() writes
+ * (migration 0079).
+ *
+ * Both are needed and neither is redundant. core.profiles.status is what the
+ * app's own resolver reads, but it only takes effect on the user's NEXT
+ * request — an already-issued access token stays valid until it refreshes, so
+ * a status flag alone leaves a departing employee with a live session for up
+ * to the token lifetime. Banning in Supabase Auth invalidates the session and
+ * blocks re-authentication immediately, which is the behaviour "disable this
+ * account" actually has to mean.
+ *
+ * `ban_duration` takes a Go duration string, or "none" to lift it. There's no
+ * "forever" literal, so a disable uses a very long finite window (~100 years)
+ * rather than something that quietly expires while the account still reads as
+ * disabled in the admin UI.
+ */
+export async function setSupabaseUserBanned(userId: string, banned: boolean): Promise<void> {
+  const admin = createAdminClient();
+  const { error } = await admin.auth.admin.updateUserById(userId, {
+    ban_duration: banned ? "876000h" : "none",
+  } as { ban_duration: string });
+  if (error) throw new Error(`Supabase user ${banned ? "disable" : "enable"} failed: ${error.message}`);
+}
