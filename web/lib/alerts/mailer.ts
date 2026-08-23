@@ -64,14 +64,28 @@ function buildDigestBody(exceptions: StoreException[]): { text: string; html: st
  * `exceptions` array — runDueAlerts skips sending (but still marks the
  * subscription as checked) when there's nothing to report.
  */
-export async function sendAlertDigest(toEmail: string, exceptions: StoreException[]): Promise<void> {
+export async function sendAlertDigest(
+  to: string | string[],
+  exceptions: StoreException[],
+  options: { subjectPrefix?: string } = {}
+): Promise<void> {
   const { text, html } = buildDigestBody(exceptions);
   const from = process.env.ALERT_EMAIL_FROM || process.env.SMTP_USER;
   const transport = getTransport();
+
+  // De-duplicate: the admin-configured extra recipients (Configurations →
+  // Alert digest) are appended to every send, so a subscriber who is ALSO on
+  // that list would otherwise receive the same digest twice. Case-insensitive,
+  // because SMTP local parts are technically case-sensitive but no real
+  // provider treats them that way.
+  const recipients = [...new Set((Array.isArray(to) ? to : [to]).map((r) => r.trim()).filter(Boolean).map((r) => r.toLowerCase()))];
+  if (recipients.length === 0) throw new Error("No recipients to send to.");
+
+  const prefix = options.subjectPrefix ? `${options.subjectPrefix} ` : "";
   await transport.sendMail({
     from,
-    to: toEmail,
-    subject: `Retail BI — ${exceptions.length} store${exceptions.length === 1 ? "" : "s"} need attention`,
+    to: recipients,
+    subject: `${prefix}Retail BI — ${exceptions.length} store${exceptions.length === 1 ? "" : "s"} need attention`,
     text,
     html,
   });

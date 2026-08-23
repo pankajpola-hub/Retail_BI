@@ -5,6 +5,7 @@ import { resolveOwnerStoreIds } from "@/lib/exports/scheduledExports";
 import { computeSalesTotals, type WeeklyRow } from "@/lib/sales/aggregate";
 import { computeStoreExceptions } from "@/lib/sales/exceptions";
 import { sendAlertDigest } from "@/lib/alerts/mailer";
+import { getAlertMailerSettings } from "@/lib/alerts/settings";
 
 // Threshold alerts: opt-in email digest of the exact same "Needs attention"
 // exception feed /network's OverviewRollupSection shows — see
@@ -74,6 +75,12 @@ function defaultWindow(now: Date): { from: string; weeklyStart: string; to: stri
 export async function runDueAlerts(admin: DataClient): Promise<AlertRunSummary> {
   const summary: AlertRunSummary = { processed: 0, sent: 0, skipped: 0, failed: 0, errors: [] };
 
+  // Admin settings (Configurations → Alert digest, core.app_settings). Read
+  // once per run, not per subscription. Defaults preserve the pre-settings
+  // behaviour exactly, so an unwritten key never silently disables the digest.
+  const settings = await getAlertMailerSettings(admin);
+  if (!settings.enabled) return summary;
+
   const { data: allRows, error } = await admin
     .schema("ops")
     .from<AlertSubscriptionRow>("alert_subscriptions")
@@ -110,15 +117,22 @@ export async function runDueAlerts(admin: DataClient): Promise<AlertRunSummary> 
         if (weeksError) throw new Error(`vw_ebo_sales_weekly: ${weeksError.message}`);
 
         const { weekRows, storesInView } = computeSalesTotals(weeks, from);
-        const exceptions = computeStoreExceptions(weekRows, storesInView, allStoreNames, Number(row.threshold_pct));
+        // A subscription's own threshold wins; the admin default only applies
+        // when the row doesn't carry one.
+        const threshold = Number(row.threshold_pct);
+        const effectiveThreshold = Number.isFinite(threshold) ? threshold : settings.defaultThresholdPct;
+        const exceptions = computeStoreExceptions(weekRows, storesInView, allStoreNames, effectiveThreshold);
 
-        if (exceptions.length > 0) {
+        if (exceptions.length > 0 || !settings.skipWhenEmpty) {
           const { data: userResult, error: userError } = await rawAdmin.auth.admin.getUserById(row.owner_id);
           if (userError) throw new Error(`resolve owner email: ${userError.message}`);
           const email = userResult.user?.email;
           if (!email) throw new Error("owner has no email on their auth account");
 
-          await sendAlertDigest(email, exceptions);
+          // Admin-configured extras go out alongside the subscriber's own
+          // address — this is what lets a shared ops inbox receive the digest
+          // without needing a Retail BI login. sendAlertDigest de-duplicates.
+          await sendAlertDigest([email, ...settings.extraRecipients], exceptions);
           sent = true;
         }
       }
