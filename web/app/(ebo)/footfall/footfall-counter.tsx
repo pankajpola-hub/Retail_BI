@@ -201,7 +201,7 @@ export function FootfallCounter({
             <button
               onClick={() => bump(1)}
               aria-label="Increase by 1"
-              className="h-20 w-20 bg-accent text-4xl font-semibold text-white"
+              className="h-20 w-20 bg-accent text-4xl font-semibold text-accent-fg"
             >
               +
             </button>

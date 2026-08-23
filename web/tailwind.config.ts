@@ -62,6 +62,11 @@ const config: Config = {
         accent: "var(--accent)",
         "accent-soft": "var(--accent-soft)",
         "accent-ink": "var(--accent-ink)",
+        // Text/icons ON a filled --accent surface. Always use this instead
+        // of a hardcoded text-white next to bg-accent: --accent is black in
+        // light mode but WHITE in dark mode, so text-white would render
+        // white-on-white there. See globals.css's --accent-fg comment.
+        "accent-fg": "var(--accent-fg)",
         good: "var(--good)",
         "good-soft": "var(--good-soft)",
         warn: "var(--warn)",

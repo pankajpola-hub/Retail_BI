@@ -4,6 +4,7 @@ import type { DataClient } from "@/lib/data/client";
 import { requirePageAccess } from "@/lib/auth/roles";
 import { MultiSelectFilter } from "@/components/ui/StoreFilter";
 import { CapacityEditorCard } from "./capacity-editor";
+import { resolveAccess } from "@/lib/auth/access";
 import { StockVsCapacityGrid } from "./StockVsCapacityGrid";
 import { KpiGridSkeleton, TableSkeleton } from "@/components/ui/Skeleton";
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
@@ -295,7 +296,13 @@ export default async function StockDetailsPage({
   // per-request-cached profile/store-id resolution — this "independent
   // re-check" costs nothing extra over the layout's own call.
   const user = await requirePageAccess("stock-details");
-  const canEditCapacity = user.role === "ho_admin" || user.role === "super_admin";
+  // 0079: role check ANDed with the permission key, not replaced — the key was
+  // seeded to every role that can reach this page, so replacing the role check
+  // would have silently widened capacity editing to store/regional roles.
+  const access = await resolveAccess();
+  const canEditCapacity =
+    (user.role === "ho_admin" || user.role === "super_admin") &&
+    (access?.can("stock-details.capacity.edit") ?? true);
 
   const supabase = await createClient();
 

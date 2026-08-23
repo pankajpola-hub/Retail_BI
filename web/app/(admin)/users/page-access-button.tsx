@@ -128,7 +128,7 @@ export function PageAccessButton({
                   onClick={() => setValue(key, opt.v)}
                   className={`border px-2 py-0.5 text-[11px] ${
                     values[key] === opt.v
-                      ? "border-accent bg-accent text-white"
+                      ? "border-accent bg-accent text-accent-fg"
                       : "border-line text-ink-2"
                   } disabled:opacity-60`}
                 >

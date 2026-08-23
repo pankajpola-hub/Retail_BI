@@ -3,10 +3,11 @@ import { PAGE_BUSINESS_UNIT } from "@/lib/auth/roles";
 import { SidebarNav, type SidebarLink } from "./SidebarNav";
 import { SignOutButton } from "./SignOutButton";
 import { ThemeToggle } from "./ThemeToggle";
+import { DeniedNotice } from "./DeniedNotice";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { getLang } from "@/lib/i18n/server";
 import { DICTIONARIES, type Dict } from "@/lib/i18n/translations";
-import { createClient } from "@/lib/data/client";
+import { resolveAccess } from "@/lib/auth/access";
 
 /**
  * Shopify Admin-style shell (2026-08-15 redesign, replacing the horizontal
@@ -66,13 +67,18 @@ function initials(name: string): string {
   return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || "?";
 }
 
-// Deterministic color from the name, so the same person always gets the
-// same badge color across sessions instead of a random one on every render.
-const AVATAR_HUES = [162, 265, 340, 25, 205];
-function avatarHue(name: string): number {
+// Deterministic shade from the name, so the same person always gets the
+// same badge across sessions instead of a random one on every render.
+// 2026-08-23: was five different HUES (mint/violet/pink/orange/blue) — the
+// single largest source of stray colour left in the shell after the
+// monochrome pass. Now a neutral LIGHTNESS ramp instead: same
+// per-person determinism, no colour. These sit on the black top bar, so
+// the ramp stays in the light half to keep the initials readable.
+const AVATAR_SHADES = ["#e6e6e8", "#cfcfd3", "#b8b8be", "#a1a1a9", "#8a8a94"];
+function avatarShade(name: string): string {
   let hash = 0;
   for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
-  return AVATAR_HUES[hash % AVATAR_HUES.length]!;
+  return AVATAR_SHADES[hash % AVATAR_SHADES.length]!;
 }
 
 export async function AppShell({
@@ -91,16 +97,13 @@ export async function AppShell({
   const lang = await getLang();
   const t = DICTIONARIES[lang];
 
-  let overrideMap = new Map<PageKey, boolean>();
-  if (userId) {
-    const supabase = await createClient();
-    const { data: overrides } = await supabase
-      .schema("core")
-      .from<{ page_key: PageKey; allowed: boolean }>("user_page_overrides")
-      .select("page_key, allowed")
-      .eq("user_id", userId);
-    overrideMap = new Map((overrides ?? []).map((o) => [o.page_key, o.allowed]));
-  }
+  // 0079: the nav asks resolveAccess() the SAME question requirePageAccess()
+  // asks, so a page the user would be bounced off never appears in the
+  // sidebar in the first place. Previously this read core.user_page_overrides
+  // directly with its own hand-rolled precedence, which meant the nav and the
+  // route gate could disagree — and after 0079 moved overrides to a new table
+  // they immediately did: a denied page still showed a link that bounced you.
+  const access = await resolveAccess();
 
   const filteredNavLinks = NAV_LINKS.filter((l) => {
     const pageKey = HREF_PAGE_KEY[l.href];
@@ -108,9 +111,9 @@ export async function AppShell({
     // override even apply" ordering as requirePageAccess() in
     // lib/auth/roles.ts. /sale-stock-mix has no PAGE_KEY entry (pre-existing
     // gap, not introduced here) so it skips this check same as it already
-    // skipped the override check below.
+    // skipped the access check below.
     if (pageKey && !businessUnits.includes(PAGE_BUSINESS_UNIT[pageKey])) return false;
-    if (pageKey && overrideMap.has(pageKey)) return overrideMap.get(pageKey)!;
+    if (pageKey && access) return access.can(`${pageKey}.view`);
     return l.roles.includes(role);
   });
   const links: SidebarLink[] = filteredNavLinks.map((l) => ({ href: l.href, label: t[l.labelKey], icon: l.icon }));
@@ -126,14 +129,17 @@ export async function AppShell({
       .map((l) => ({ href: l.href, label: t[l.labelKey], icon: l.icon })),
   })).filter((g) => g.links.length > 0);
 
-  const hue = avatarHue(fullName);
+  const shade = avatarShade(fullName);
 
   return (
     <div className="min-h-screen bg-ground">
       {/* Top bar — fixed, full width, above both sidebar and content. */}
       <header className="fixed inset-x-0 top-0 z-50 flex h-14 items-center justify-between gap-4 bg-topbar-bg px-4">
         <a href="/network" className="flex shrink-0 items-center gap-2">
-          <span className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-[13px] font-bold text-white">
+          {/* On the black top bar specifically, the brandmark stays white-on
+              -dark in both themes — it sits on --topbar-bg, not on a surface
+              that flips, so it deliberately does NOT use bg-accent. */}
+          <span className="flex h-7 w-7 items-center justify-center rounded-md bg-white text-[13px] font-bold text-black">
             E
           </span>
           <span className="hidden truncate text-[14.5px] font-semibold text-white sm:inline">{t.appName}</span>
@@ -142,8 +148,8 @@ export async function AppShell({
         <span className="flex items-center gap-3">
           <span className="hidden items-center gap-2 rounded-full bg-white/10 py-1 pl-1 pr-3 sm:flex">
             <span
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10.5px] font-bold text-white"
-              style={{ backgroundColor: `hsl(${hue} 55% 42%)` }}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10.5px] font-bold text-black"
+              style={{ backgroundColor: shade }}
             >
               {initials(fullName)}
             </span>
@@ -186,7 +192,13 @@ export async function AppShell({
       </nav>
 
       <div className="pt-14 md:ml-60">
-        <div className="mx-auto max-w-[1280px] px-8 pb-24">{children}</div>
+        <div className="mx-auto max-w-[1280px] px-8 pb-24">
+          {/* Renders only when requirePageAccess() bounced the user here with
+              ?denied=… — see DeniedNotice. Lives in the shell rather than per
+              page so it works wherever resolveHome() happens to land them. */}
+          <DeniedNotice />
+          {children}
+        </div>
       </div>
     </div>
   );

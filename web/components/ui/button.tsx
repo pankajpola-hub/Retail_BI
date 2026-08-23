@@ -17,7 +17,9 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-accent text-white shadow-sm hover:brightness-105",
+        // text-accent-fg, not text-white — --accent inverts to white in dark
+        // mode, so a hardcoded white would be invisible there.
+        default: "bg-accent text-accent-fg shadow-sm hover:opacity-90",
         secondary: "bg-surface-2 text-ink-2 hover:bg-line-soft",
         outline: "border border-line bg-surface text-ink-2 hover:bg-surface-2",
         ghost: "text-ink-2 hover:bg-surface-2",

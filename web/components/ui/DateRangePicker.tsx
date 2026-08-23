@@ -133,7 +133,7 @@ export function DateRangePicker({ from, to }: { from: string; to: string }) {
                 className="border border-line px-2 py-1 text-[13px]"
               />
             </label>
-            <button type="submit" className="mt-1 bg-accent py-1.5 text-[13px] font-semibold text-white">
+            <button type="submit" className="mt-1 bg-accent py-1.5 text-[13px] font-semibold text-accent-fg">
               Apply
             </button>
           </form>

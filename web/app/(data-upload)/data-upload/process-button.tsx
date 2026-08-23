@@ -201,7 +201,7 @@ export function ProcessButton({ uploadId }: { uploadId: string }) {
           <button
             onClick={commit}
             disabled={state.step === "committing"}
-            className="bg-accent px-3 py-1.5 text-[12px] font-semibold text-white disabled:opacity-60"
+            className="bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-fg disabled:opacity-60"
           >
             {state.step === "committing" ? "Committing…" : "Commit"}
           </button>

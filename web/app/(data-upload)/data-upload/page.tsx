@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/data/client";
+import { resolveAccess } from "@/lib/auth/access";
 import { UploadReportForm } from "./upload-form";
 import { ProcessButton } from "./process-button";
 import { MergedSaleDownload } from "./merged-sale-download";
@@ -22,6 +23,7 @@ function ReportSection({
   type,
   uploads,
   fiscalYears,
+  canProcess,
   t,
 }: {
   title: string;
@@ -29,6 +31,7 @@ function ReportSection({
   type: UploadRow["report_type"];
   uploads: UploadRow[];
   fiscalYears: string[];
+  canProcess: boolean;
   t: Dict;
 }) {
   return (
@@ -64,7 +67,10 @@ function ReportSection({
                 >
                   {t.download}
                 </a>
-                <ProcessButton uploadId={u.id} />
+                {/* 'admin' class: processing COMMITS an upload into the
+                    warehouse tables, so it's separable from merely being able
+                    to see or download what was uploaded. */}
+                {canProcess && <ProcessButton uploadId={u.id} />}
               </span>
             </li>
           ))
@@ -77,6 +83,10 @@ function ReportSection({
 export default async function DataUploadPage() {
   const supabase = await createClient();
   const t = await getDict();
+  // 0079 feature gate. This page's route-level access is handled by its
+  // layout's requirePageAccess("data-upload").
+  const access = await resolveAccess();
+  const canProcess = access?.can("data-upload.process.admin") ?? true;
 
   const SECTIONS: { type: UploadRow["report_type"]; title: string; helperText?: string }[] = [
     { type: "sale", title: t.saleReportTitle },
@@ -125,6 +135,7 @@ export default async function DataUploadPage() {
           type={s.type}
           uploads={uploads.filter((u) => u.report_type === s.type)}
           fiscalYears={fiscalYears}
+          canProcess={canProcess}
           t={t}
         />
       ))}

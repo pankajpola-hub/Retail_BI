@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/data/client";
 import { getPermit } from "@/lib/permit/client";
 import { resolveViewScope } from "@/lib/scope/resolveViewScope";
+import { resolveAccess } from "./access";
 
 export type AppRole =
   | "super_admin"
@@ -321,21 +322,12 @@ export const PAGE_BUSINESS_UNIT: Record<PageKey, BusinessUnit> = {
  * campaigns, and anything without a nav entry) still only respects
  * requireRole's plain role check — see the report for the full list.
  */
-// Cached per (userId, pageKey) within the request — a given page's layout +
-// page.tsx both calling requirePageAccess(SAME pageKey) is the common case
-// this dedupes; different pageKeys naturally get separate (uncached) lookups
-// since they're genuinely different data.
-const resolveOverride = cache(async (userId: string, pageKey: PageKey): Promise<boolean | null> => {
-  const supabase = await createClient();
-  const { data: override } = await supabase
-    .schema("core")
-    .from<{ allowed: boolean }>("user_page_overrides")
-    .select("allowed")
-    .eq("user_id", userId)
-    .eq("page_key", pageKey)
-    .maybeSingle();
-  return override ? override.allowed : null;
-});
+// resolveOverride() lived here and read core.user_page_overrides one page at
+// a time. Removed in 0079: resolveAccess() (lib/auth/access.ts) now fetches
+// the caller's FULL override set once per request from
+// core.user_permission_overrides, which covers pages and features in one key
+// space. core.user_page_overrides itself is intentionally still in the
+// database, unread, for one release so 0079 can be rolled back.
 
 /**
  * Permit.io gate (promoted from shadow mode 2026-08-22, now that
@@ -346,6 +338,13 @@ const resolveOverride = cache(async (userId: string, pageKey: PageKey): Promise<
  * existing UX-convenience-not-sole-security-boundary posture (the comment on
  * requirePageAccess itself), just with two systems agreeing instead of one.
  *
+ * Wrapped in cache() as of 0079 — it was the ONLY resolver in this file not
+ * memoized per request, despite resolveCallerProfile/resolveCallerStoreIds/
+ * resolveCallerBusinessUnits/resolveOverride all being cached for the reason
+ * stated above (a route's layout.tsx AND its page.tsx each gate
+ * independently). Uncached, it made a live round-trip to Permit's cloud PDP
+ * twice per navigation, on the critical path of every page load.
+ *
  * FAILS OPEN on any Permit.io error (network, outage, auth) — returns `true`
  * and only logs. Postgres/RLS remains the actual security boundary
  * regardless of what this returns, so a third-party SaaS outage must not be
@@ -354,7 +353,11 @@ const resolveOverride = cache(async (userId: string, pageKey: PageKey): Promise<
  * Mismatches are still logged either way, so a real policy drift between the
  * two systems stays visible rather than silently swallowed.
  */
-async function checkPermitGate(userId: string, pageKey: PageKey, postgresAllowed: boolean): Promise<boolean> {
+const checkPermitGate = cache(async function checkPermitGate(
+  userId: string,
+  pageKey: PageKey,
+  postgresAllowed: boolean
+): Promise<boolean> {
   try {
     const permit = getPermit();
     const permitAllowed = await permit.check(userId, "view", pageKey);
@@ -368,15 +371,26 @@ async function checkPermitGate(userId: string, pageKey: PageKey, postgresAllowed
     console.warn(`[permit] check failed, failing OPEN: page="${pageKey}" user=${userId}`, err);
     return true;
   }
-}
+});
 
 export async function requirePageAccess(pageKey: PageKey): Promise<CurrentUser> {
   const resolved = await resolveCallerProfile();
   if (!resolved.ok) redirectForUnresolvedCaller(resolved.reason);
   const { userId, fullName, role } = resolved;
 
-  const override = await resolveOverride(userId, pageKey);
-  const roleAllowed = override !== null ? override : PAGE_ROLE_DEFAULTS[pageKey].includes(role);
+  // 0079: the allow/deny answer now comes from core.role_permissions +
+  // core.user_permission_overrides via resolveAccess(), instead of the
+  // hardcoded PAGE_ROLE_DEFAULTS map + a per-page override lookup. Same
+  // decision, sourced from the database so an admin can change it without a
+  // deploy. A page is just the permission key `<pageKey>.view`.
+  //
+  // Falls back to the old in-code path if the access set can't be resolved
+  // (no profile row) — resolveCallerProfile above already redirected in that
+  // case, so this is belt-and-braces rather than a live branch.
+  const access = await resolveAccess();
+  const roleAllowed = access
+    ? access.can(`${pageKey}.view`)
+    : PAGE_ROLE_DEFAULTS[pageKey].includes(role);
 
   const permitAllowed = await checkPermitGate(userId, pageKey, roleAllowed);
 
@@ -386,7 +400,12 @@ export async function requirePageAccess(pageKey: PageKey): Promise<CurrentUser> 
   const allowed = roleAllowed && permitAllowed && businessUnitAllowed;
 
   if (!allowed) {
-    redirect(resolveHome(role, businessUnits));
+    // Carry WHY, so the landing page can say so instead of silently bouncing
+    // the user somewhere else with no explanation (see DeniedNotice).
+    const reason = !businessUnitAllowed ? "business_unit" : "page";
+    const home = resolveHome(role, businessUnits);
+    const sep = home.includes("?") ? "&" : "?";
+    redirect(`${home}${sep}denied=${pageKey}&why=${reason}`);
   }
 
   const storeIds = await resolveCallerStoreIds();

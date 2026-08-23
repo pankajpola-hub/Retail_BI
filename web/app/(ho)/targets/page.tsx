@@ -5,6 +5,7 @@ import { requirePageAccess } from "@/lib/auth/roles";
 import { StoreFilter, MultiSelectFilter } from "@/components/ui/StoreFilter";
 import { MonthlyTargetForm } from "./monthly-target-form";
 import { BulkUploadForm } from "./bulk-upload-form";
+import { resolveAccess } from "@/lib/auth/access";
 import { UploadTargetsForm } from "./upload-form";
 import { getDict } from "@/lib/i18n/server";
 import { CategoryTracker, type TrackerRow } from "./CategoryTracker";
@@ -58,6 +59,7 @@ async function TrackerSection({
   searchParams,
   canSetTargets,
   canWriteRemarks,
+  canExportAudit,
 }: {
   supabase: DataClient;
   storeList: StoreRow[];
@@ -66,6 +68,7 @@ async function TrackerSection({
   searchParams: { gender?: string; category?: string };
   canSetTargets: boolean;
   canWriteRemarks: boolean;
+  canExportAudit: boolean;
 }) {
   const periodMonth = `${month}-01`;
 
@@ -186,7 +189,7 @@ async function TrackerSection({
             <Input type="month" name="month" defaultValue={month} className="w-auto" />
             <Button type="submit" variant="outline" size="sm">Go</Button>
           </form>
-          {storeId && (
+          {storeId && canExportAudit && (
             <a
               href={`/api/targets/monthly/audit-report?store=${encodeURIComponent(storeId)}&month=${encodeURIComponent(month)}${
                 genders.length > 0 ? `&gender=${encodeURIComponent(genders.join(","))}` : ""
@@ -341,8 +344,21 @@ export default async function TargetsPage({
   // scopes an ebo_manager's writes to their own store, same
   // core.fn_user_store_ids() pattern used everywhere else).
   const user = await requirePageAccess("targets");
-  const canSetTargets = user.role === "ho_admin" || user.role === "super_admin";
-  const canWriteRemarks = true;
+
+  // 0079: the role-based defaults above are now expressible as permission
+  // keys, so an admin can grant or revoke each capability per user without a
+  // deploy. The role check is ANDed in rather than replaced — these keys were
+  // seeded to every role that can reach the page (0079's behaviour-neutral
+  // seed), so dropping the role check would have silently widened
+  // target-setting to ebo_manager/regional_manager on apply.
+  const access = await resolveAccess();
+  const roleCanSetTargets = user.role === "ho_admin" || user.role === "super_admin";
+  const canSetTargets = roleCanSetTargets && (access?.can("targets.monthly_targets.edit") ?? true);
+  const canBulkUpload = roleCanSetTargets && (access?.can("targets.bulk_upload.edit") ?? true);
+  const canIncentiveUpload = roleCanSetTargets && (access?.can("targets.incentive_upload.edit") ?? true);
+  const canWriteRemarks = access?.can("targets.remarks.edit") ?? true;
+  const canViewTracker = access?.can("targets.tracker.view") ?? true;
+  const canExportAudit = access?.can("targets.audit_report.export") ?? true;
   const supabase = await createClient();
   const t = await getDict();
 
@@ -370,18 +386,21 @@ export default async function TargetsPage({
       <h1 className="font-serif text-2xl">{t.targetsTitle}</h1>
       <p className="mt-1 max-w-2xl text-[12.5px] text-ink-3">{t.targetsSubtitle}</p>
 
-      {canSetTargets && (
+      {(canSetTargets || canBulkUpload) && (
         <div className="mt-5 flex flex-col gap-4">
-          <MonthlyTargetForm
-            key={storeId}
-            stores={storeList}
-            defaultStoreId={storeId}
-            defaultMonth={month}
-          />
-          <BulkUploadForm />
+          {canSetTargets && (
+            <MonthlyTargetForm
+              key={storeId}
+              stores={storeList}
+              defaultStoreId={storeId}
+              defaultMonth={month}
+            />
+          )}
+          {canBulkUpload && <BulkUploadForm />}
         </div>
       )}
 
+      {canViewTracker && (
       <SectionErrorBoundary label="Monthly tracker">
         <Suspense fallback={<TrackerSkeleton />}>
           <TrackerSection
@@ -390,17 +409,21 @@ export default async function TargetsPage({
             storeId={storeId}
             month={month}
             searchParams={searchParams}
+            canExportAudit={canExportAudit}
             canSetTargets={canSetTargets}
             canWriteRemarks={canWriteRemarks}
           />
         </Suspense>
       </SectionErrorBoundary>
+      )}
 
-      <SectionErrorBoundary label="Uploaded files">
-        <Suspense fallback={<UploadedFilesSkeleton />}>
-          <UploadedFilesSection supabase={supabase} />
-        </Suspense>
-      </SectionErrorBoundary>
+      {canIncentiveUpload && (
+        <SectionErrorBoundary label="Uploaded files">
+          <Suspense fallback={<UploadedFilesSkeleton />}>
+            <UploadedFilesSection supabase={supabase} />
+          </Suspense>
+        </SectionErrorBoundary>
+      )}
     </main>
   );
 }

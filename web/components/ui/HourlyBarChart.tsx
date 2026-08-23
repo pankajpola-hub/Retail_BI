@@ -41,7 +41,8 @@ export function HourlyBarChart({
         data={data}
         index="hour"
         categories={["Net sales"]}
-        colors={["emerald"]}
+        // See TrendChart.tsx — single-series, so grey not green.
+        colors={["zinc"]}
         valueFormatter={inr}
         showLegend={false}
         showAnimation

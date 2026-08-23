@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { createClient } from "@/lib/data/client";
 import { PAGE_ROLE_DEFAULTS, type AppRole } from "@/lib/auth/roles";
+import { resolveAccess } from "@/lib/auth/access";
 import { computeReplenishmentRows, filterRows, parseAssumptions, PRIORITY_ORDER, fmt } from "@/lib/replenishment/compute";
 
 // Full detailed export behind the Replenishment page's "Download detailed
@@ -27,6 +28,25 @@ export async function GET(request: NextRequest) {
   const { data: profile } = await supabase.schema("core").from<ProfileRow>("profiles").select("role").eq("user_id", user.id).maybeSingle();
   if (!profile || !PAGE_ROLE_DEFAULTS.replenishment.includes(profile.role)) {
     return NextResponse.json({ ok: false, error: { code: "forbidden", message: "Not allowed to download this report." } }, { status: 403 });
+  }
+
+  // 0079 feature gate, ANDed with the role check above rather than replacing
+  // it. Hiding the link on the page is view tailoring; without this, anyone
+  // who knows the URL could still pull the full network dataset after an
+  // admin revoked their export permission — which would make
+  // `replenishment.recommendations.export` a toggle that only appears to work.
+  // This also covers the page's own `replenishment.recommendations.view` key:
+  // you cannot export a report you are not allowed to see.
+  const access = await resolveAccess();
+  if (
+    access &&
+    (!access.can("replenishment.recommendations.view") ||
+      !access.can("replenishment.recommendations.export"))
+  ) {
+    return NextResponse.json(
+      { ok: false, error: { code: "forbidden", message: "Not allowed to download this report." } },
+      { status: 403 }
+    );
   }
 
   const { searchParams } = new URL(request.url);

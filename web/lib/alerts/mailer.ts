@@ -43,13 +43,13 @@ function buildDigestBody(exceptions: StoreException[]): { text: string; html: st
   const rows = exceptions
     .map(
       (e) =>
-        `<tr><td style="padding:6px 10px;border-bottom:1px solid #e3e4e6;">${e.name}</td>` +
-        `<td style="padding:6px 10px;border-bottom:1px solid #e3e4e6;color:${e.netChangePct < -20 ? "#d82c0d" : "#966300"};font-weight:600;">${e.netChangePct >= 0 ? "+" : ""}${e.netChangePct.toFixed(1)}%</td>` +
-        `<td style="padding:6px 10px;border-bottom:1px solid #e3e4e6;text-align:right;font-family:monospace;">${INR(e.net)}</td></tr>`
+        `<tr><td style="padding:6px 10px;border-bottom:1px solid #e6e6e8;">${e.name}</td>` +
+        `<td style="padding:6px 10px;border-bottom:1px solid #e6e6e8;color:${e.netChangePct < -20 ? "#a02c22" : "#8a6d1f"};font-weight:600;">${e.netChangePct >= 0 ? "+" : ""}${e.netChangePct.toFixed(1)}%</td>` +
+        `<td style="padding:6px 10px;border-bottom:1px solid #e6e6e8;text-align:right;font-family:monospace;">${INR(e.net)}</td></tr>`
     )
     .join("");
   const html =
-    `<div style="font-family:sans-serif;color:#1a1c1d;">` +
+    `<div style="font-family:sans-serif;color:#111113;">` +
     `<h2 style="font-size:16px;">Needs attention — EBO sales</h2>` +
     `<table style="border-collapse:collapse;width:100%;max-width:480px;">` +
     `<thead><tr><th style="text-align:left;padding:6px 10px;">Store</th><th style="text-align:left;padding:6px 10px;">WoW</th><th style="text-align:right;padding:6px 10px;">Latest week</th></tr></thead>` +
