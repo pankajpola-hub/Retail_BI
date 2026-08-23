@@ -72,7 +72,7 @@ export async function subscribeToAlerts(frequency: Frequency): Promise<void> {
     .from("alert_subscriptions")
     .upsert({ owner_id: ownerId, frequency }, { onConflict: "owner_id" });
   if (error) throw new Error(error.message);
-  revalidatePath("/network");
+  revalidatePath("/sales");
 }
 
 export async function unsubscribeFromAlerts(): Promise<void> {
@@ -83,5 +83,5 @@ export async function unsubscribeFromAlerts(): Promise<void> {
   // delete — same defensive posture as deleteScheduledExport's .eq("id", id).
   const { error } = await supabase.schema("ops").from("alert_subscriptions").delete().eq("owner_id", ownerId);
   if (error) throw new Error(error.message);
-  revalidatePath("/network");
+  revalidatePath("/sales");
 }
