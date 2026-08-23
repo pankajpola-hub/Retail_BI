@@ -34,7 +34,10 @@ import {
   type CompletenessRow,
 } from "@/lib/network/footfall";
 import { MatrixCell, TrafficSalesCell } from "@/components/ui/FootfallMatrixCells";
-import { StoreLeagueDrilldown } from "@/app/(workspace)/workspace/StoreLeagueDrilldown";
+import { resolveAccess } from "@/lib/auth/access";
+import { StoreLeagueFacetedContent } from "./StoreLeagueFacetedContent";
+import { AgentSalesFacetedTable } from "./AgentSalesFacetedTable";
+import { StoreDiagnosisFacetedTable } from "./StoreDiagnosisFacetedTable";
 
 export const dynamic = "force-dynamic";
 
@@ -148,8 +151,14 @@ async function OverviewRollupSection({
   // threshold-alerts email digest reuses the exact same definition).
   const exceptions = computeStoreExceptions(weekRows, storesInView, storeNames);
 
+  // Feature gates (0079) — cached per request, see SalesSection's note.
+  const access = await resolveAccess();
+  if (!access) return null;
+
   return (
     <>
+      {access.can("network.vertical_rollup.view") && (
+      <>
       <span className="mt-6 block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
         Vertical rollup
       </span>
@@ -168,7 +177,10 @@ async function OverviewRollupSection({
         <KpiCard label="MBO" value="—" sub="Pipeline not connected" tone="muted" />
         <KpiCard label="LFS" value="—" sub="Pipeline not connected" tone="muted" />
       </div>
+      </>
+      )}
 
+      {access.can("network.exceptions.view") && (
       <div className="mt-4 border border-line-soft">
         <div className="flex items-center justify-between border-b border-line-soft bg-surface-2 px-3 py-2">
           <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-2">Needs attention — EBO sales</span>
@@ -189,8 +201,14 @@ async function OverviewRollupSection({
         ) : (
           <p className="px-3 py-3 text-[12.5px] text-ink-3">No stores below threshold right now.</p>
         )}
-        <AlertSubscriptionToggle initial={await getMyAlertSubscription()} />
+        {/* An 'edit' key, not 'view': the toggle SUBSCRIBES the user to a
+            daily email. Denying it leaves the list readable but removes the
+            ability to opt into the digest. */}
+        {access.can("network.alert_subscription.edit") && (
+          <AlertSubscriptionToggle initial={await getMyAlertSubscription()} />
+        )}
       </div>
+      )}
     </>
   );
 }
@@ -305,6 +323,18 @@ async function SalesSection({
   // --- Hour-of-day, business hours only (9am-12am — stores aren't open overnight) ---
   const hourlyPoints = computeHourlyPoints(hourly);
 
+  // Feature-level gates (0079). These tailor WHAT THIS PAGE RENDERS; they are
+  // not a security boundary — RLS + core.fn_user_store_ids() still governs
+  // what any query above could return, unchanged. resolveAccess() is cached
+  // per request, so each section calling it is one query, not several.
+  //
+  // The queries above still run even when a section is hidden: skipping them
+  // would mean threading the access set into timeAll's batch, and these are
+  // the cheap pre-aggregated views. Revisit if an expensive section ever gets
+  // gated.
+  const access = await resolveAccess();
+  if (!access) return null;
+
   return (
     <>
       <span className="mt-6 block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Sales</span>
@@ -321,6 +351,7 @@ async function SalesSection({
         <KpiCard label="UPT" value={networkUpt !== null ? networkUpt.toFixed(2) : "—"} />
       </div>
 
+      {access.can("network.week_wise_sales.view") && (
       <div className="mt-8">
         <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
           Week-wise sales value &amp; quantity
@@ -410,6 +441,7 @@ async function SalesSection({
           ))}
         </div>
       </div>
+      )}
 
       <div className="mt-8 grid grid-cols-1 gap-8 lg:grid-cols-2">
         <div>
@@ -444,12 +476,18 @@ async function SalesSection({
         </div>
 
         <div>
-          <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Store league</span>
-          <p className="mt-1 text-[11px] text-ink-3">Click a row for that store&apos;s own daily trend.</p>
-          <div className="mt-2">
-            <StoreLeagueDrilldown league={league} from={from} to={to} />
-          </div>
+          {access.can("network.store_league.view") && (
+            <>
+              <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Store league</span>
+              <p className="mt-1 text-[11px] text-ink-3">Click a row for that store&apos;s own daily trend.</p>
+              <div className="mt-2">
+                <StoreLeagueFacetedContent league={league} from={from} to={to} />
+              </div>
+            </>
+          )}
 
+          {access.can("network.scheme_penetration.view") && (
+          <>
           <span className="mt-6 block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
             Scheme penetration (by units sold)
           </span>
@@ -472,43 +510,19 @@ async function SalesSection({
               {schemeRows.length === 0 && <p className="text-sm text-ink-3">No scheme data in this window.</p>}
             </div>
           </div>
+          </>
+          )}
 
-          <span className="mt-6 block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
-            Agent-wise sales
-          </span>
-          <div className="mt-2 overflow-x-auto border border-line-soft">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-line-soft bg-surface-2 text-left text-[10px] uppercase tracking-wide text-ink-3">
-                  <th className="px-3 py-2">Agent</th>
-                  <th className="px-3 py-2">Store</th>
-                  <th className="px-3 py-2 text-right">Bills</th>
-                  <th className="px-3 py-2 text-right">Units</th>
-                  <th className="px-3 py-2 text-right">Net</th>
-                  <th className="px-3 py-2 text-right">ATV</th>
-                </tr>
-              </thead>
-              <tbody>
-                {agentRows.map((v) => (
-                  <tr key={`${v.storeId}-${v.agent}`} className="border-b border-line-soft last:border-0">
-                    <td className="px-3 py-2">{v.agent}</td>
-                    <td className="px-3 py-2 text-ink-3">{storeNames.get(v.storeId) ?? v.storeId}</td>
-                    <td className="px-3 py-2 text-right font-mono">{v.bills}</td>
-                    <td className="px-3 py-2 text-right font-mono">{v.qty}</td>
-                    <td className="px-3 py-2 text-right font-mono">{INR(v.net)}</td>
-                    <td className="px-3 py-2 text-right font-mono">{v.bills > 0 ? INR(v.net / v.bills) : "—"}</td>
-                  </tr>
-                ))}
-                {agentRows.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="px-3 py-4 text-center text-sm text-ink-3">
-                      No agent data in this window.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+          {access.can("network.agent_sales.view") && (
+            <>
+              <span className="mt-6 block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
+                Agent-wise sales
+              </span>
+              <div className="mt-2">
+                <AgentSalesFacetedTable rows={agentRows} storeNames={Object.fromEntries(storeNames)} />
+              </div>
+            </>
+          )}
         </div>
       </div>
     </>
@@ -615,6 +629,11 @@ async function FootfallSection({
     flaggedStores,
     insights,
   } = computeFootfallInsights({ conversion, prevConversion, completeness, daily, weeks, schemeDaily, storeNames, today, from, prevFrom, prevTo });
+
+  // Feature-level gates (0079) — see SalesSection's note on why this is view
+  // tailoring rather than a security boundary. Cached per request.
+  const access = await resolveAccess();
+  if (!access) return null;
 
   return (
     <>
@@ -730,6 +749,7 @@ async function FootfallSection({
         </div>
       )}
 
+      {access.can("network.footfall_matrix.view") && (
       <div className="mt-8">
         <div className="flex items-baseline justify-between">
           <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
@@ -791,8 +811,9 @@ async function FootfallSection({
           </div>
         )}
       </div>
+      )}
 
-      {matrixEntries.length > 0 && (
+      {matrixEntries.length > 0 && access.can("network.traffic_sales_matrix.view") && (
         <div className="mt-8">
           <div className="flex items-baseline justify-between">
             <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
@@ -832,7 +853,7 @@ async function FootfallSection({
         </div>
       )}
 
-      {storeDiagnosis.length > 0 && (
+      {storeDiagnosis.length > 0 && access.can("network.store_diagnosis.view") && (
         <div className="mt-8">
           <div className="flex items-baseline justify-between">
             <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
@@ -842,63 +863,8 @@ async function FootfallSection({
               vs {isoDate(prevFrom)} – {isoDate(prevTo)}
             </span>
           </div>
-          <div className="mt-2 overflow-x-auto border border-line-soft">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-line-soft bg-surface-2 text-left text-[10px] uppercase tracking-wide text-ink-3">
-                  <th className="px-3 py-2">Store</th>
-                  <th className="px-3 py-2 text-right">Sales Δ</th>
-                  <th className="px-3 py-2 text-right">Footfall Δ</th>
-                  <th className="px-3 py-2 text-right">Conv</th>
-                  <th className="px-3 py-2 text-right">₹/visitor</th>
-                  <th className="px-3 py-2">Primary issue</th>
-                  <th className="px-3 py-2 text-right">Opportunity</th>
-                  <th className="px-3 py-2">Recommended</th>
-                </tr>
-              </thead>
-              <tbody>
-                {storeDiagnosis.map((s) => (
-                  <tr key={s.storeId} className="border-b border-line-soft last:border-0">
-                    <td className="px-3 py-2">{s.name}</td>
-                    <td
-                      className={`px-3 py-2 text-right font-mono ${
-                        s.salesChangePct === null ? "text-ink-3" : s.salesChangePct >= 0 ? "text-good" : "text-crit"
-                      }`}
-                    >
-                      {s.salesChangePct !== null
-                        ? `${s.salesChangePct >= 0 ? "+" : ""}${s.salesChangePct.toFixed(1)}%`
-                        : "—"}
-                    </td>
-                    <td
-                      className={`px-3 py-2 text-right font-mono ${
-                        s.footfallChangePct >= 0 ? "text-good" : "text-crit"
-                      }`}
-                    >
-                      {s.footfallChangePct >= 0 ? "+" : ""}
-                      {s.footfallChangePct.toFixed(1)}%
-                    </td>
-                    <td className="px-3 py-2 text-right font-mono">
-                      {s.conversionNow.toFixed(1)}%
-                      <span className={`ml-1 text-[11px] ${s.conversionChangePts >= 0 ? "text-good" : "text-crit"}`}>
-                        {s.conversionChangePts >= 0 ? "+" : ""}
-                        {s.conversionChangePts.toFixed(1)}pp
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-right font-mono">
-                      {s.salesPerVisitor !== null ? INR(s.salesPerVisitor) : "—"}
-                    </td>
-                    <td className="px-3 py-2">
-                      <Pill tone={s.tone}>{s.headline}</Pill>
-                      <div className="mt-0.5 text-[11.5px] text-ink-3">{s.primaryIssue}</div>
-                    </td>
-                    <td className="px-3 py-2 text-right font-mono">
-                      {s.combinedOpportunity > 0 ? INR(s.combinedOpportunity) : "—"}
-                    </td>
-                    <td className="px-3 py-2 text-ink-2">{s.recommendation}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="mt-2">
+            <StoreDiagnosisFacetedTable rows={storeDiagnosis} />
           </div>
           <p className="mt-2 text-[11.5px] text-ink-3">
             Opportunity is an <strong>estimate</strong>: what this store&apos;s sales would have been

@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/data/client";
 import type { DataClient } from "@/lib/data/client";
 import { requirePageAccess } from "@/lib/auth/roles";
+import { resolveAccess } from "@/lib/auth/access";
 import { Input, Select, Label } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { KpiGridSkeleton, TableSkeleton } from "@/components/ui/Skeleton";
@@ -124,6 +125,11 @@ async function ReplenishmentContent({
   supabase: DataClient;
   searchParams: MovementSearchParams;
 }) {
+  // Feature gates (0079) — cached per request, so this is free alongside the
+  // page-level check the route already did.
+  const access = await resolveAccess();
+  if (!access) return null;
+
   const targetCoverDays = Number(searchParams.targetCover) > 0 ? Number(searchParams.targetCover) : 21;
   const leadTimeDays = Number(searchParams.leadTime) > 0 ? Number(searchParams.leadTime) : 5;
   const safetyDays = Number(searchParams.safetyDays) >= 0 ? Number(searchParams.safetyDays) : 3;
@@ -272,6 +278,11 @@ async function ReplenishmentContent({
         </div>
       )}
 
+      {/* Both <details> forms below are gated by one 'edit' key: they change
+          the numbers the engine produces (a server recompute), not merely
+          which rows are shown. */}
+      {access.can("replenishment.whatif.edit") && (
+      <>
       <details className="mt-4 border border-line-soft p-4">
         <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wide text-ink-2">
           Assumptions (what-if) — target cover {targetCoverDays}d · lead time {leadTimeDays}d · safety {safetyDays}d
@@ -393,12 +404,21 @@ async function ReplenishmentContent({
           </div>
         </form>
       </details>
+      </>
+      )}
 
-      <div className="mt-4 flex justify-end">
-        <a href={downloadHref} className="min-h-[30px] border border-line px-3 py-1 text-[12px] text-ink-2 hover:bg-surface-2">
-          Download full report (.xlsx)
-        </a>
-      </div>
+      {/* An 'export' key — this pulls the full network dataset out of the app,
+          which is exactly the kind of thing worth being able to revoke
+          independently of read access. NOTE the API route itself
+          (/api/replenishment/download) still needs its own check; hiding the
+          link is view tailoring, not enforcement. */}
+      {access.can("replenishment.recommendations.export") && (
+        <div className="mt-4 flex justify-end">
+          <a href={downloadHref} className="min-h-[30px] border border-line px-3 py-1 text-[12px] text-ink-2 hover:bg-surface-2">
+            Download full report (.xlsx)
+          </a>
+        </div>
+      )}
 
       <div className="mt-3">
         <ReplenishmentFacetedContent rows={rows} />
@@ -545,7 +565,16 @@ export default async function MovementPage({
 }) {
   await requirePageAccess("replenishment");
   const supabase = await createClient();
-  const tab = searchParams.tab === "mix" ? "mix" : "replenishment";
+  // Feature gates (0079). The two tabs are separately grantable, so the
+  // requested tab has to be reconciled against what the caller can actually
+  // see: landing on a denied tab falls back to the other one rather than
+  // rendering an empty page, and a tab they can't see isn't offered as a link.
+  const access = await resolveAccess();
+  const canRepl = access?.can("replenishment.recommendations.view") ?? true;
+  const canMix = access?.can("replenishment.mix.view") ?? true;
+
+  const requested = searchParams.tab === "mix" ? "mix" : "replenishment";
+  const tab = requested === "mix" ? (canMix ? "mix" : "replenishment") : canRepl ? "replenishment" : "mix";
 
   return (
     <main className="py-6">
@@ -554,7 +583,14 @@ export default async function MovementPage({
         Replenishment recommendations and Sale vs Stock Mix — meant to be read together, not as competing answers.
       </p>
 
+      {!canRepl && !canMix ? (
+        <p className="mt-6 border-l-2 border-warn bg-warn-soft px-3 py-2 text-sm text-ink-2">
+          You don&apos;t have access to either section of this page. Ask a super admin if you think you should.
+        </p>
+      ) : (
+      <>
       <div className="mt-4 flex gap-1 border-b border-line-soft text-[13px]">
+        {canRepl && (
         <a
           href={tabHref(searchParams, "replenishment")}
           className={`border-b-2 px-3 py-2 ${
@@ -563,6 +599,8 @@ export default async function MovementPage({
         >
           Replenishment
         </a>
+        )}
+        {canMix && (
         <a
           href={tabHref(searchParams, "mix")}
           className={`border-b-2 px-3 py-2 ${
@@ -571,6 +609,7 @@ export default async function MovementPage({
         >
           Sale vs Stock Mix
         </a>
+        )}
       </div>
 
       {tab === "replenishment" ? (
@@ -601,6 +640,8 @@ export default async function MovementPage({
             </Suspense>
           </SectionErrorBoundary>
         </>
+      )}
+      </>
       )}
     </main>
   );
