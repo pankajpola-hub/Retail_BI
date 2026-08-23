@@ -2,7 +2,7 @@
 /**
  * Phase 6 verification — the governed filter engine, exercised through the
  * REAL exported functions of lib/workspace/queryPlanner.ts against live
- * PostgREST data (same plain-Node convention as parity-check.mjs and
+ * PostgREST data (same plain-Node convention as verify-metrics.mjs and
  * verify-query-planner.mjs; this project has no test framework).
  *
  * The assertion that matters most is #2. A filter engine that silently DROPS
@@ -31,57 +31,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sourcePath = path.join(__dirname, "..", "lib", "workspace", "queryPlanner.ts");
 const scratchPath = path.join(__dirname, "..", "lib", "workspace", "__scratch_filterEngine.ts");
 
-const { SELFHOSTED_KEYCLOAK_URL: KC, SELFHOSTED_KEYCLOAK_REALM: REALM,
-        SELFHOSTED_KEYCLOAK_CLIENT_ID: CID, SELFHOSTED_KEYCLOAK_CLIENT_SECRET: CSEC,
-        SELFHOSTED_POSTGREST_URL: PGRST } = process.env;
+// Auth + PostgREST access moved to scripts/_supabase-rest.mjs when this
+// project migrated off Keycloak — see that module's header for why all three
+// harnesses had silently stopped running.
+import { getAccessToken, restGet, restClient } from "./_supabase-rest.mjs";
 
 const FROM = "2026-07-19", TO = "2026-08-15";
 
-async function getToken() {
-  const r = await fetch(`${KC}/realms/${REALM}/protocol/openid-connect/token`, {
-    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "password", client_id: CID, client_secret: CSEC, username: "testadmin", password: "TestAdmin123!" }),
-  });
-  const j = await r.json();
-  if (!r.ok) throw new Error(j.error_description ?? j.error);
-  return j.access_token;
-}
-
-async function get(token, schema, q) {
-  const r = await fetch(`${PGRST}/${q}`, { headers: { Authorization: `Bearer ${token}`, "Accept-Profile": schema } });
-  const j = await r.json();
-  if (!r.ok) throw new Error(JSON.stringify(j));
-  return j;
-}
-
-function client(token) {
-  return {
-    schema(s) {
-      return {
-        from(t) {
-          const p = new URLSearchParams();
-          const c = {
-            select(x) { p.set("select", x); return c; },
-            gte(k, v) { p.append(k, `gte.${v}`); return c; },
-            lte(k, v) { p.append(k, `lte.${v}`); return c; },
-            eq(k, v) { p.append(k, `eq.${v}`); return c; },
-            in(k, v) { p.append(k, `in.(${v.join(",")})`); return c; },
-            order() { return c; },
-            get _url() { return `${PGRST}/${t}?${p}`; },
-            async _exec() {
-              const r = await fetch(c._url, { headers: { Authorization: `Bearer ${token}`, "Accept-Profile": s } });
-              const data = await r.json();
-              if (!r.ok) throw new Error(JSON.stringify(data));
-              return { data, error: null, _url: c._url };
-            },
-            then(f, j) { return c._exec().then(f, j); },
-          };
-          return c;
-        },
-      };
-    },
-  };
-}
+const getToken = () => getAccessToken();
+const get = (token, schema, q) => restGet(token, schema, q);
+const client = (token) => restClient(token);
 
 let pass = true;
 const ok = (cond, msg) => { console.log(`${cond ? "PASS" : "FAIL"}  ${msg}`); if (!cond) pass = false; };
