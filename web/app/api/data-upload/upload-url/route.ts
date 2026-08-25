@@ -2,7 +2,16 @@ import { NextResponse } from "next/server";
 import { createClient as createDataClient } from "@/lib/data/client";
 import { createUploadUrl } from "@/lib/storage/supabase";
 
-const MAX_BYTES = 20 * 1024 * 1024; // 20MB — ERP report exports run larger than the incentive-target sheets
+// 50MB — raised from 20MB (2026-08-25) after a multi-year merged Sale
+// report (all FY sheets combined) hit the old cap. 50MB is the real
+// ceiling here, not an arbitrary round number: confirmed live by direct
+// PUT tests against this project's Storage — 50MB succeeds, 55MB fails
+// with a 413 "EntityTooLarge" from Supabase itself (a project-wide
+// Storage setting, not something this app's own code enforces or can
+// override; the bucket's own file_size_limit is null, i.e. "use the
+// project default"). Raising this further needs a Supabase project
+// settings change (Storage size limit), not a code change.
+const MAX_BYTES = 50 * 1024 * 1024;
 const ALLOWED_TYPES = [
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx
   "application/vnd.ms-excel", // .xls
@@ -56,7 +65,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: { code: "invalid_body", message: "fileName is required." } }, { status: 400 });
   }
   if (typeof fileSize !== "number" || fileSize > MAX_BYTES) {
-    return NextResponse.json({ ok: false, error: { code: "file_too_large", message: "File must be under 20MB." } }, { status: 400 });
+    return NextResponse.json({ ok: false, error: { code: "file_too_large", message: "File must be under 50MB." } }, { status: 400 });
   }
   if (typeof contentType !== "string" || !ALLOWED_TYPES.includes(contentType)) {
     return NextResponse.json(
