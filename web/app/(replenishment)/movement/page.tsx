@@ -146,7 +146,7 @@ async function ReplenishmentContent({
     productivity: nonNegNum(searchParams.wProductivity, 10),
   };
 
-  const { rows, totalWarehouseUnits } = await time(
+  const { rows, itemRows, totalWarehouseUnits } = await time(
     "replenishment:compute",
     computeReplenishmentRows(supabase, {
       targetCoverDays,
@@ -421,7 +421,7 @@ async function ReplenishmentContent({
       )}
 
       <div className="mt-3">
-        <ReplenishmentFacetedContent rows={rows} />
+        <ReplenishmentFacetedContent rows={rows} itemRows={itemRows} />
       </div>
     </>
   );
