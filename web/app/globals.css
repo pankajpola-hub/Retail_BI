@@ -57,14 +57,17 @@
   --topbar-bg: #000000;
   --topbar-ink: #e3e3e3;
 
-  /* --font-serif/--font-sans/--font-mono are NOT defined here — 2026-08-15,
-     see lib/fonts.ts. They previously were, but --font-serif was aliased
-     to the exact same stack as --font-sans (a real bug: 18 files style
-     headings `font-serif` and every one silently rendered as plain system
-     text). next/font/google now defines these three custom properties
-     directly on <html> (app/layout.tsx) — real typefaces, self-hosted at
-     build time, no runtime Google Fonts request. This is now the only
-     definition; do not re-add hardcoded system-stack fallbacks here. */
+  /* 2026-08-25 — every typeface switched to Calibri (user request); see
+     lib/fonts.ts for why this is a plain CSS stack rather than a
+     next/font/google self-hosted webfont (Calibri is proprietary, not on
+     Google Fonts). All three tokens intentionally share one stack now —
+     previously --font-serif accidentally aliasing --font-sans was a real
+     bug (18 files styling `font-serif` silently rendered as plain system
+     text); here it's the explicit ask, not an accident. */
+  --font-serif: var(--font-calibri);
+  --font-sans: var(--font-calibri);
+  --font-mono: var(--font-calibri);
+  --font-calibri: Calibri, "Segoe UI", Candara, "Trebuchet MS", sans-serif;
 }
 
 /*
@@ -113,7 +116,7 @@ body {
   background: var(--ground);
   color: var(--ink);
   font-family: var(--font-sans);
-  font-size: 14.5px;
+  font-size: 11px;
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
 }
