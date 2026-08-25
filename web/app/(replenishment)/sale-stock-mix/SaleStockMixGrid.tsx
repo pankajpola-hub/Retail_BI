@@ -3,7 +3,8 @@
 import { useMemo } from "react";
 import type { ColDef, ICellRendererParams } from "ag-grid-community";
 import { DataGrid } from "@/components/ui/DataGrid";
-import type { MixStatus, MixRow } from "@/lib/replenishment/mix";
+import type { MixRow } from "@/lib/replenishment/mix";
+import { MIX_STATUS_META } from "@/lib/replenishment/mixShared";
 import type { GroupHeaderRow } from "@/components/ui/FacetFilterBar";
 
 // Group-by (Phase 1 of the faceted-filtering system, ported from
@@ -18,20 +19,6 @@ export type GridRow = MixRow | GroupHeaderRow;
 function isGroupHeader(row: GridRow | undefined): row is GroupHeaderRow {
   return !!row && "__groupHeader" in row && row.__groupHeader === true;
 }
-
-// lib/replenishment/mix.ts is "server-only" — MIX_STATUS_META can't be
-// imported as a value into this client component (same lesson as
-// ReplenishmentGrid.tsx's fmt/fmt1 and the earlier Workspace column-def
-// bug: a runtime import pulls in the whole module, including the
-// server-only guard). Duplicated here verbatim; only the type import above
-// is safe (erased at compile time).
-const MIX_STATUS_META: Record<MixStatus, { dot: string; label: string; demandLabel: string; action: string; className: string }> = {
-  high_priority: { dot: "🔥", label: "High Priority", demandLabel: "High Demand / Low Stock", action: "Prioritize Allocation", className: "text-crit font-semibold" },
-  opportunity: { dot: "🟢", label: "Allocation Opportunity", demandLabel: "Demand Higher Than Stock", action: "Consider Allocation", className: "text-good font-semibold" },
-  balanced: { dot: "✅", label: "Balanced", demandLabel: "Balanced", action: "Maintain", className: "text-ink-2" },
-  stock_heavy: { dot: "🟠", label: "Stock Heavy", demandLabel: "Stock Higher Than Demand", action: "Reduce / Hold Allocation", className: "text-warn font-semibold" },
-  overstocked: { dot: "🔴", label: "Overstocked", demandLabel: "Low Demand / High Stock", action: "Do Not Allocate", className: "text-crit font-semibold" },
-};
 
 const fmt = (n: number) => Math.round(n).toLocaleString("en-IN");
 const pct = (n: number) => `${n.toFixed(1)}%`;
