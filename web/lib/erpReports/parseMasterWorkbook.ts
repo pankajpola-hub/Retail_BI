@@ -90,7 +90,12 @@ const FIELD_ALIASES: Record<MasterField, string[]> = {
   marketSegment: ["marketsegment", "segment"],
   gender: ["gender"],
   sizeGroup: ["sizegroup"],
-  size: ["size"],
+  // "packname" (2026-08-25, user-confirmed): in this customer's own master
+  // file, exact size is carried under a column literally called "Pack
+  // Name" rather than "Size" — a per-vendor naming difference, not a typo.
+  // packSize's own aliases stay ["packsize", "pack"] — "packname"
+  // normalises differently from both of those, so there's no collision.
+  size: ["size", "packname"],
   mrp: ["mrp", "price", "retailprice"],
 };
 
