@@ -53,14 +53,18 @@ async function postJson<T>(url: string, body?: unknown): Promise<T> {
 // DB upsert alone, before file download/parse/network overhead. Matches
 // api/data-upload/process/[id]/commit/route.ts's own MASTER_BATCH_SIZE (the
 // server slices rows the same way regardless of what batchSize the client
-// sends, so this only needs to roughly agree, not match exactly).
-const MASTER_BATCH_SIZE = 8000;
+// sends, so this only needs to roughly agree, not match exactly). Sale
+// gained the same treatment (0089) once multi-sheet FY-wise workbooks
+// (2026-08-25) made it plausible for a Sale file to carry just as many
+// rows as (or more than) a large master file.
+const BATCH_SIZE = 8000;
+const BATCHED_REPORT_TYPES = new Set(["master", "sale"]);
 
-type MasterCommitBatch = {
+type BatchedCommitResult = {
   committedRows: number;
-  insertedRows: number;
-  updatedRows: number;
-  duplicatesCollapsed: number;
+  insertedRows?: number;
+  updatedRows?: number;
+  duplicatesCollapsed?: number;
   skippedRows: number;
   totalRows: number;
   nextOffset: number;
@@ -106,16 +110,16 @@ export function ProcessButton({ uploadId }: { uploadId: string }) {
     setState({ step: "committing", data: previewData, committedSoFar: 0, totalRows: previewData.validRows });
     window.dispatchEvent(new CustomEvent("progressbar:start"));
     try {
-      if (previewData.reportType === "master") {
+      if (BATCHED_REPORT_TYPES.has(previewData.reportType)) {
         // Batched — loop of small commit requests, each with its own fresh
         // 60s budget, instead of one request for the whole file. See
         // commit/route.ts's own header for the full story.
         let offset = 0;
-        let last: MasterCommitBatch | null = null;
+        let last: BatchedCommitResult | null = null;
         for (;;) {
-          const batch = await postJson<MasterCommitBatch>(`/api/data-upload/process/${uploadId}/commit`, {
+          const batch = await postJson<BatchedCommitResult>(`/api/data-upload/process/${uploadId}/commit`, {
             offset,
-            batchSize: MASTER_BATCH_SIZE,
+            batchSize: BATCH_SIZE,
           });
           last = batch;
           offset = batch.nextOffset;

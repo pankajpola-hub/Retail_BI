@@ -12,6 +12,14 @@ import { cleanupOlderUploads } from "@/lib/erpReports/retention";
 // function duration ceiling. 60 is the Hobby-plan ceiling itself.
 export const maxDuration = 60;
 
+// Both large enough that a single commit request can exceed Vercel's 60s
+// ceiling — confirmed live 2026-08-25: a 93,300-row master upsert alone
+// took 52.8s of DB time. Multi-sheet FY-wise Sale workbooks (added the
+// same day) can easily carry more rows than that. See migrations 0088/0089
+// for the p_mark_processed RPC changes these batch sizes pair with.
+const MASTER_BATCH_SIZE = 8000;
+const SALE_BATCH_SIZE = 8000;
+
 type UploadRow = {
   report_type: "sale" | "stock" | "scheme" | "master";
   storage_path: string;
@@ -31,15 +39,6 @@ type UploadRow = {
  * update — so this route marks the upload 'failed' with the error message
  * as a separate statement afterward.
  */
-// Master files can be large enough that a single commit request exceeds
-// Vercel's 60s ceiling — confirmed live 2026-08-25: 93,300 rows took 52.8s
-// for the DB upsert ALONE (timed directly against Postgres), before adding
-// file download/parse/network overhead. BATCH_SIZE keeps each request's DB
-// work comfortably under that: see migration 0088's header for the full
-// story and why fn_process_master_upload gained a p_mark_processed
-// parameter (only the LAST batch may flip the upload to 'processed').
-const MASTER_BATCH_SIZE = 8000;
-
 export async function POST(request: Request, { params }: { params: { id: string } }) {
   const supabase = await createDataClient();
 
@@ -82,9 +81,21 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
   try {
     if (upload.report_type === "sale") {
+      // Batched (0089), same reasoning as the "master" branch below —
+      // multi-sheet FY-wise workbooks (2026-08-25) can carry far more rows
+      // than a single commit request can write within Vercel's 60s
+      // ceiling. offset/batchSize come from the client; the route
+      // re-parses (all sheets) on every call — cheap relative to the DB
+      // write, so no server-side state needed between requests.
+      const body = await request.json().catch(() => ({}));
+      const offset = typeof body?.offset === "number" && body.offset >= 0 ? body.offset : 0;
+      const batchSize = typeof body?.batchSize === "number" && body.batchSize > 0 ? body.batchSize : SALE_BATCH_SIZE;
+
       const { rows } = parseSaleWorkbook(arrayBuffer);
       const valid = rows.filter((r) => !r.error);
-      const payload = valid.map((r) => ({
+      const slice = valid.slice(offset, offset + batchSize);
+      const isLastBatch = offset + batchSize >= valid.length;
+      const payload = slice.map((r) => ({
         branch_name: r.branchName,
         bill_date: r.billDate,
         bill_no: r.billNo,
@@ -110,7 +121,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
       const { data, error } = await supabase
         .schema("ops")
-        .rpc<number>("fn_process_sale_upload", { p_upload_id: params.id, p_rows: payload });
+        .rpc<number>("fn_process_sale_upload", { p_upload_id: params.id, p_rows: payload, p_mark_processed: isLastBatch });
 
       if (error) {
         await markFailed(error.message);
@@ -119,7 +130,14 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
       return NextResponse.json({
         ok: true,
-        data: { reportType: "sale", committedRows: data, skippedRows: rows.length - valid.length },
+        data: {
+          reportType: "sale",
+          committedRows: data,
+          skippedRows: rows.length - valid.length,
+          totalRows: valid.length,
+          nextOffset: offset + batchSize,
+          done: isLastBatch,
+        },
       });
     }
 
