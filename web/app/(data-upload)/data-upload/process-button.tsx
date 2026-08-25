@@ -42,28 +42,44 @@ export function ProcessButton({ uploadId }: { uploadId: string }) {
   const router = useRouter();
   const [state, setState] = useState<State>({ step: "idle" });
 
+  // TopProgressBar.tsx's own completion detection is route-change-based
+  // (pathname/searchParams), which never fires here — this whole flow only
+  // calls router.refresh() at the very end, which re-fetches server data
+  // in place without touching the URL at all. Dispatching start/stop
+  // directly is what makes the top strip actually track this fetch instead
+  // of falling back to its 20s stuck-open safety timer.
   async function loadPreview() {
     setState({ step: "loading-preview" });
-    const res = await fetch(`/api/data-upload/process/${uploadId}/preview`, { method: "POST" });
-    const body = await res.json();
-    if (!body.ok) {
-      setState({ step: "error", message: body.error.message });
-      return;
+    window.dispatchEvent(new CustomEvent("progressbar:start"));
+    try {
+      const res = await fetch(`/api/data-upload/process/${uploadId}/preview`, { method: "POST" });
+      const body = await res.json();
+      if (!body.ok) {
+        setState({ step: "error", message: body.error.message });
+        return;
+      }
+      setState({ step: "preview", data: body.data });
+    } finally {
+      window.dispatchEvent(new CustomEvent("progressbar:stop"));
     }
-    setState({ step: "preview", data: body.data });
   }
 
   async function commit() {
     if (state.step !== "preview") return;
     setState({ step: "committing", data: state.data });
-    const res = await fetch(`/api/data-upload/process/${uploadId}/commit`, { method: "POST" });
-    const body = await res.json();
-    if (!body.ok) {
-      setState({ step: "error", message: body.error.message });
-      return;
+    window.dispatchEvent(new CustomEvent("progressbar:start"));
+    try {
+      const res = await fetch(`/api/data-upload/process/${uploadId}/commit`, { method: "POST" });
+      const body = await res.json();
+      if (!body.ok) {
+        setState({ step: "error", message: body.error.message });
+        return;
+      }
+      setState({ step: "done", committedRows: body.data.committedRows, skippedRows: body.data.skippedRows });
+      router.refresh();
+    } finally {
+      window.dispatchEvent(new CustomEvent("progressbar:stop"));
     }
-    setState({ step: "done", committedRows: body.data.committedRows, skippedRows: body.data.skippedRows });
-    router.refresh();
   }
 
   if (state.step === "idle") {
