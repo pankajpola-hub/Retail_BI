@@ -49,8 +49,9 @@ export function SaleStockMixGrid({ rows }: { rows: GridRow[] }) {
         cellClass: "font-mono text-[11.5px]",
         // colSpan makes this cell cover every column for a group-header
         // row (see the file header) — same technique as
-        // ReplenishmentGrid.tsx. 10 = total column count below.
-        colSpan: (p: { data?: GridRow }) => (isGroupHeader(p.data) ? 10 : 1),
+        // ReplenishmentGrid.tsx. 9 = total column count below (Status was
+        // merged into Action on 2026-08-25 — one less column).
+        colSpan: (p: { data?: GridRow }) => (isGroupHeader(p.data) ? 9 : 1),
         valueFormatter: (p) => p.value,
         cellRenderer: (p: ICellRendererParams<GridRow>) => {
           if (isGroupHeader(p.data)) {
@@ -89,28 +90,27 @@ export function SaleStockMixGrid({ rows }: { rows: GridRow[] }) {
         valueFormatter: (p) => pts(p.value),
       },
       {
-        field: "status",
-        headerName: "Status",
-        flex: 1.2,
-        sortable: true,
-        cellRenderer: (p: ICellRendererParams<MixRow>) => {
-          const meta = MIX_STATUS_META[p.data!.status];
-          return <span className={meta.className}>{meta.dot} {meta.demandLabel}</span>;
-        },
-      },
-      {
+        // Status merged into Action (2026-08-25) — one column instead of
+        // two: what to do reads first, why (the status demand label) reads
+        // underneath as a smaller subtitle, rather than making the reader
+        // cross-reference a separate Status cell to understand the Action
+        // cell next to it.
         headerName: "Action",
-        flex: 1.6,
-        cellClass: "text-ink-2",
+        flex: 2,
+        cellClass: "text-ink-2 py-1",
+        autoHeight: true,
         cellRenderer: (p: ICellRendererParams<MixRow>) => {
           const r = p.data!;
           const meta = MIX_STATUS_META[r.status];
           const isAllocationCandidate = r.status === "high_priority" || r.status === "opportunity";
           const warehouseBlocked = isAllocationCandidate && r.warehouseAvailable === 0;
-          return warehouseBlocked ? (
-            <span className="text-warn">Demand Opportunity — Warehouse Stock Unavailable</span>
-          ) : (
-            <span>{meta.action}</span>
+          return (
+            <div className="py-1 leading-tight">
+              <div className={warehouseBlocked ? "text-warn font-semibold" : meta.className}>
+                {meta.dot} {warehouseBlocked ? "Demand Opportunity — Warehouse Stock Unavailable" : meta.action}
+              </div>
+              <div className="text-[11px] font-normal text-ink-3">{meta.demandLabel.toLowerCase()}</div>
+            </div>
           );
         },
       },
