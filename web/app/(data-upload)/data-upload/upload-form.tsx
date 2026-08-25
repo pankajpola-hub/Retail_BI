@@ -14,35 +14,62 @@ const REPORT_LABELS: Record<string, string> = {
 type UploadStatus =
   | { state: "idle" }
   | { state: "uploading"; percent: number }
+  | { state: "finishing" }
   | { state: "error"; message: string }
   | { state: "done" };
 
+async function postJson<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const json = await res.json();
+  if (!res.ok || !json.ok) throw new Error(json.error?.message ?? "Request failed.");
+  return json.data as T;
+}
+
 /**
- * XMLHttpRequest, not fetch() — fetch has no upload-progress event at all
- * (only download progress, via the response body stream), so a fetch-based
- * form has nothing to report while the file itself is going up. That
- * silence is exactly what read as "stuck" for a multi-MB master file: the
- * button just said "Uploading…" with no percentage, for however long the
- * browser->Vercel hop actually took. xhr.upload.onprogress gives a real
- * byte-level percentage to show instead.
+ * Direct-to-Storage upload, replacing a fetch()-through-our-own-function
+ * upload (2026-08-25). Two real problems that one had:
+ *
+ *  1. No progress at all — fetch() has no upload-progress event, only
+ *     "Uploading…" with nothing changing until it resolved or errored.
+ *  2. A hard wall for any file over ~4.5MB — Vercel Serverless Functions
+ *     have a request-body ceiling that low, a PLATFORM limit no code-level
+ *     change (streaming, maxDuration) can raise. A master/sale/stock ERP
+ *     report routinely exceeds it; confirmed live as "Server sent back
+ *     something unreadable" (an HTML platform error page, not JSON) on a
+ *     master file.
+ *
+ * Fix: the file's bytes go straight from this browser to Supabase Storage
+ * via a signed upload URL (see api/data-upload/upload-url/route.ts) — no
+ * Next.js function ever sees them, so there's no body-size ceiling to hit.
+ * XMLHttpRequest for that PUT specifically because it's the only web API
+ * with a real upload-progress event (fetch still doesn't have one).
  */
-function uploadWithProgress(url: string, formData: FormData, onPercent: (pct: number) => void): Promise<{ ok: boolean; body: unknown }> {
+function putFileToSignedUrl(signedUrl: string, apikey: string, file: File, onPercent: (pct: number) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", url);
+    xhr.open("PUT", signedUrl);
+    xhr.setRequestHeader("apikey", apikey);
+    xhr.setRequestHeader("Authorization", `Bearer ${apikey}`);
+    xhr.setRequestHeader("x-upsert", "false");
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) onPercent(Math.round((e.loaded / e.total) * 100));
     };
     xhr.onload = () => {
-      try {
-        resolve({ ok: xhr.status >= 200 && xhr.status < 300, body: JSON.parse(xhr.responseText) });
-      } catch {
-        resolve({ ok: false, body: { error: { message: "Server sent back something unreadable." } } });
-      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(`Storage upload failed (${xhr.status}).`));
     };
     xhr.onerror = () => reject(new Error("Network error during upload."));
     xhr.ontimeout = () => reject(new Error("Upload timed out."));
-    xhr.send(formData);
+
+    // Exact shape Supabase's own uploadToSignedUrl() sends for a File body
+    // (a File is a Blob): a "cacheControl" field plus the file itself
+    // under an empty-string field name — matched from the installed
+    // @supabase/storage-js source rather than guessed, since getting this
+    // wrong fails silently against a real endpoint.
+    const form = new FormData();
+    form.append("cacheControl", "3600");
+    form.append("", file);
+    xhr.send(form);
   });
 }
 
@@ -56,32 +83,28 @@ export function UploadReportForm({ reportType }: { reportType: "sale" | "stock" 
     const file = fileRef.current?.files?.[0];
     if (!file) return;
 
-    setStatus({ state: "uploading", percent: 0 });
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("report_type", reportType);
-
-    let result: { ok: boolean; body: unknown };
     try {
-      result = await uploadWithProgress("/api/data-upload/upload", formData, (percent) =>
-        setStatus({ state: "uploading", percent })
+      setStatus({ state: "uploading", percent: 0 });
+      const { path, signedUrl, apikey } = await postJson<{ path: string; signedUrl: string; token: string; apikey: string }>(
+        "/api/data-upload/upload-url",
+        { reportType, fileName: file.name, fileSize: file.size, contentType: file.type }
       );
+
+      await putFileToSignedUrl(signedUrl, apikey, file, (percent) => setStatus({ state: "uploading", percent }));
+
+      setStatus({ state: "finishing" });
+      await postJson("/api/data-upload/register", { reportType, fileName: file.name, storagePath: path });
     } catch (err) {
       setStatus({ state: "error", message: err instanceof Error ? err.message : "Upload failed." });
       return;
     }
 
-    const body = result.body as { ok: boolean; error?: { message: string } };
-    if (!result.ok || !body.ok) {
-      setStatus({ state: "error", message: body.error?.message ?? "Upload failed." });
-      return;
-    }
     setStatus({ state: "done" });
     if (fileRef.current) fileRef.current.value = "";
     router.refresh();
   }
 
-  const uploading = status.state === "uploading";
+  const busy = status.state === "uploading" || status.state === "finishing";
 
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-3 border border-line-soft p-4">
@@ -89,12 +112,12 @@ export function UploadReportForm({ reportType }: { reportType: "sale" | "stock" 
         <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
           {REPORT_LABELS[reportType]} (.xlsx or .xls, up to 20MB)
         </span>
-        <input ref={fileRef} type="file" accept=".xlsx,.xls" required disabled={uploading} className="text-sm" />
+        <input ref={fileRef} type="file" accept=".xlsx,.xls" required disabled={busy} className="text-sm" />
       </label>
-      <Button type="submit" disabled={uploading} className="self-start">
-        {uploading ? `Uploading… ${status.percent}%` : "Upload"}
+      <Button type="submit" disabled={busy} className="self-start">
+        {status.state === "uploading" ? `Uploading… ${status.percent}%` : status.state === "finishing" ? "Finishing…" : "Upload"}
       </Button>
-      {uploading && (
+      {status.state === "uploading" && (
         <div className="h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-surface-2">
           <div className="h-full bg-accent transition-[width]" style={{ width: `${status.percent}%` }} />
         </div>
