@@ -71,15 +71,17 @@ export type Action =
 
 export type SizeRow = { size: string; soh: number; sales30d: number; velocity: number };
 
-// Item_code (barcode) grain, network-wide (summed across all stores, same
-// scope as Sale vs Stock Mix's own item-level rows) — feeds the "View by"
-// attribute combo (Color / Size / Size Group / Gender / Season+Year / MRP
-// Range) client-side, same mechanism as lib/replenishment/mixAttributes.ts.
-// No recommendedQty here deliberately: that's a Style+Color+Store-grain
-// OUTPUT of the network allocation loop below, not a real per-item_code
-// number — splitting it across sizes would require inventing a per-size
-// allocation the engine never actually computed. This view is diagnostic
-// (stock vs demand), same as Sale vs Stock Mix, not a second allocator.
+// Item_code (barcode) grain, PER STORE — same grain as Row itself (Style+
+// Color+Store), not network-summed, specifically so a Store filter can
+// scope this view exactly the way it scopes the main grid. Feeds the
+// "View by" attribute combo (Color / Size / Size Group / Gender /
+// Season+Year / MRP Range) client-side, same mechanism as
+// lib/replenishment/mixAttributes.ts. No recommendedQty here deliberately:
+// that's a Style+Color+Store-grain OUTPUT of the network allocation loop
+// below, not a real per-item_code number — splitting it across sizes would
+// require inventing a per-size allocation the engine never actually
+// computed. This view is diagnostic (stock vs demand), same as Sale vs
+// Stock Mix, not a second allocator.
 export type ReplItemRow = {
   itemCode: string;
   styleNo: string;
@@ -89,9 +91,11 @@ export type ReplItemRow = {
   gender: string;
   season: string;
   mrp: number | null;
-  soh: number; // store stock, network-wide
-  warehouseAvailable: number;
-  sales30d: number; // net units, last 30 days, network-wide
+  storeId: string;
+  storeName: string;
+  soh: number; // this store's stock
+  warehouseAvailable: number; // network warehouse total for this item_code (not store-scoped — a shared pool)
+  sales30d: number; // this store's net units, last 30 days
 };
 
 export type Row = {
@@ -279,8 +283,8 @@ export async function computeReplenishmentRows(
   const storeStock = new Map<string, Map<string, { qty: number; styleNo: string; color: string }>>(); // storeId -> styleColorKey -> {...}
   const warehouseStock = new Map<string, number>(); // styleColorKey -> qty
   const sizeStock = new Map<string, Map<string, Map<string, number>>>(); // storeId -> styleColorKey -> size -> qty
-  const itemStock = new Map<string, number>(); // item_code -> store qty, network-wide
-  const itemWarehouse = new Map<string, number>(); // item_code -> warehouse qty
+  const itemStock = new Map<string, Map<string, number>>(); // storeId -> item_code -> qty
+  const itemWarehouse = new Map<string, number>(); // item_code -> warehouse qty, network-wide (shared pool, not store-scoped)
   for (const r of stockRows ?? []) {
     if (!r.branch_name) continue;
     const { key, styleNo, color } = styleColorKeyOf(r.item_code);
@@ -299,7 +303,9 @@ export async function computeReplenishmentRows(
       byStyleSize.set(key, bySize);
       sizeStock.set(storeId, byStyleSize);
 
-      itemStock.set(r.item_code, (itemStock.get(r.item_code) ?? 0) + Number(r.closing_stock));
+      const byStoreItem = itemStock.get(storeId) ?? new Map<string, number>();
+      byStoreItem.set(r.item_code, (byStoreItem.get(r.item_code) ?? 0) + Number(r.closing_stock));
+      itemStock.set(storeId, byStoreItem);
     } else {
       warehouseStock.set(key, (warehouseStock.get(key) ?? 0) + Number(r.closing_stock));
       itemWarehouse.set(r.item_code, (itemWarehouse.get(r.item_code) ?? 0) + Number(r.closing_stock));
@@ -311,7 +317,7 @@ export async function computeReplenishmentRows(
   const salesValue90d = new Map<string, Map<string, number>>(); // storeId -> styleColorKey -> gross value, 90d
   const storeTotalValue90d = new Map<string, number>(); // storeId -> total gross value, 90d, all styles (productivity proxy)
   const sizeSales30d = new Map<string, Map<string, Map<string, number>>>(); // storeId -> styleColorKey -> size -> net units, 30d
-  const itemSales30d = new Map<string, number>(); // item_code -> net units, 30d, network-wide
+  const itemSales30d = new Map<string, Map<string, number>>(); // storeId -> item_code -> net units, 30d
   const today = new Date();
   const daysAgo = (dateStr: string) => (today.getTime() - new Date(dateStr).getTime()) / 86_400_000;
   for (const r of saleRows ?? []) {
@@ -340,7 +346,9 @@ export async function computeReplenishmentRows(
       byStyleSize.set(key, bySize);
       sizeSales30d.set(storeId, byStyleSize);
 
-      itemSales30d.set(r.item_code, (itemSales30d.get(r.item_code) ?? 0) + qty);
+      const byStoreItemSales = itemSales30d.get(storeId) ?? new Map<string, number>();
+      byStoreItemSales.set(r.item_code, (byStoreItemSales.get(r.item_code) ?? 0) + qty);
+      itemSales30d.set(storeId, byStoreItemSales);
     }
 
     if (age <= 90) {
@@ -648,30 +656,39 @@ export async function computeReplenishmentRows(
 
   const totalWarehouseUnits = [...warehouseStock.values()].reduce((s, v) => s + v, 0);
 
-  // Item-level rows for the "View by" attribute combo — same inclusion rule
-  // as the main grain above (drop an item with zero stock AND zero sales),
-  // no recommendedQty (see ReplItemRow's own comment for why).
-  const allItemCodes = new Set<string>([...itemStock.keys(), ...itemWarehouse.keys(), ...itemSales30d.keys()]);
+  // Item-level rows for the "View by" attribute combo — PER STORE, same
+  // grain and same inclusion rule as the main Row loop above (a store only
+  // gets a row for an item_code it has stock or sales for; warehouse-only
+  // stock with no store presence anywhere isn't attached to any store, same
+  // as Row itself never emits a warehouse-only candidate). No
+  // recommendedQty (see ReplItemRow's own comment for why).
   const itemRows: ReplItemRow[] = [];
-  for (const itemCode of allItemCodes) {
-    const attrs = itemAttrs.get(itemCode);
-    const soh = itemStock.get(itemCode) ?? 0;
-    const warehouseAvailable = itemWarehouse.get(itemCode) ?? 0;
-    const sales30d = Math.max(0, itemSales30d.get(itemCode) ?? 0);
-    if (soh === 0 && warehouseAvailable === 0 && sales30d === 0) continue;
-    itemRows.push({
-      itemCode,
-      styleNo: attrs?.styleNo ?? itemCode,
-      color: attrs?.color ?? "—",
-      size: attrs?.size ?? "—",
-      sizeGroup: attrs?.sizeGroup ?? "—",
-      gender: attrs?.gender ?? "—",
-      season: attrs?.season ?? "—",
-      mrp: attrs?.mrp ?? null,
-      soh,
-      warehouseAvailable,
-      sales30d,
-    });
+  for (const store of storeList) {
+    const storeItemStock = itemStock.get(store.store_id);
+    const storeItemSales = itemSales30d.get(store.store_id);
+    const itemCodesForStore = new Set<string>([...(storeItemStock?.keys() ?? []), ...(storeItemSales?.keys() ?? [])]);
+    for (const itemCode of itemCodesForStore) {
+      const attrs = itemAttrs.get(itemCode);
+      const soh = storeItemStock?.get(itemCode) ?? 0;
+      const warehouseAvailable = itemWarehouse.get(itemCode) ?? 0;
+      const sales30d = Math.max(0, storeItemSales?.get(itemCode) ?? 0);
+      if (soh === 0 && sales30d === 0) continue;
+      itemRows.push({
+        itemCode,
+        styleNo: attrs?.styleNo ?? itemCode,
+        color: attrs?.color ?? "—",
+        size: attrs?.size ?? "—",
+        sizeGroup: attrs?.sizeGroup ?? "—",
+        gender: attrs?.gender ?? "—",
+        season: attrs?.season ?? "—",
+        mrp: attrs?.mrp ?? null,
+        storeId: store.store_id,
+        storeName: store.store_name,
+        soh,
+        warehouseAvailable,
+        sales30d,
+      });
+    }
   }
 
   return { storeList, rows, itemRows, totalWarehouseUnits };
