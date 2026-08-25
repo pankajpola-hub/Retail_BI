@@ -3,6 +3,16 @@ import { createClient as createDataClient } from "@/lib/data/client";
 import { saveObjectFile } from "@/lib/storage/supabase";
 import { cleanupOlderUploads } from "@/lib/erpReports/retention";
 
+// Without this, Vercel's default function duration ceiling (well under 60s)
+// applies — a file upload does two full network hops (browser -> this
+// function -> Supabase Storage), and a multi-MB report on a slow
+// connection can plausibly exceed that default, killing the function
+// mid-upload with no clear client-side error (the browser's fetch() just
+// hangs until it eventually errors). 60 is the Hobby-plan ceiling itself
+// (see api/cron/uniware-sync/route.ts's own note on this exact limit) —
+// can't ask for more without a plan upgrade.
+export const maxDuration = 60;
+
 const MAX_BYTES = 20 * 1024 * 1024; // 20MB — ERP report exports run larger than the incentive-target sheets
 const ALLOWED_TYPES = [
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx

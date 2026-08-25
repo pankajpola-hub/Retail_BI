@@ -78,7 +78,12 @@ export function ProcessButton({ uploadId }: { uploadId: string }) {
   }
 
   if (state.step === "loading-preview") {
-    return <span className="text-[11px] text-ink-3">Reading file…</span>;
+    return (
+      <span className="flex items-center gap-1.5 text-[11px] text-ink-3">
+        <span className="h-3 w-3 animate-spin rounded-full border-2 border-line-soft border-t-ink-3" />
+        Reading file…
+      </span>
+    );
   }
 
   if (state.step === "error") {
@@ -203,7 +208,14 @@ export function ProcessButton({ uploadId }: { uploadId: string }) {
             disabled={state.step === "committing"}
             className="bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-fg disabled:opacity-60"
           >
-            {state.step === "committing" ? "Committing…" : "Commit"}
+            {state.step === "committing" ? (
+              <span className="flex items-center gap-1.5">
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-accent-fg/30 border-t-accent-fg" />
+                Committing…
+              </span>
+            ) : (
+              "Commit"
+            )}
           </button>
         </div>
       </div>
