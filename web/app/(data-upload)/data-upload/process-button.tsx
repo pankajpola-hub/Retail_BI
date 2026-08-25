@@ -28,9 +28,44 @@ type State =
   | { step: "idle" }
   | { step: "loading-preview" }
   | { step: "preview"; data: PreviewData }
-  | { step: "committing"; data: PreviewData }
+  | { step: "committing"; data: PreviewData; committedSoFar: number; totalRows: number | null }
   | { step: "done"; committedRows: number; skippedRows: number }
   | { step: "error"; message: string };
+
+async function postJson<T>(url: string, body?: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  let json: { ok: boolean; data?: T; error?: { message: string } };
+  try {
+    json = await res.json();
+  } catch {
+    throw new Error(`Server sent back something unreadable (status ${res.status}).`);
+  }
+  if (!res.ok || !json.ok) throw new Error(json.error?.message ?? `Request failed (status ${res.status}).`);
+  return json.data as T;
+}
+
+// Master files can be large enough that one commit request exceeds Vercel's
+// 60s ceiling — confirmed live 2026-08-25: 93,300 rows took 52.8s for the
+// DB upsert alone, before file download/parse/network overhead. Matches
+// api/data-upload/process/[id]/commit/route.ts's own MASTER_BATCH_SIZE (the
+// server slices rows the same way regardless of what batchSize the client
+// sends, so this only needs to roughly agree, not match exactly).
+const MASTER_BATCH_SIZE = 8000;
+
+type MasterCommitBatch = {
+  committedRows: number;
+  insertedRows: number;
+  updatedRows: number;
+  duplicatesCollapsed: number;
+  skippedRows: number;
+  totalRows: number;
+  nextOffset: number;
+  done: boolean;
+};
 
 /**
  * Explicit "validate -> preview -> commit" UI per migration 0024 / 0018's
@@ -52,13 +87,14 @@ export function ProcessButton({ uploadId }: { uploadId: string }) {
     setState({ step: "loading-preview" });
     window.dispatchEvent(new CustomEvent("progressbar:start"));
     try {
-      const res = await fetch(`/api/data-upload/process/${uploadId}/preview`, { method: "POST" });
-      const body = await res.json();
-      if (!body.ok) {
-        setState({ step: "error", message: body.error.message });
-        return;
-      }
-      setState({ step: "preview", data: body.data });
+      const data = await postJson<PreviewData>(`/api/data-upload/process/${uploadId}/preview`);
+      setState({ step: "preview", data });
+    } catch (err) {
+      // A missing catch here previously left the UI stuck on its loading
+      // state forever if the request errored (e.g. a Vercel timeout
+      // returning an HTML error page instead of JSON) — the exception went
+      // uncaught, so no setState ever ran after that point.
+      setState({ step: "error", message: err instanceof Error ? err.message : "Couldn't read that file." });
     } finally {
       window.dispatchEvent(new CustomEvent("progressbar:stop"));
     }
@@ -66,17 +102,36 @@ export function ProcessButton({ uploadId }: { uploadId: string }) {
 
   async function commit() {
     if (state.step !== "preview") return;
-    setState({ step: "committing", data: state.data });
+    const previewData = state.data;
+    setState({ step: "committing", data: previewData, committedSoFar: 0, totalRows: previewData.validRows });
     window.dispatchEvent(new CustomEvent("progressbar:start"));
     try {
-      const res = await fetch(`/api/data-upload/process/${uploadId}/commit`, { method: "POST" });
-      const body = await res.json();
-      if (!body.ok) {
-        setState({ step: "error", message: body.error.message });
-        return;
+      if (previewData.reportType === "master") {
+        // Batched — loop of small commit requests, each with its own fresh
+        // 60s budget, instead of one request for the whole file. See
+        // commit/route.ts's own header for the full story.
+        let offset = 0;
+        let last: MasterCommitBatch | null = null;
+        for (;;) {
+          const batch = await postJson<MasterCommitBatch>(`/api/data-upload/process/${uploadId}/commit`, {
+            offset,
+            batchSize: MASTER_BATCH_SIZE,
+          });
+          last = batch;
+          offset = batch.nextOffset;
+          setState({ step: "committing", data: previewData, committedSoFar: Math.min(offset, batch.totalRows), totalRows: batch.totalRows });
+          if (batch.done) break;
+        }
+        setState({ step: "done", committedRows: last!.committedRows, skippedRows: last!.skippedRows });
+      } else {
+        const data = await postJson<{ committedRows: number; skippedRows: number }>(
+          `/api/data-upload/process/${uploadId}/commit`
+        );
+        setState({ step: "done", committedRows: data.committedRows, skippedRows: data.skippedRows });
       }
-      setState({ step: "done", committedRows: body.data.committedRows, skippedRows: body.data.skippedRows });
       router.refresh();
+    } catch (err) {
+      setState({ step: "error", message: err instanceof Error ? err.message : "Commit failed." });
     } finally {
       window.dispatchEvent(new CustomEvent("progressbar:stop"));
     }
@@ -124,6 +179,7 @@ export function ProcessButton({ uploadId }: { uploadId: string }) {
 
   // preview or committing
   const data = state.data;
+  const committing = state.step === "committing";
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
       <div className="max-w-lg border border-line bg-surface p-5 text-sm shadow-lg">
@@ -211,20 +267,37 @@ export function ProcessButton({ uploadId }: { uploadId: string }) {
           </div>
         )}
 
+        {committing && state.totalRows !== null && state.totalRows > 0 && (
+          <div className="mt-3">
+            <div className="flex items-center justify-between text-[11px] text-ink-3">
+              <span>
+                Committing… {state.committedSoFar.toLocaleString("en-IN")} / {state.totalRows.toLocaleString("en-IN")} rows
+              </span>
+              <span>{Math.round((state.committedSoFar / state.totalRows) * 100)}%</span>
+            </div>
+            <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
+              <div
+                className="h-full bg-accent transition-[width]"
+                style={{ width: `${Math.min(100, Math.round((state.committedSoFar / state.totalRows) * 100))}%` }}
+              />
+            </div>
+          </div>
+        )}
+
         <div className="mt-4 flex justify-end gap-2">
           <button
             onClick={() => setState({ step: "idle" })}
-            disabled={state.step === "committing"}
+            disabled={committing}
             className="border border-line px-3 py-1.5 text-[12px] text-ink-2 hover:text-ink disabled:opacity-60"
           >
             Cancel
           </button>
           <button
             onClick={commit}
-            disabled={state.step === "committing"}
+            disabled={committing}
             className="bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-fg disabled:opacity-60"
           >
-            {state.step === "committing" ? (
+            {committing ? (
               <span className="flex items-center gap-1.5">
                 <span className="h-3 w-3 animate-spin rounded-full border-2 border-accent-fg/30 border-t-accent-fg" />
                 Committing…

@@ -31,7 +31,16 @@ type UploadRow = {
  * update — so this route marks the upload 'failed' with the error message
  * as a separate statement afterward.
  */
-export async function POST(_request: Request, { params }: { params: { id: string } }) {
+// Master files can be large enough that a single commit request exceeds
+// Vercel's 60s ceiling — confirmed live 2026-08-25: 93,300 rows took 52.8s
+// for the DB upsert ALONE (timed directly against Postgres), before adding
+// file download/parse/network overhead. BATCH_SIZE keeps each request's DB
+// work comfortably under that: see migration 0088's header for the full
+// story and why fn_process_master_upload gained a p_mark_processed
+// parameter (only the LAST batch may flip the upload to 'processed').
+const MASTER_BATCH_SIZE = 8000;
+
+export async function POST(request: Request, { params }: { params: { id: string } }) {
   const supabase = await createDataClient();
 
   const {
@@ -159,10 +168,22 @@ export async function POST(_request: Request, { params }: { params: { id: string
     }
 
     if (upload.report_type === "master") {
+      // Batched (0088) — the caller (ProcessButton) drives a loop of these
+      // requests, each covering one slice of the already-deduplicated row
+      // set, rather than one request for the whole file. offset/batchSize
+      // come from the client; the route re-parses the workbook on every
+      // call (cheap — parsing is not the bottleneck, the DB write is) so
+      // there's no server-side state to keep between requests.
+      const body = await request.json().catch(() => ({}));
+      const offset = typeof body?.offset === "number" && body.offset >= 0 ? body.offset : 0;
+      const batchSize = typeof body?.batchSize === "number" && body.batchSize > 0 ? body.batchSize : MASTER_BATCH_SIZE;
+
       // The parser has already deduplicated by item_code (last one wins) and
       // dropped blank-item-code rows, so every row here is committable.
       const { rows, skipped, duplicatesCollapsed } = parseMasterWorkbook(arrayBuffer);
-      const payload = rows.map((r) => ({
+      const slice = rows.slice(offset, offset + batchSize);
+      const isLastBatch = offset + batchSize >= rows.length;
+      const payload = slice.map((r) => ({
         item_code: r.itemCode,
         item_name: r.itemName,
         shade_name: r.shadeName,
@@ -178,19 +199,26 @@ export async function POST(_request: Request, { params }: { params: { id: string
       }));
 
       // Same door as every other branch: the user-scoped client plus a
-      // SECURITY DEFINER function (migration 0054) that does the whole UPSERT
-      // in one statement inside its own transaction. Unlike the other three
-      // this one returns jsonb, because inserted-vs-updated is the useful
-      // signal on a master file.
+      // SECURITY DEFINER function (migration 0054/0088) that does the
+      // UPSERT for this slice in one statement inside its own transaction.
+      // Unlike the other three this one returns jsonb, because
+      // inserted-vs-updated is the useful signal on a master file.
       const { data, error } = await supabase
         .schema("ops")
         .rpc<{ inserted: number; updated: number; total: number }>("fn_process_master_upload", {
           p_upload_id: params.id,
           p_rows: payload,
           p_source_file: upload.file_name,
+          p_mark_processed: isLastBatch,
         });
 
       if (error) {
+        // Only mark the whole upload 'failed' on the batch that was
+        // actually going to finish it, or if nothing has committed yet —
+        // a mid-file batch failure leaves earlier batches' rows committed
+        // (each batch's upsert is its own transaction), and the caller can
+        // just retry the commit from offset 0 (idempotent: re-upserting an
+        // already-committed item_code is harmless).
         await markFailed(error.message);
         return NextResponse.json({ ok: false, error: { code: "commit_failed", message: error.message } }, { status: 400 });
       }
@@ -204,6 +232,9 @@ export async function POST(_request: Request, { params }: { params: { id: string
           updatedRows: data?.updated ?? 0,
           duplicatesCollapsed,
           skippedRows: skipped.length,
+          totalRows: rows.length,
+          nextOffset: offset + batchSize,
+          done: isLastBatch,
         },
       });
     }
