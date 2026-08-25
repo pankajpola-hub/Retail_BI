@@ -466,7 +466,7 @@ async function SaleStockMixContent({
   const periodParam = Number(searchParams.mix_period) as SalesPeriodDays;
   const salesPeriodDays: SalesPeriodDays = PERIOD_OPTIONS.includes(periodParam) ? periodParam : 30;
 
-  const { storeList, rows, totalSales, totalStock } = await time(
+  const { storeList, rows, itemRows, totalSales, totalStock } = await time(
     "sale-stock-mix:compute",
     computeSaleStockMix(supabase, { storeId, salesPeriodDays })
   );
@@ -552,7 +552,7 @@ async function SaleStockMixContent({
       </form>
 
       <div className="mt-4">
-        <SaleStockMixFacetedContent rows={rows} />
+        <SaleStockMixFacetedContent rows={rows} itemRows={itemRows} totalSales={totalSales} totalStock={totalStock} />
       </div>
     </>
   );

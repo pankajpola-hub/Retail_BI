@@ -1,5 +1,6 @@
 import "server-only";
 import type { DataClient } from "@/lib/data/client";
+import { classifyMixGap, MIX_STATUS_META, type MixStatus } from "./mixShared";
 
 // Sale Mix vs Stock Mix — Style No. + Color level. Answers: "is the way
 // stock is currently distributed aligned with how customers are actually
@@ -9,12 +10,19 @@ import type { DataClient } from "@/lib/data/client";
 // warehouse/store transfer math using its own (richer) velocity model. Mix
 // Gap here is meant to be read alongside Replenishment, not instead of it.
 
+export { classifyMixGap, MIX_STATUS_META, type MixStatus };
+
 type StoreRow = { store_id: string; store_name: string; branch_name_erp: string };
 type StockRow = {
   branch_name: string | null;
   item_code: string;
   item_name: string | null;
   shade_name: string | null;
+  size: string | null;
+  size_group: string | null;
+  gender: string | null;
+  season: string | null;
+  mrp: number | string | null;
   closing_stock: number;
 };
 type SaleRow = {
@@ -24,63 +32,6 @@ type SaleRow = {
   total_quantity: number;
   bill_type: string;
 };
-
-export type MixStatus = "high_priority" | "opportunity" | "balanced" | "stock_heavy" | "overstocked";
-
-export const MIX_STATUS_META: Record<
-  MixStatus,
-  { dot: string; label: string; demandLabel: string; action: string; className: string }
-> = {
-  high_priority: {
-    dot: "🔥",
-    label: "High Priority",
-    demandLabel: "High Demand / Low Stock",
-    action: "Prioritize Allocation",
-    className: "text-crit font-semibold",
-  },
-  opportunity: {
-    dot: "🟢",
-    label: "Allocation Opportunity",
-    demandLabel: "Demand Higher Than Stock",
-    action: "Consider Allocation",
-    className: "text-good font-semibold",
-  },
-  balanced: {
-    dot: "✅",
-    label: "Balanced",
-    demandLabel: "Balanced",
-    action: "Maintain",
-    className: "text-ink-2",
-  },
-  stock_heavy: {
-    dot: "🟠",
-    label: "Stock Heavy",
-    demandLabel: "Stock Higher Than Demand",
-    action: "Reduce / Hold Allocation",
-    className: "text-warn font-semibold",
-  },
-  overstocked: {
-    dot: "🔴",
-    label: "Overstocked",
-    demandLabel: "Low Demand / High Stock",
-    action: "Do Not Allocate",
-    className: "text-crit font-semibold",
-  },
-};
-
-// Boundaries taken literally from the spec, with the two ties (+5pp,
-// -10pp... and -5pp) each resolved toward the MORE extreme bucket, mirroring
-// how the spec's own ">=5 and <10" phrasing puts +5 in Opportunity rather
-// than Balanced — the symmetric choice puts -5 in Stock Heavy rather than
-// Balanced, so a style-color never lands in two buckets depending on
-// floating-point rounding.
-export function classifyMixGap(gapPts: number): MixStatus {
-  if (gapPts >= 10) return "high_priority";
-  if (gapPts >= 5) return "opportunity";
-  if (gapPts > -5) return "balanced";
-  if (gapPts >= -10) return "stock_heavy";
-  return "overstocked";
-}
 
 export type MixRow = {
   styleNo: string;
@@ -95,12 +46,37 @@ export type MixRow = {
   negativeStock: boolean;
 };
 
+// Item-code (barcode) grain — the finest grain the source data has. Style +
+// Color rows (MixRow above) are one rollup of this; the attribute-wise
+// views (lib/replenishment/mixAttributes.ts — Color / Size / Gender /
+// Season+Year / MRP Range) are others, computed client-side from these same
+// rows so switching the "View by" pill needs no extra server round-trip.
+export type MixItemRow = {
+  itemCode: string;
+  styleNo: string;
+  color: string;
+  size: string;
+  sizeGroup: string;
+  gender: string;
+  season: string;
+  mrp: number | null;
+  sales: number;
+  soh: number;
+  warehouseAvailable: number;
+};
+
 export type SalesPeriodDays = 7 | 30 | 60 | 90;
 
 export async function computeSaleStockMix(
   supabase: DataClient,
   { storeId, salesPeriodDays }: { storeId: string; salesPeriodDays: SalesPeriodDays }
-): Promise<{ storeList: StoreRow[]; rows: MixRow[]; totalSales: number; totalStock: number }> {
+): Promise<{
+  storeList: StoreRow[];
+  rows: MixRow[];
+  itemRows: MixItemRow[];
+  totalSales: number;
+  totalStock: number;
+}> {
   const periodStart = new Date();
   periodStart.setDate(periodStart.getDate() - salesPeriodDays);
   const fromDate = periodStart.toISOString().slice(0, 10);
@@ -117,7 +93,7 @@ export async function computeSaleStockMix(
     supabase
       .schema("sales")
       .from<StockRow>("vw_stock_with_scheme")
-      .select("branch_name, item_code, item_name, shade_name, closing_stock")
+      .select("branch_name, item_code, item_name, shade_name, size, size_group, gender, season, mrp, closing_stock")
       .limit(40000),
     supabase
       .schema("sales")
@@ -130,15 +106,30 @@ export async function computeSaleStockMix(
   const storeBranchToId = new Map(storeList.map((s) => [s.branch_name_erp, s.store_id]));
 
   // Same style+color grain as Replenishment (lib/replenishment/compute.ts) —
-  // never combine colors of the same style (section 1 of the spec).
-  const itemToStyleColor = new Map<string, { styleNo: string; color: string }>();
+  // never combine colors of the same style (section 1 of the spec). Also
+  // carries every other attribute (size, gender, season, mrp) an item_code
+  // has, for the attribute-wise views — one lookup built once, reused by
+  // both grains below.
+  const itemAttrs = new Map<
+    string,
+    { styleNo: string; color: string; size: string; sizeGroup: string; gender: string; season: string; mrp: number | null }
+  >();
   for (const r of stockRows ?? []) {
-    if (!itemToStyleColor.has(r.item_code)) {
-      itemToStyleColor.set(r.item_code, { styleNo: r.item_name ?? r.item_code, color: r.shade_name ?? "—" });
+    if (!itemAttrs.has(r.item_code)) {
+      const mrpNum = r.mrp === null || r.mrp === undefined ? null : Number(r.mrp);
+      itemAttrs.set(r.item_code, {
+        styleNo: r.item_name ?? r.item_code,
+        color: r.shade_name ?? "—",
+        size: r.size ?? "—",
+        sizeGroup: r.size_group ?? "—",
+        gender: r.gender ?? "—",
+        season: r.season ?? "—",
+        mrp: mrpNum !== null && Number.isFinite(mrpNum) && mrpNum > 0 ? mrpNum : null,
+      });
     }
   }
   function styleColorKeyOf(itemCode: string): { key: string; styleNo: string; color: string } {
-    const meta = itemToStyleColor.get(itemCode) ?? { styleNo: itemCode, color: "—" };
+    const meta = itemAttrs.get(itemCode) ?? { styleNo: itemCode, color: "—" };
     return { key: `${meta.styleNo}::${meta.color}`, styleNo: meta.styleNo, color: meta.color };
   }
 
@@ -148,20 +139,28 @@ export async function computeSaleStockMix(
   // below for the section-8 availability check) would distort it if mixed
   // in. Section 7: when storeId is set, only that store's own SOH/sales
   // count — another store's numbers must never leak into a per-store view.
+  //
+  // Two parallel aggregations from the same rows: by style+color key (the
+  // existing default view, unchanged) and by item_code (the finer grain the
+  // attribute-wise views roll up from instead).
   const stockByKey = new Map<string, { styleNo: string; color: string; qty: number }>();
   const warehouseByKey = new Map<string, number>();
+  const stockByItem = new Map<string, number>();
+  const warehouseByItem = new Map<string, number>();
   for (const r of stockRows ?? []) {
     if (!r.branch_name) continue;
     const { key, styleNo, color } = styleColorKeyOf(r.item_code);
     const rowStoreId = storeBranchToId.get(r.branch_name);
     if (!rowStoreId) {
       warehouseByKey.set(key, (warehouseByKey.get(key) ?? 0) + Number(r.closing_stock));
+      warehouseByItem.set(r.item_code, (warehouseByItem.get(r.item_code) ?? 0) + Number(r.closing_stock));
       continue;
     }
     if (storeId && rowStoreId !== storeId) continue;
     const cur = stockByKey.get(key) ?? { styleNo, color, qty: 0 };
     cur.qty += Number(r.closing_stock);
     stockByKey.set(key, cur);
+    stockByItem.set(r.item_code, (stockByItem.get(r.item_code) ?? 0) + Number(r.closing_stock));
   }
 
   // Sales Mix: net units (SALE - RETURN), OTHER (cancelled/unclassified)
@@ -169,6 +168,7 @@ export async function computeSaleStockMix(
   // (section 12 — "returns and cancelled orders should not inflate sales
   // quantity").
   const salesByKey = new Map<string, { styleNo: string; color: string; qty: number }>();
+  const salesByItem = new Map<string, number>();
   for (const r of saleRows ?? []) {
     if (!r.branch_name) continue;
     const rowStoreId = storeBranchToId.get(r.branch_name);
@@ -180,6 +180,7 @@ export async function computeSaleStockMix(
     const cur = salesByKey.get(key) ?? { styleNo, color, qty: 0 };
     cur.qty += sign * Number(r.total_quantity);
     salesByKey.set(key, cur);
+    salesByItem.set(r.item_code, (salesByItem.get(r.item_code) ?? 0) + sign * Number(r.total_quantity));
   }
 
   const totalStock = [...stockByKey.values()].reduce((s, v) => s + Math.max(0, v.qty), 0);
@@ -215,5 +216,33 @@ export async function computeSaleStockMix(
   }
 
   rows.sort((a, b) => b.mixGapPts - a.mixGapPts);
-  return { storeList, rows, totalSales, totalStock };
+
+  // Item-level rows for the attribute-wise views — same inclusion rule as
+  // above (drop an item with zero stock AND zero sales in scope), but no
+  // percentage/status computed here: those depend on which attribute the
+  // caller groups by, so lib/replenishment/mixAttributes.ts computes them
+  // client-side after the user picks a "View by" pill.
+  const allItemCodes = new Set<string>([...stockByItem.keys(), ...salesByItem.keys()]);
+  const itemRows: MixItemRow[] = [];
+  for (const itemCode of allItemCodes) {
+    const attrs = itemAttrs.get(itemCode);
+    const soh = stockByItem.get(itemCode) ?? 0;
+    const sales = Math.max(0, salesByItem.get(itemCode) ?? 0);
+    if (soh === 0 && sales === 0) continue;
+    itemRows.push({
+      itemCode,
+      styleNo: attrs?.styleNo ?? itemCode,
+      color: attrs?.color ?? "—",
+      size: attrs?.size ?? "—",
+      sizeGroup: attrs?.sizeGroup ?? "—",
+      gender: attrs?.gender ?? "—",
+      season: attrs?.season ?? "—",
+      mrp: attrs?.mrp ?? null,
+      sales,
+      soh,
+      warehouseAvailable: warehouseByItem.get(itemCode) ?? 0,
+    });
+  }
+
+  return { storeList, rows, itemRows, totalSales, totalStock };
 }
