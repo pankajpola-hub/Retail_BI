@@ -86,6 +86,19 @@ export function AttributeMixGrid({ rows, attributes }: { rows: AttributeMixRow[]
 
   return (
     <DataGrid<AttributeMixRow>
+      // Forces a full remount whenever the combo changes column COUNT/order
+      // (e.g. Gender -> Gender+Size). Columns here have no `field`, only
+      // `valueGetter` (there's no single flat property to point at — each
+      // combo position holds a different attribute), and AG Grid's internal
+      // column-state reconciliation across a columnDefs change got
+      // confused by that shape change, leaving stale/blank cells in some
+      // rows until a manual interaction forced a redraw. A key on the
+      // combo's own identity sidesteps whatever internal state it was
+      // carrying over, at the cost of losing sort/scroll position on
+      // switch — an acceptable trade for a table that just changed what
+      // it's showing entirely.
+      key={attributes.join("+")}
+      animateRows={false}
       rowData={rows}
       columnDefs={columnDefs}
       heightPx={Math.min(640, Math.max(160, 46 + rows.length * 40))}

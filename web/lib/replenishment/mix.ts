@@ -153,9 +153,16 @@ export async function computeSaleStockMix(
   // sold through — closing_stock 0/absent from the current snapshot — never
   // appears in vw_stock_with_scheme at all, so its attributes were
   // unreachable however complete item_master was. Confirmed live: ~95% of a
-  // sale sample's item_codes weren't in the stock view. A sale-only item's
-  // `size` falls back to its size_group (e.g. "KIDS" instead of "12") —
-  // the raw sales export itself carries no numeric size at all.
+  // sale sample's item_codes weren't in the stock view.
+  //
+  // Size and Size Group are separate attributes to the caller (Size and
+  // Size Group are now separate "View by" chips, 2026-08-25) — a sale-only
+  // item's `size` stays genuinely "Unclassified", it does NOT borrow its
+  // size_group's value. An earlier version of this code copied size_group
+  // into size as a "closest available" stand-in, which silently put
+  // size_group values (e.g. "KIDS") into the Size column — confusing once
+  // the two became independently selectable, so removed rather than kept
+  // as a fallback.
   const itemAttrs = new Map<
     string,
     { styleNo: string; color: string; size: string; sizeGroup: string; gender: string; season: string; mrp: number | null }
@@ -177,12 +184,11 @@ export async function computeSaleStockMix(
   for (const r of saleRows ?? []) {
     if (!itemAttrs.has(r.item_code)) {
       const mrpNum = r.mrp === null || r.mrp === undefined ? null : Number(r.mrp);
-      const sizeGroup = r.size_group ?? "—";
       itemAttrs.set(r.item_code, {
         styleNo: r.item_name ?? r.item_code,
         color: r.shade_name ?? "—",
-        size: sizeGroup, // no exact size in the sales export — size_group is the finest grain available here
-        sizeGroup,
+        size: "—", // no exact size in the sales export at all — see the header comment above
+        sizeGroup: r.size_group ?? "—",
         gender: r.gender ?? "—",
         season: r.season ?? "—",
         mrp: mrpNum !== null && Number.isFinite(mrpNum) && mrpNum > 0 ? mrpNum : null,
