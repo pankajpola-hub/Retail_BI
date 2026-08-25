@@ -110,7 +110,7 @@ export function UploadReportForm({ reportType }: { reportType: "sale" | "stock" 
     <form onSubmit={onSubmit} className="flex flex-col gap-3 border border-line-soft p-4">
       <label className="flex flex-col gap-1.5 text-sm">
         <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
-          {REPORT_LABELS[reportType]} (.xlsx or .xls, up to 20MB)
+          {REPORT_LABELS[reportType]} (.xlsx or .xls, up to 50MB)
         </span>
         <input ref={fileRef} type="file" accept=".xlsx,.xls" required disabled={busy} className="text-sm" />
       </label>
