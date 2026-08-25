@@ -16,6 +16,28 @@ import { createAdminClient } from "@/lib/supabase/admin";
  * every other privileged write in this app (see lib/data/admin.ts's own
  * header on restricted callers).
  */
+/**
+ * A signed upload URL + token the BROWSER uses directly (see
+ * app/api/data-upload/upload-url/route.ts) — the file's bytes never pass
+ * through a Next.js function at all with this path, which is the whole
+ * point: Vercel Serverless Functions have a hard ~4.5MB request-body
+ * ceiling (a platform limit, not something maxDuration or streaming can
+ * raise), and an ERP master/sale/stock report can easily exceed that.
+ * Confirmed live 2026-08-25: a master upload through the old
+ * proxy-through-our-function route failed with an unparseable (HTML, not
+ * JSON) response for exactly this reason.
+ */
+export async function createUploadUrl(bucket: string, relativePath: string): Promise<{ signedUrl: string; token: string; path: string }> {
+  const safeRelative = relativePath
+    .split("/")
+    .map((segment) => segment.replace(/[/\\]/g, "_"))
+    .join("/");
+  const supabase = createAdminClient();
+  const { data, error } = await supabase.storage.from(bucket).createSignedUploadUrl(safeRelative);
+  if (error) throw new Error(`Storage signed-upload-url failed: ${error.message}`);
+  return data;
+}
+
 export async function saveObjectFile(bucket: string, relativePath: string, file: File): Promise<string> {
   // relativePath is built server-side from a uuid and Date.now(), never
   // from raw user input, but strip separators out of the filename segment
