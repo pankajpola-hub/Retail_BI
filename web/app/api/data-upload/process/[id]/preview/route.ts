@@ -6,6 +6,11 @@ import { parseStockWorkbook } from "@/lib/erpReports/parseStockWorkbook";
 import { parseSchemeWorkbook } from "@/lib/erpReports/parseSchemeWorkbook";
 import { parseMasterWorkbook } from "@/lib/erpReports/parseMasterWorkbook";
 
+// See api/data-upload/upload/route.ts's note on this — downloading +
+// parsing a large workbook can plausibly exceed Vercel's default function
+// duration ceiling. 60 is the Hobby-plan ceiling itself.
+export const maxDuration = 60;
+
 type UploadRow = {
   report_type: "sale" | "stock" | "scheme" | "master";
   storage_path: string;
