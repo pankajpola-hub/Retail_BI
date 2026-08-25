@@ -1,5 +1,14 @@
 import "server-only";
+import { fetchAllRows } from "@/lib/data/client";
 import type { DataClient } from "@/lib/data/client";
+
+// `??` only replaces null/undefined, not "" — this app's ERP-sourced text
+// columns have, in the past, carried genuine empty strings rather than NULL
+// for "not set" (found 2026-08-25 in Sale vs Stock Mix). Every attribute
+// field below goes through this instead of a bare `?? "—"` for that reason.
+function orDash(v: string | null | undefined): string {
+  return v && v.trim() ? v : "—";
+}
 
 // Shared by web/app/(replenishment)/replenishment/page.tsx and
 // web/app/api/replenishment/download/route.ts — the network allocation
@@ -18,7 +27,10 @@ type StockRow = {
   item_name: string | null;
   shade_name: string | null;
   size: string | null;
+  size_group: string | null;
   gender: string | null;
+  season: string | null;
+  mrp: number | string | null;
   closing_stock: number;
 };
 type SaleRow = {
@@ -28,6 +40,22 @@ type SaleRow = {
   total_quantity: number;
   bill_type: string;
   gross_amount: number;
+  // 0085/0087 — item_master joined directly onto the sale row, independent
+  // of whether this item_code has any current stock (see the itemAttrs
+  // build-up below — the same fallback mix.ts already relies on, ported
+  // here because this file had the identical "barcode instead of style
+  // code" bug: itemToStyleColor used to be built from stock rows ONLY, so
+  // any item_code that had fully sold through (no current closing_stock
+  // row) silently fell back to `{ styleNo: itemCode }` — the barcode
+  // itself standing in for the style — even though a real master upload
+  // had the attributes all along, just unreachable via the stock-only path.
+  item_name: string | null;
+  shade_name: string | null;
+  gender: string | null;
+  size_group: string | null;
+  size: string | null;
+  season: string | null;
+  mrp: number | string | null;
 };
 
 export type Priority = "critical" | "high" | "medium" | "healthy" | "exhausted";
@@ -43,6 +71,29 @@ export type Action =
 
 export type SizeRow = { size: string; soh: number; sales30d: number; velocity: number };
 
+// Item_code (barcode) grain, network-wide (summed across all stores, same
+// scope as Sale vs Stock Mix's own item-level rows) — feeds the "View by"
+// attribute combo (Color / Size / Size Group / Gender / Season+Year / MRP
+// Range) client-side, same mechanism as lib/replenishment/mixAttributes.ts.
+// No recommendedQty here deliberately: that's a Style+Color+Store-grain
+// OUTPUT of the network allocation loop below, not a real per-item_code
+// number — splitting it across sizes would require inventing a per-size
+// allocation the engine never actually computed. This view is diagnostic
+// (stock vs demand), same as Sale vs Stock Mix, not a second allocator.
+export type ReplItemRow = {
+  itemCode: string;
+  styleNo: string;
+  color: string;
+  size: string;
+  sizeGroup: string;
+  gender: string;
+  season: string;
+  mrp: number | null;
+  soh: number; // store stock, network-wide
+  warehouseAvailable: number;
+  sales30d: number; // net units, last 30 days, network-wide
+};
+
 export type Row = {
   styleNo: string;
   color: string;
@@ -57,6 +108,12 @@ export type Row = {
   targetStock: number;
   recommendedQty: number;
   warehouseAvailable: number;
+  // Style-color-level attributes (constant across every size of this
+  // style+color) — sourced from itemAttrs below. Distinct from Size/Size
+  // Group, which are item_code (barcode) grain and only exist on itemRows.
+  gender: string;
+  season: string;
+  mrp: number | null;
   trend: Trend | null;
   trendPct: number | null;
   score: number;
@@ -112,7 +169,7 @@ export type ReplenishmentAssumptions = {
 export async function computeReplenishmentRows(
   supabase: DataClient,
   { targetCoverDays, leadTimeDays, safetyDays, scoreWeights: SCORE_W }: ReplenishmentAssumptions
-): Promise<{ storeList: StoreRow[]; rows: Row[]; totalWarehouseUnits: number }> {
+): Promise<{ storeList: StoreRow[]; rows: Row[]; itemRows: ReplItemRow[]; totalWarehouseUnits: number }> {
   const EXCESS_MULTIPLIER = 1.75; // stock this many times target = flagged excess, not just "healthy"
   const DEMAND_WEIGHTS = { w7: 0.4, w30: 0.3, w60: 0.2, w90: 0.1 };
   const SCORE_W_TOTAL =
@@ -129,23 +186,27 @@ export async function computeReplenishmentRows(
   // Every branch (store AND warehouse) — warehouse rows are whatever branch
   // isn't a known store, not a hardcoded name, so a renamed or additional
   // warehouse branch doesn't silently disappear from this page.
-  const [{ data: storesData }, { data: stockRows }, { data: saleRows }] = await Promise.all([
+  const [{ data: storesData }, stockRows, saleRows] = await Promise.all([
     supabase
       .schema("core")
       .from<StoreRow>("stores")
       .select("store_id, store_name, branch_name_erp")
       .order("store_id"),
-    supabase
-      .schema("sales")
-      .from<StockRow>("vw_stock_with_scheme")
-      .select("branch_name, item_code, item_name, shade_name, size, gender, closing_stock")
-      .limit(40000),
-    supabase
-      .schema("sales")
-      .from<SaleRow>("vw_sale_transactions_export")
-      .select("branch_name, item_code, bill_date, total_quantity, bill_type, gross_amount")
-      .gte("bill_date", fromDate)
-      .limit(100000),
+    fetchAllRows(() =>
+      supabase
+        .schema("sales")
+        .from<StockRow>("vw_stock_with_scheme")
+        .select("branch_name, item_code, item_name, shade_name, size, size_group, gender, season, mrp, closing_stock")
+    ),
+    fetchAllRows(() =>
+      supabase
+        .schema("sales")
+        .from<SaleRow>("vw_sale_transactions_export")
+        .select(
+          "branch_name, item_code, bill_date, total_quantity, bill_type, gross_amount, item_name, shade_name, gender, size_group, size, season, mrp"
+        )
+        .gte("bill_date", fromDate)
+    ),
   ]);
   const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004");
   const storeBranchToId = new Map(storeList.map((s) => [s.branch_name_erp, s.store_id]));
@@ -153,30 +214,77 @@ export async function computeReplenishmentRows(
   // --- Grain: Style No. + Color, not barcode (item_code = one row per
   // size). item_name in this data IS the style code, shade_name is the
   // color — a barcode-level table would split one merchandising decision
-  // into 5-8 near-duplicate rows, one per size. itemToStyleColor maps every
-  // barcode seen in STOCK to its style+color so sale rows (which only carry
-  // item_code) roll up the same way. ---
-  const itemToStyleColor = new Map<string, { styleNo: string; color: string }>();
-  const itemToSize = new Map<string, string>(); // size-level breakdown for critical rows
-  for (const r of stockRows ?? []) {
-    if (!itemToStyleColor.has(r.item_code)) {
-      itemToStyleColor.set(r.item_code, { styleNo: r.item_name ?? r.item_code, color: r.shade_name ?? "—" });
-    }
-    if (!itemToSize.has(r.item_code)) itemToSize.set(r.item_code, r.size ?? "—");
+  // into 5-8 near-duplicate rows, one per size.
+  //
+  // itemAttrs maps every barcode (item_code) seen anywhere to its full set
+  // of master attributes, built from TWO sources — stock first, then sale
+  // as a fallback — same dual-source pattern lib/replenishment/mix.ts uses
+  // and for the identical reason: an item_code that has fully sold through
+  // (closing_stock 0/absent) never appears in vw_stock_with_scheme at all,
+  // so relying on stock rows alone silently fell back to the barcode
+  // itself as the "style code" for any such item — a real bug, not a
+  // missing-master-data problem (the master upload's attributes ARE there,
+  // just unreachable via the stock-only path). vw_sale_transactions_export
+  // joins item_master directly onto the sale row regardless of current
+  // stock, so it's a real second source, not a guess. ---
+  const itemAttrs = new Map<
+    string,
+    { styleNo: string; color: string; size: string; sizeGroup: string; gender: string; season: string; mrp: number | null }
+  >();
+  function mrpOf(v: number | string | null): number | null {
+    const n = v === null || v === undefined ? null : Number(v);
+    return n !== null && Number.isFinite(n) && n > 0 ? n : null;
   }
+  for (const r of stockRows ?? []) {
+    if (!itemAttrs.has(r.item_code)) {
+      itemAttrs.set(r.item_code, {
+        styleNo: r.item_name ?? r.item_code,
+        color: orDash(r.shade_name),
+        size: orDash(r.size),
+        sizeGroup: orDash(r.size_group),
+        gender: orDash(r.gender),
+        season: orDash(r.season),
+        mrp: mrpOf(r.mrp),
+      });
+    }
+  }
+  for (const r of saleRows ?? []) {
+    if (!itemAttrs.has(r.item_code)) {
+      itemAttrs.set(r.item_code, {
+        styleNo: r.item_name ?? r.item_code,
+        color: orDash(r.shade_name),
+        size: orDash(r.size),
+        sizeGroup: orDash(r.size_group),
+        gender: orDash(r.gender),
+        season: orDash(r.season),
+        mrp: mrpOf(r.mrp),
+      });
+    }
+  }
+  // Style+Color-level attributes (constant across every size of that
+  // style+color) — one lookup per key, taken from the first item_code seen
+  // for it, for carrying gender/season/mrp onto Row without re-deriving
+  // them per candidate below.
+  const keyAttrs = new Map<string, { gender: string; season: string; mrp: number | null }>();
   function styleColorKeyOf(itemCode: string): { key: string; styleNo: string; color: string } {
-    const meta = itemToStyleColor.get(itemCode) ?? { styleNo: itemCode, color: "—" };
-    return { key: `${meta.styleNo}::${meta.color}`, styleNo: meta.styleNo, color: meta.color };
+    const meta = itemAttrs.get(itemCode) ?? { styleNo: itemCode, color: "—", gender: "—", season: "—", mrp: null };
+    const key = `${meta.styleNo}::${meta.color}`;
+    if (!keyAttrs.has(key)) keyAttrs.set(key, { gender: meta.gender, season: meta.season, mrp: meta.mrp });
+    return { key, styleNo: meta.styleNo, color: meta.color };
   }
 
-  // --- Aggregate stock: store-styleColor and warehouse-styleColor totals ---
+  // --- Aggregate stock: store-styleColor and warehouse-styleColor totals,
+  // plus item_code (barcode)-level, network-wide totals (itemStock/
+  // itemWarehouse) for the "View by" attribute combo — see ReplItemRow. ---
   const storeStock = new Map<string, Map<string, { qty: number; styleNo: string; color: string }>>(); // storeId -> styleColorKey -> {...}
   const warehouseStock = new Map<string, number>(); // styleColorKey -> qty
   const sizeStock = new Map<string, Map<string, Map<string, number>>>(); // storeId -> styleColorKey -> size -> qty
+  const itemStock = new Map<string, number>(); // item_code -> store qty, network-wide
+  const itemWarehouse = new Map<string, number>(); // item_code -> warehouse qty
   for (const r of stockRows ?? []) {
     if (!r.branch_name) continue;
     const { key, styleNo, color } = styleColorKeyOf(r.item_code);
-    const size = itemToSize.get(r.item_code) ?? "—";
+    const size = itemAttrs.get(r.item_code)?.size ?? "—";
     const storeId = storeBranchToId.get(r.branch_name);
     if (storeId) {
       const byStyle = storeStock.get(storeId) ?? new Map();
@@ -190,8 +298,11 @@ export async function computeReplenishmentRows(
       bySize.set(size, (bySize.get(size) ?? 0) + Number(r.closing_stock));
       byStyleSize.set(key, bySize);
       sizeStock.set(storeId, byStyleSize);
+
+      itemStock.set(r.item_code, (itemStock.get(r.item_code) ?? 0) + Number(r.closing_stock));
     } else {
       warehouseStock.set(key, (warehouseStock.get(key) ?? 0) + Number(r.closing_stock));
+      itemWarehouse.set(r.item_code, (itemWarehouse.get(r.item_code) ?? 0) + Number(r.closing_stock));
     }
   }
 
@@ -200,6 +311,7 @@ export async function computeReplenishmentRows(
   const salesValue90d = new Map<string, Map<string, number>>(); // storeId -> styleColorKey -> gross value, 90d
   const storeTotalValue90d = new Map<string, number>(); // storeId -> total gross value, 90d, all styles (productivity proxy)
   const sizeSales30d = new Map<string, Map<string, Map<string, number>>>(); // storeId -> styleColorKey -> size -> net units, 30d
+  const itemSales30d = new Map<string, number>(); // item_code -> net units, 30d, network-wide
   const today = new Date();
   const daysAgo = (dateStr: string) => (today.getTime() - new Date(dateStr).getTime()) / 86_400_000;
   for (const r of saleRows ?? []) {
@@ -221,12 +333,14 @@ export async function computeReplenishmentRows(
     demand.set(storeId, byStyle);
 
     if (age <= 30) {
-      const size = itemToSize.get(r.item_code) ?? "—";
+      const size = itemAttrs.get(r.item_code)?.size ?? "—";
       const byStyleSize = sizeSales30d.get(storeId) ?? new Map();
       const bySize = byStyleSize.get(key) ?? new Map();
       bySize.set(size, (bySize.get(size) ?? 0) + qty);
       byStyleSize.set(key, bySize);
       sizeSales30d.set(storeId, byStyleSize);
+
+      itemSales30d.set(r.item_code, (itemSales30d.get(r.item_code) ?? 0) + qty);
     }
 
     if (age <= 90) {
@@ -365,6 +479,7 @@ export async function computeReplenishmentRows(
     if (candidates.length === 0) continue;
     const styleNo = candidates[0]!.styleNo;
     const color = candidates[0]!.color;
+    const attrsForKey = keyAttrs.get(key) ?? { gender: "—", season: "—", mrp: null };
 
     // Network stock (warehouse + all stores) is zero but demand exists
     // somewhere -> EXHAUSTED, no replenish/transfer/purchase action.
@@ -385,6 +500,9 @@ export async function computeReplenishmentRows(
           targetStock: c.targetStock,
           recommendedQty: 0,
           warehouseAvailable: 0,
+          gender: attrsForKey.gender,
+          season: attrsForKey.season,
+          mrp: attrsForKey.mrp,
           trend: c.trend,
           trendPct: c.trendPct,
           score: c.score,
@@ -476,6 +594,9 @@ export async function computeReplenishmentRows(
         targetStock: c.targetStock,
         recommendedQty: allocated,
         warehouseAvailable: whTotal,
+        gender: attrsForKey.gender,
+        season: attrsForKey.season,
+        mrp: attrsForKey.mrp,
         trend: c.trend,
         trendPct: c.trendPct,
         score: c.score,
@@ -506,6 +627,9 @@ export async function computeReplenishmentRows(
         targetStock: c.targetStock,
         recommendedQty: 0,
         warehouseAvailable: whTotal,
+        gender: attrsForKey.gender,
+        season: attrsForKey.season,
+        mrp: attrsForKey.mrp,
         trend: c.trend,
         trendPct: c.trendPct,
         score: c.score,
@@ -523,7 +647,34 @@ export async function computeReplenishmentRows(
   }
 
   const totalWarehouseUnits = [...warehouseStock.values()].reduce((s, v) => s + v, 0);
-  return { storeList, rows, totalWarehouseUnits };
+
+  // Item-level rows for the "View by" attribute combo — same inclusion rule
+  // as the main grain above (drop an item with zero stock AND zero sales),
+  // no recommendedQty (see ReplItemRow's own comment for why).
+  const allItemCodes = new Set<string>([...itemStock.keys(), ...itemWarehouse.keys(), ...itemSales30d.keys()]);
+  const itemRows: ReplItemRow[] = [];
+  for (const itemCode of allItemCodes) {
+    const attrs = itemAttrs.get(itemCode);
+    const soh = itemStock.get(itemCode) ?? 0;
+    const warehouseAvailable = itemWarehouse.get(itemCode) ?? 0;
+    const sales30d = Math.max(0, itemSales30d.get(itemCode) ?? 0);
+    if (soh === 0 && warehouseAvailable === 0 && sales30d === 0) continue;
+    itemRows.push({
+      itemCode,
+      styleNo: attrs?.styleNo ?? itemCode,
+      color: attrs?.color ?? "—",
+      size: attrs?.size ?? "—",
+      sizeGroup: attrs?.sizeGroup ?? "—",
+      gender: attrs?.gender ?? "—",
+      season: attrs?.season ?? "—",
+      mrp: attrs?.mrp ?? null,
+      soh,
+      warehouseAvailable,
+      sales30d,
+    });
+  }
+
+  return { storeList, rows, itemRows, totalWarehouseUnits };
 }
 
 /** Same searchParams-parsing rules the page uses for the what-if assumption inputs — shared so the download route parses identically. */

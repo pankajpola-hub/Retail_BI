@@ -58,7 +58,21 @@ export function mrpBucketLabel(mrp: number | null, bucketSize: number): string {
   return `₹${lower.toLocaleString("en-IN")}–${upper.toLocaleString("en-IN")}`;
 }
 
-function attributeValueOf(row: MixItemRow, attribute: AttributeKey, mrpBucketSize: number): string {
+// Structural shape any per-item row needs to carry to be groupable by these
+// attributes — MixItemRow satisfies this today; lib/replenishment/
+// compute.ts's ReplItemRow (Replenishment's own "View by" combo, added
+// 2026-08-25) does too, with no import between the two files needed since
+// TypeScript checks this structurally.
+export type AttributeCarrier = {
+  color: string;
+  size: string;
+  sizeGroup: string;
+  gender: string;
+  season: string;
+  mrp: number | null;
+};
+
+export function attributeValueOf(row: AttributeCarrier, attribute: AttributeKey, mrpBucketSize: number): string {
   switch (attribute) {
     case "color":
       return row.color || "—";

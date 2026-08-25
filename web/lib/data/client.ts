@@ -72,3 +72,31 @@ export interface DataClient {
 export async function createClient(): Promise<DataClient> {
   return (await createSupabaseServerClient()) as unknown as DataClient;
 }
+
+/**
+ * Supabase's project "Max Rows" API setting caps every PostgREST response at
+ * 1000 regardless of .limit() — confirmed live 2026-08-25 against
+ * vw_stock_with_scheme/vw_sale_transactions_export (a bare .limit(40000)/
+ * .limit(100000) both silently returned exactly 1000 rows, no error). Pages
+ * through with .range() to get everything, one request per 1000 rows.
+ * `buildQuery` must construct the FULL chain (schema, from, select, filters)
+ * fresh each call — a query builder is single-use once awaited/range()'d, it
+ * can't be reused across pages. Shared here (moved out of
+ * lib/replenishment/mix.ts, which had its own private copy) since
+ * lib/replenishment/compute.ts hit the identical truncation on its own
+ * bare-.limit() stock/sale queries — silently dropping every row past the
+ * first 1000, a real contributor to attribute data looking incomplete.
+ */
+export async function fetchAllRows<T>(buildQuery: () => QueryChain<T>, pageSize = 1000): Promise<T[]> {
+  const all: T[] = [];
+  let from = 0;
+  for (;;) {
+    const { data, error } = await buildQuery().range(from, from + pageSize - 1);
+    if (error) throw new Error(error.message);
+    const rows = data ?? [];
+    all.push(...rows);
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return all;
+}

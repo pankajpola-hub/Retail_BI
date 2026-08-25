@@ -1,5 +1,6 @@
 import "server-only";
-import type { DataClient, QueryChain } from "@/lib/data/client";
+import { fetchAllRows } from "@/lib/data/client";
+import type { DataClient } from "@/lib/data/client";
 import { classifyMixGap, MIX_STATUS_META, type MixStatus } from "./mixShared";
 
 // Sale Mix vs Stock Mix — Style No. + Color level. Answers: "is the way
@@ -86,28 +87,6 @@ export type MixItemRow = {
 };
 
 export type SalesPeriodDays = 7 | 30 | 60 | 90;
-
-// Supabase's project "Max Rows" API setting caps every PostgREST response at
-// 1000 regardless of .limit() — confirmed live 2026-08-25: a bare
-// .limit(40000)/.limit(100000) on vw_stock_with_scheme/
-// vw_sale_transactions_export both silently returned exactly 1000 rows, no
-// error. This pages through with .range() to get everything, one request
-// per 1000 rows. `buildQuery` must construct the FULL chain (schema, from,
-// select, filters) fresh each call — a Supabase query builder is single-use
-// once awaited/range()'d, it can't be reused across pages.
-async function fetchAllRows<T>(buildQuery: () => QueryChain<T>, pageSize = 1000): Promise<T[]> {
-  const all: T[] = [];
-  let from = 0;
-  for (;;) {
-    const { data, error } = await buildQuery().range(from, from + pageSize - 1);
-    if (error) throw new Error(error.message);
-    const rows = data ?? [];
-    all.push(...rows);
-    if (rows.length < pageSize) break;
-    from += pageSize;
-  }
-  return all;
-}
 
 export async function computeSaleStockMix(
   supabase: DataClient,
