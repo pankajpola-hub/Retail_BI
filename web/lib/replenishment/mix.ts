@@ -1,5 +1,5 @@
 import "server-only";
-import type { DataClient } from "@/lib/data/client";
+import type { DataClient, QueryChain } from "@/lib/data/client";
 import { classifyMixGap, MIX_STATUS_META, type MixStatus } from "./mixShared";
 
 // Sale Mix vs Stock Mix — Style No. + Color level. Answers: "is the way
@@ -31,6 +31,16 @@ type SaleRow = {
   bill_date: string;
   total_quantity: number;
   bill_type: string;
+  // 0085 — item_master joined directly onto the sale row, independent of
+  // whether this item_code has any current stock. See the itemAttrs
+  // build-up below for why this matters: most sold items have already
+  // sold through and never appear in vw_stock_with_scheme at all.
+  item_name: string | null;
+  shade_name: string | null;
+  season: string | null;
+  gender: string | null;
+  size_group: string | null;
+  mrp: number | string | null;
 };
 
 export type MixRow = {
@@ -67,6 +77,28 @@ export type MixItemRow = {
 
 export type SalesPeriodDays = 7 | 30 | 60 | 90;
 
+// Supabase's project "Max Rows" API setting caps every PostgREST response at
+// 1000 regardless of .limit() — confirmed live 2026-08-25: a bare
+// .limit(40000)/.limit(100000) on vw_stock_with_scheme/
+// vw_sale_transactions_export both silently returned exactly 1000 rows, no
+// error. This pages through with .range() to get everything, one request
+// per 1000 rows. `buildQuery` must construct the FULL chain (schema, from,
+// select, filters) fresh each call — a Supabase query builder is single-use
+// once awaited/range()'d, it can't be reused across pages.
+async function fetchAllRows<T>(buildQuery: () => QueryChain<T>, pageSize = 1000): Promise<T[]> {
+  const all: T[] = [];
+  let from = 0;
+  for (;;) {
+    const { data, error } = await buildQuery().range(from, from + pageSize - 1);
+    if (error) throw new Error(error.message);
+    const rows = data ?? [];
+    all.push(...rows);
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return all;
+}
+
 export async function computeSaleStockMix(
   supabase: DataClient,
   { storeId, salesPeriodDays }: { storeId: string; salesPeriodDays: SalesPeriodDays }
@@ -82,25 +114,27 @@ export async function computeSaleStockMix(
   const fromDate = periodStart.toISOString().slice(0, 10);
 
   // stores/stock/sale are independent — stores is only used AFTER all three
-  // resolve (grouping), never as an input filter here. Previously fetched
-  // sequentially before the other two; now genuinely parallel.
-  const [{ data: storesData }, { data: stockRows }, { data: saleRows }] = await Promise.all([
+  // resolve (grouping), never as an input filter here. Genuinely parallel;
+  // stock and sale each page internally via fetchAllRows above.
+  const [{ data: storesData }, stockRows, saleRows] = await Promise.all([
     supabase
       .schema("core")
       .from<StoreRow>("stores")
       .select("store_id, store_name, branch_name_erp")
       .order("store_id"),
-    supabase
-      .schema("sales")
-      .from<StockRow>("vw_stock_with_scheme")
-      .select("branch_name, item_code, item_name, shade_name, size, size_group, gender, season, mrp, closing_stock")
-      .limit(40000),
-    supabase
-      .schema("sales")
-      .from<SaleRow>("vw_sale_transactions_export")
-      .select("branch_name, item_code, bill_date, total_quantity, bill_type")
-      .gte("bill_date", fromDate)
-      .limit(100000),
+    fetchAllRows(() =>
+      supabase
+        .schema("sales")
+        .from<StockRow>("vw_stock_with_scheme")
+        .select("branch_name, item_code, item_name, shade_name, size, size_group, gender, season, mrp, closing_stock")
+    ),
+    fetchAllRows(() =>
+      supabase
+        .schema("sales")
+        .from<SaleRow>("vw_sale_transactions_export")
+        .select("branch_name, item_code, bill_date, total_quantity, bill_type, item_name, shade_name, season, gender, size_group, mrp")
+        .gte("bill_date", fromDate)
+    ),
   ]);
   const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004");
   const storeBranchToId = new Map(storeList.map((s) => [s.branch_name_erp, s.store_id]));
@@ -110,6 +144,18 @@ export async function computeSaleStockMix(
   // carries every other attribute (size, gender, season, mrp) an item_code
   // has, for the attribute-wise views — one lookup built once, reused by
   // both grains below.
+  //
+  // Built from TWO sources, stock first then sale as a fallback — not
+  // because stock is more "authoritative", but because it's the only one
+  // with an exact `size` (raw_logic.item_master has no per-barcode size
+  // column, only size_group; ss.size in stock_snapshot is ERP-native).
+  // Without the sale-side fallback (0085), any item_code that has fully
+  // sold through — closing_stock 0/absent from the current snapshot — never
+  // appears in vw_stock_with_scheme at all, so its attributes were
+  // unreachable however complete item_master was. Confirmed live: ~95% of a
+  // sale sample's item_codes weren't in the stock view. A sale-only item's
+  // `size` falls back to its size_group (e.g. "KIDS" instead of "12") —
+  // the raw sales export itself carries no numeric size at all.
   const itemAttrs = new Map<
     string,
     { styleNo: string; color: string; size: string; sizeGroup: string; gender: string; season: string; mrp: number | null }
@@ -122,6 +168,21 @@ export async function computeSaleStockMix(
         color: r.shade_name ?? "—",
         size: r.size ?? "—",
         sizeGroup: r.size_group ?? "—",
+        gender: r.gender ?? "—",
+        season: r.season ?? "—",
+        mrp: mrpNum !== null && Number.isFinite(mrpNum) && mrpNum > 0 ? mrpNum : null,
+      });
+    }
+  }
+  for (const r of saleRows ?? []) {
+    if (!itemAttrs.has(r.item_code)) {
+      const mrpNum = r.mrp === null || r.mrp === undefined ? null : Number(r.mrp);
+      const sizeGroup = r.size_group ?? "—";
+      itemAttrs.set(r.item_code, {
+        styleNo: r.item_name ?? r.item_code,
+        color: r.shade_name ?? "—",
+        size: sizeGroup, // no exact size in the sales export — size_group is the finest grain available here
+        sizeGroup,
         gender: r.gender ?? "—",
         season: r.season ?? "—",
         mrp: mrpNum !== null && Number.isFinite(mrpNum) && mrpNum > 0 ? mrpNum : null,

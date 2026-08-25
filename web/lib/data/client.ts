@@ -30,6 +30,15 @@ export interface QueryChain<T = unknown> extends PromiseLike<PostgrestResult<T[]
   in(col: string, vals: unknown[]): QueryChain<T>;
   order(col: string, opts?: { ascending?: boolean }): QueryChain<T>;
   limit(n: number): QueryChain<T>;
+  // Supabase's project "Max Rows" API setting silently caps EVERY query at
+  // that value (1000 here) regardless of what .limit() asks for — a bare
+  // .limit(40000) does not raise it, PostgREST just returns 1000 rows with
+  // no error. .range() is the only way to get more: page through with it
+  // rather than relying on .limit() alone once a result can plausibly
+  // exceed 1000 rows. See lib/replenishment/mix.ts's fetchAllRows() for the
+  // paging helper this enables — found live 2026-08-25 when Sale vs Stock
+  // Mix's attribute views were silently missing ~95% of sale rows.
+  range(from: number, to: number): QueryChain<T>;
   single(): SingleQueryChain<T>;
   maybeSingle(): SingleQueryChain<T>;
   insert(row: Record<string, unknown> | Record<string, unknown>[]): QueryChain<T>;
