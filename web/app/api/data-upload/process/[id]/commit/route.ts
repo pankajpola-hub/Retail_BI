@@ -168,6 +168,7 @@ export async function POST(_request: Request, { params }: { params: { id: string
         market_segment: r.marketSegment,
         gender: r.gender,
         size_group: r.sizeGroup,
+        size: r.size,
         mrp: r.mrp,
       }));
 

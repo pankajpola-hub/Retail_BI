@@ -40,8 +40,18 @@ type SaleRow = {
   season: string | null;
   gender: string | null;
   size_group: string | null;
+  size: string | null; // 0087 — item_master's exact size (was missing entirely before)
   mrp: number | string | null;
 };
+
+// `??` only replaces null/undefined, not "" — and this app's ERP-sourced
+// text columns have, in the past, carried genuine empty strings rather than
+// NULL for "not set" (a real bug found 2026-08-25: blank grid cells where
+// "—" was expected). Every attribute field below goes through this instead
+// of a bare `?? "—"` for that reason.
+function orDash(v: string | null | undefined): string {
+  return v && v.trim() ? v : "—";
+}
 
 export type MixRow = {
   styleNo: string;
@@ -132,7 +142,7 @@ export async function computeSaleStockMix(
       supabase
         .schema("sales")
         .from<SaleRow>("vw_sale_transactions_export")
-        .select("branch_name, item_code, bill_date, total_quantity, bill_type, item_name, shade_name, season, gender, size_group, mrp")
+        .select("branch_name, item_code, bill_date, total_quantity, bill_type, item_name, shade_name, season, gender, size_group, size, mrp")
         .gte("bill_date", fromDate)
     ),
   ]);
@@ -145,24 +155,17 @@ export async function computeSaleStockMix(
   // has, for the attribute-wise views — one lookup built once, reused by
   // both grains below.
   //
-  // Built from TWO sources, stock first then sale as a fallback — not
-  // because stock is more "authoritative", but because it's the only one
-  // with an exact `size` (raw_logic.item_master has no per-barcode size
-  // column, only size_group; ss.size in stock_snapshot is ERP-native).
-  // Without the sale-side fallback (0085), any item_code that has fully
-  // sold through — closing_stock 0/absent from the current snapshot — never
-  // appears in vw_stock_with_scheme at all, so its attributes were
-  // unreachable however complete item_master was. Confirmed live: ~95% of a
-  // sale sample's item_codes weren't in the stock view.
-  //
-  // Size and Size Group are separate attributes to the caller (Size and
-  // Size Group are now separate "View by" chips, 2026-08-25) — a sale-only
-  // item's `size` stays genuinely "Unclassified", it does NOT borrow its
-  // size_group's value. An earlier version of this code copied size_group
-  // into size as a "closest available" stand-in, which silently put
-  // size_group values (e.g. "KIDS") into the Size column — confusing once
-  // the two became independently selectable, so removed rather than kept
-  // as a fallback.
+  // Built from TWO sources, stock first then sale as a fallback. Both now
+  // carry a real exact `size` (0087 added raw_logic.item_master.size — it
+  // never existed before, so a sale-only item_code genuinely had no size
+  // to read; see that migration's header for the full story, including a
+  // master-upload parser bug that had been folding a literal "Size" column
+  // into size_group instead). Without the sale-side fallback (0085) at
+  // all, any item_code that has fully sold through — closing_stock
+  // 0/absent from the current snapshot — never appears in
+  // vw_stock_with_scheme, so its attributes were unreachable regardless of
+  // item_master's completeness. Confirmed live: ~95% of a sale sample's
+  // item_codes weren't in the stock view.
   const itemAttrs = new Map<
     string,
     { styleNo: string; color: string; size: string; sizeGroup: string; gender: string; season: string; mrp: number | null }
@@ -172,11 +175,11 @@ export async function computeSaleStockMix(
       const mrpNum = r.mrp === null || r.mrp === undefined ? null : Number(r.mrp);
       itemAttrs.set(r.item_code, {
         styleNo: r.item_name ?? r.item_code,
-        color: r.shade_name ?? "—",
-        size: r.size ?? "—",
-        sizeGroup: r.size_group ?? "—",
-        gender: r.gender ?? "—",
-        season: r.season ?? "—",
+        color: orDash(r.shade_name),
+        size: orDash(r.size),
+        sizeGroup: orDash(r.size_group),
+        gender: orDash(r.gender),
+        season: orDash(r.season),
         mrp: mrpNum !== null && Number.isFinite(mrpNum) && mrpNum > 0 ? mrpNum : null,
       });
     }
@@ -186,11 +189,11 @@ export async function computeSaleStockMix(
       const mrpNum = r.mrp === null || r.mrp === undefined ? null : Number(r.mrp);
       itemAttrs.set(r.item_code, {
         styleNo: r.item_name ?? r.item_code,
-        color: r.shade_name ?? "—",
-        size: "—", // no exact size in the sales export at all — see the header comment above
-        sizeGroup: r.size_group ?? "—",
-        gender: r.gender ?? "—",
-        season: r.season ?? "—",
+        color: orDash(r.shade_name),
+        size: orDash(r.size), // 0087 — item_master's own size, joined onto the sale row directly
+        sizeGroup: orDash(r.size_group),
+        gender: orDash(r.gender),
+        season: orDash(r.season),
         mrp: mrpNum !== null && Number.isFinite(mrpNum) && mrpNum > 0 ? mrpNum : null,
       });
     }
