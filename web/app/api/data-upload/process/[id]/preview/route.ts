@@ -61,13 +61,19 @@ export async function POST(_request: Request, { params }: { params: { id: string
 
   try {
     if (upload.report_type === "sale") {
-      const { rows, sheetName } = parseSaleWorkbook(arrayBuffer);
+      // Multi-sheet, financial-year-wise workbooks (2026-08-25) — see
+      // parseSaleWorkbook's own header for why this can be more than one
+      // sheet. skippedSheets surfaces any sheet that didn't look like a
+      // data sheet (e.g. a cover tab) so a real mismatch isn't silently
+      // invisible, same spirit as row-level sampleErrors below.
+      const { rows, sheetNames, skippedSheets } = parseSaleWorkbook(arrayBuffer);
       const errorRows = rows.filter((r) => r.error);
       return NextResponse.json({
         ok: true,
         data: {
           reportType: "sale",
-          sheetName,
+          sheetName: sheetNames.join(", "),
+          skippedSheets,
           totalRows: rows.length,
           validRows: rows.length - errorRows.length,
           errorRows: errorRows.length,
