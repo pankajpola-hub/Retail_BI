@@ -34,6 +34,7 @@ export type ParsedMasterRow = {
   marketSegment: string | null;
   gender: string | null;
   sizeGroup: string | null;
+  size: string | null;
   mrp: number | null;
   error: string | null; // kept for shape-consistency with the other parsers; always null in the returned set
 };
@@ -49,6 +50,7 @@ export type MasterField =
   | "marketSegment"
   | "gender"
   | "sizeGroup"
+  | "size"
   | "mrp";
 
 /** field -> the header text in the user's file that mapped to it (null = no column found). */
@@ -71,6 +73,12 @@ export type ParsedMasterWorkbook = {
  * claim a field wins — a second "Size" column later in the file is ignored
  * rather than overwriting the first.
  */
+// 2026-08-25: `size` used to be one of sizeGroup's aliases — a column
+// literally named "Size" in a customer's master file silently landed in
+// size_group, and no upload of any completeness could populate an exact
+// size at all (raw_logic.item_master had no column for it either, see
+// migration 0087). Now genuinely separate fields/aliases: "Size" maps to
+// the new `size` field, "Size Group"/"SizeGroup" still maps to sizeGroup.
 const FIELD_ALIASES: Record<MasterField, string[]> = {
   itemCode: ["itemcode", "item", "articlecode", "sku", "styleno", "stylecode"],
   itemName: ["itemname", "style", "stylename", "description"],
@@ -81,7 +89,8 @@ const FIELD_ALIASES: Record<MasterField, string[]> = {
   season: ["season"],
   marketSegment: ["marketsegment", "segment"],
   gender: ["gender"],
-  sizeGroup: ["sizegroup", "size"],
+  sizeGroup: ["sizegroup"],
+  size: ["size"],
   mrp: ["mrp", "price", "retailprice"],
 };
 
@@ -212,6 +221,7 @@ export function parseMasterWorkbook(buffer: ArrayBuffer): ParsedMasterWorkbook {
       marketSegment: cellToString(cellAt(r, "marketSegment")),
       gender: cellToString(cellAt(r, "gender")),
       sizeGroup: cellToString(cellAt(r, "sizeGroup")),
+      size: cellToString(cellAt(r, "size")),
       // cellToNumber returns null (never NaN) for anything non-numeric.
       mrp: cellToNumber(cellAt(r, "mrp")),
       error: null,
