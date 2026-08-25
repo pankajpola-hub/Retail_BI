@@ -49,6 +49,16 @@ export function ReplenishmentFacetedContent({ rows, itemRows }: { rows: Row[]; i
   const [mrpBucketSize, setMrpBucketSize] = useState(DEFAULT_MRP_BUCKET_SIZE);
   const [dragOverZone, setDragOverZone] = useState(false);
   const [state, setState] = useState<FacetFilterState>(emptyFilterState);
+  // Persistent Store scope (2026-08-25 fix) — the "View by" attribute combo
+  // replaces FacetFilterBar entirely with AttributeReplenishmentGrid below
+  // (same as Sale vs Stock Mix's own combo bar), and FacetFilterBar was the
+  // ONLY place Store filtering lived on this tab (just one of its facet
+  // buttons) — so switching to an attribute combo silently made Store
+  // filtering disappear. This dropdown lives OUTSIDE that toggle, always
+  // visible, and scopes BOTH views (it's in addition to, not instead of,
+  // the Store facet button still inside FacetFilterBar for the default
+  // view, which supports multi-select).
+  const [storeFilter, setStoreFilter] = useState("");
 
   const facets = useMemo<FacetDef<Row>[]>(
     () => [
@@ -100,12 +110,29 @@ export function ReplenishmentFacetedContent({ rows, itemRows }: { rows: Row[]; i
     []
   );
 
-  const filtered = useMemo(() => applyFacetFilter(rows, facets, advFields, state), [rows, facets, advFields, state]);
+  // Unique stores present in the data, in Row order (already store_id
+  // ordered server-side) — no separate storeList fetch needed.
+  const storeOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const r of rows) if (!seen.has(r.storeId)) seen.set(r.storeId, r.storeName);
+    return [...seen.entries()];
+  }, [rows]);
+
+  const scopedRows = useMemo(() => (storeFilter ? rows.filter((r) => r.storeId === storeFilter) : rows), [rows, storeFilter]);
+  const scopedItemRows = useMemo(
+    () => (storeFilter ? itemRows.filter((r) => r.storeId === storeFilter) : itemRows),
+    [itemRows, storeFilter]
+  );
+
+  const filtered = useMemo(
+    () => applyFacetFilter(scopedRows, facets, advFields, state),
+    [scopedRows, facets, advFields, state]
+  );
   const gridRows = useMemo(() => buildGroupedRows(filtered, state.groupBy, groupKeyGetters), [filtered, state.groupBy, groupKeyGetters]);
 
   const attributeRows = useMemo(
-    () => aggregateReplenishmentByAttributes(itemRows, combo, mrpBucketSize),
-    [itemRows, combo, mrpBucketSize]
+    () => aggregateReplenishmentByAttributes(scopedItemRows, combo, mrpBucketSize),
+    [scopedItemRows, combo, mrpBucketSize]
   );
 
   const poolAttributes = ATTRIBUTE_KEYS.filter((a) => !combo.includes(a));
@@ -126,11 +153,30 @@ export function ReplenishmentFacetedContent({ rows, itemRows }: { rows: Row[]; i
 
   return (
     <>
-      <div className="mb-3">
-        <span className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
           View by — drag attributes into the box to combine
         </span>
+        {/* Always visible, in both the default and attribute-combo views —
+            see storeFilter's own comment above for why. */}
+        <label className="flex items-center gap-1.5 text-[12.5px] text-ink-2">
+          Store
+          <select
+            value={storeFilter}
+            onChange={(e) => setStoreFilter(e.target.value)}
+            className="border border-line-soft bg-surface px-2 py-1 text-[12.5px]"
+          >
+            <option value="">All stores</option>
+            {storeOptions.map(([id, name]) => (
+              <option key={id} value={id}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
 
+      <div className="mb-3">
         <div className="flex flex-wrap items-start gap-3">
           {/* Pool — attributes not currently in the combo. Drag one into
               the drop zone, or click it as a shortcut for the same thing. */}
@@ -222,7 +268,7 @@ export function ReplenishmentFacetedContent({ rows, itemRows }: { rows: Row[]; i
         <>
           <FacetFilterBar
             pageKey={PAGE_KEY}
-            rows={rows}
+            rows={scopedRows}
             facets={facets}
             advFields={advFields}
             groupByOptions={groupByOptions}
@@ -230,7 +276,9 @@ export function ReplenishmentFacetedContent({ rows, itemRows }: { rows: Row[]; i
             onChange={setState}
           />
           <div className="mb-2 text-[12px] text-ink-3">
-            {filtered.length === rows.length ? `${filtered.length} rows` : `${filtered.length} of ${rows.length} rows`}
+            {filtered.length === scopedRows.length
+              ? `${filtered.length} rows`
+              : `${filtered.length} of ${scopedRows.length} rows`}
           </div>
           <ReplenishmentGrid rows={gridRows} preserveOrder={state.groupBy.length > 0} />
         </>
