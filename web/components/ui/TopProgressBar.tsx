@@ -25,9 +25,18 @@ import { usePathname, useSearchParams } from "next/navigation";
  *    itself right before calling router.push (see StoreFilter.tsx).
  *  - Completion: `usePathname`/`useSearchParams` changing means the new
  *    route has actually rendered, so the bar hides. A safety-net timeout
- *    also hides it after 6s in case a submit never changes the URL (e.g. a
+ *    also hides it after 20s in case a submit never changes the URL (e.g. a
  *    Server Action that only revalidates data in place) so it can never get
  *    stuck showing forever.
+ *  - A "progressbar:stop" CustomEvent on `window` — for a multi-step
+ *    client-side flow that never changes the URL at all (2026-08-25:
+ *    ProcessButton's preview -> commit sequence on the Data Upload page
+ *    calls router.refresh(), which re-fetches server data in place without
+ *    touching pathname/searchParams), the route-change completion signal
+ *    never fires. Such a flow dispatches "progressbar:start" itself right
+ *    before its fetch and "progressbar:stop" right after, rather than
+ *    relying on the 20s fallback timer (correct, but far too slow to be
+ *    the normal path for an operation that usually takes 1-2s).
  *
  * Only actually becomes visible if 500ms pass without the matching
  * completion — fast interactions (most of them) never flash it at all.
@@ -92,6 +101,10 @@ function TopProgressBarInner() {
       start();
     }
 
+    function onCustomStop() {
+      stop();
+    }
+
     function onClick(e: MouseEvent) {
       if (e.defaultPrevented || e.button !== 0) return;
       if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -123,11 +136,13 @@ function TopProgressBarInner() {
     document.addEventListener("submit", onSubmit, true);
     document.addEventListener("change", onSelectChange, true);
     window.addEventListener("progressbar:start", onCustomStart);
+    window.addEventListener("progressbar:stop", onCustomStop);
     return () => {
       document.removeEventListener("click", onClick, true);
       document.removeEventListener("submit", onSubmit, true);
       document.removeEventListener("change", onSelectChange, true);
       window.removeEventListener("progressbar:start", onCustomStart);
+      window.removeEventListener("progressbar:stop", onCustomStop);
       stop();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
