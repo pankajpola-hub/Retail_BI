@@ -76,6 +76,7 @@ type ApplyStore = <T extends { eq: (col: string, val: string) => T; in: (col: st
 async function SharedCoreSection({
   supabase,
   applyStore,
+  applyChannel,
   from,
   to,
   showEbo,
@@ -83,6 +84,7 @@ async function SharedCoreSection({
 }: {
   supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
   applyStore: ApplyStore;
+  applyChannel: ApplyStore;
   from: string;
   to: string;
   showEbo: boolean;
@@ -95,7 +97,9 @@ async function SharedCoreSection({
         ) as unknown as QueryChain<EboDailyRow>)
       : Promise.resolve({ data: [] as EboDailyRow[] }),
     showEcomm
-      ? (supabase.schema("sales").from<EcommDailyRow>("vw_ecomm_daily").select("channel, order_date, net_selling_value, gross_mrp_value, discount_value, units").gte("order_date", from).lte("order_date", to) as unknown as QueryChain<EcommDailyRow>)
+      ? (applyChannel(
+          supabase.schema("sales").from<EcommDailyRow>("vw_ecomm_daily").select("channel, order_date, net_selling_value, gross_mrp_value, discount_value, units").gte("order_date", from).lte("order_date", to)
+        ) as unknown as QueryChain<EcommDailyRow>)
       : Promise.resolve({ data: [] as EcommDailyRow[] }),
   ] as const);
 
@@ -469,29 +473,41 @@ type EcommReturnRow = { reverse_pickup_code: string; status: string | null; retu
  */
 async function EcommDetailSection({
   supabase,
+  applyChannel,
   from,
   to,
   channel,
   channelHref,
 }: {
   supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
+  applyChannel: ApplyStore;
   from: string;
   to: string;
   channel: string | null;
   channelHref: (target: string | null) => string;
 }) {
-  let linesQuery = supabase
-    .schema("sales")
-    .from<EcommLineRow>("vw_ecomm_order_lines")
-    .select("channel, item_sku, style, status, selling_price, mrp, discount")
-    .gte("order_date", from)
-    .lte("order_date", to) as unknown as QueryChain<EcommLineRow>;
+  // applyChannel (the page-level ScopeBar scope, `channels` param) is
+  // applied to all three queries below so the filter narrows everything on
+  // this page consistently — the row-click drill-down (`channel`, singular)
+  // is a further single-channel zoom ON TOP of that, applied after.
+  let linesQuery = applyChannel(
+    supabase
+      .schema("sales")
+      .from<EcommLineRow>("vw_ecomm_order_lines")
+      .select("channel, item_sku, style, status, selling_price, mrp, discount")
+      .gte("order_date", from)
+      .lte("order_date", to)
+  ) as unknown as QueryChain<EcommLineRow>;
   if (channel) linesQuery = linesQuery.eq("channel", channel) as unknown as QueryChain<EcommLineRow>;
 
   const [{ data: dailyRows }, { data: lineRows }, { data: returnRows }] = await timeAll("sales:ecomm_detail", [
-    supabase.schema("sales").from<EcommDailyRow>("vw_ecomm_daily").select("*").gte("order_date", from).lte("order_date", to) as unknown as QueryChain<EcommDailyRow>,
+    applyChannel(
+      supabase.schema("sales").from<EcommDailyRow>("vw_ecomm_daily").select("*").gte("order_date", from).lte("order_date", to)
+    ) as unknown as QueryChain<EcommDailyRow>,
     linesQuery,
-    supabase.schema("sales").from<EcommReturnRow>("vw_ecomm_returns").select("reverse_pickup_code, status, return_date").gte("return_date", from).lte("return_date", to) as unknown as QueryChain<EcommReturnRow>,
+    applyChannel(
+      supabase.schema("sales").from<EcommReturnRow>("vw_ecomm_returns").select("reverse_pickup_code, status, return_date").gte("return_date", from).lte("return_date", to)
+    ) as unknown as QueryChain<EcommReturnRow>,
   ] as const);
 
   const daily = dailyRows ?? [];
@@ -667,7 +683,7 @@ function SharedCoreSkeleton() {
 export default async function SalesPage({
   searchParams,
 }: {
-  searchParams: { from?: string; to?: string; store?: string; bu?: string; channel?: string };
+  searchParams: { from?: string; to?: string; store?: string; bu?: string; channel?: string; channels?: string };
 }) {
   // Role-only gate for this first cut — see the file header for why the real
   // narrowing is per-vertical (resolveViewScope.granted) rather than one
@@ -698,14 +714,29 @@ export default async function SalesPage({
     return q.in(col, storeFilters);
   };
 
+  // Ecomm channel SCOPE filter (2026-08-26, Pankaj) — separate URL param
+  // (`channels`, plural) from the pre-existing single-value `channel` drill-
+  // down below, so the two don't collide: this one is the ScopeBar-level
+  // "which channels am I even looking at" scope (same role `store`/
+  // applyStore plays for EBO, applied to every ecomm query below), the
+  // drill-down is a row-click zoom-in on top of whatever this has already
+  // narrowed to.
+  const channelFilters = (searchParams.channels ?? "").split(",").filter(Boolean);
+  const applyChannel: ApplyStore = (q, col = "channel") => {
+    if (channelFilters.length === 0) return q;
+    if (channelFilters.length === 1) return q.eq(col, channelFilters[0] as string);
+    return q.in(col, channelFilters);
+  };
+
   // Ecomm channel drill-down — URL state, ported from app/(ecomm)/ecomm's own
   // channelHref, so clicking a channel row scopes the SKU table without
-  // losing the page's vertical/store/date selections.
+  // losing the page's vertical/store/date/channels-scope selections.
   const channel = searchParams.channel || null;
   function channelHref(target: string | null) {
     const params = new URLSearchParams();
     if (searchParams.bu) params.set("bu", searchParams.bu);
     if (searchParams.store) params.set("store", searchParams.store);
+    if (searchParams.channels) params.set("channels", searchParams.channels);
     if (from) params.set("from", from);
     if (to) params.set("to", to);
     if (target) params.set("channel", target);
@@ -720,6 +751,15 @@ export default async function SalesPage({
   const { data: stores } = showEbo
     ? await supabase.schema("core").from<StoreRow>("stores").select("store_id, store_name").order("store_id")
     : { data: [] as StoreRow[] };
+
+  // Channel picker — mirror-opposite of the store picker: only fetched
+  // while ECOM is in scope. Small, cacheable distinct list (a handful of
+  // marketplace names), deduped client-side rather than reaching for a
+  // dedicated distinct-value RPC for such a small result set.
+  const { data: channelRowsRaw } = showEcomm
+    ? await supabase.schema("sales").from<{ channel: string }>("vw_ecomm_daily").select("channel").order("channel")
+    : { data: [] as { channel: string }[] };
+  const allChannels = [...new Set((channelRowsRaw ?? []).map((r) => r.channel).filter(Boolean))];
   const activeStores = (stores ?? []).filter((s) => s.store_id !== "BO-004" && s.store_id !== "BO-002");
   const storeNames = new Map(activeStores.map((s) => [s.store_id, s.store_name]));
 
@@ -745,8 +785,15 @@ export default async function SalesPage({
                 selected={storeFilters}
                 allLabel="All stores"
               />
+            ) : showEcomm ? (
+              <MultiSelectFilter
+                paramName="channels"
+                options={allChannels}
+                selected={channelFilters}
+                allLabel="All channels"
+              />
             ) : (
-              <span className="text-[12.5px] text-ink-3">— (ecomm has no store axis)</span>
+              <span className="text-[12.5px] text-ink-3">— (select a vertical)</span>
             )
           }
         />
@@ -755,7 +802,15 @@ export default async function SalesPage({
       <SectionErrorBoundary label="Sales overview">
         <Suspense fallback={<SharedCoreSkeleton />}>
           <div className="mt-6">
-            <SharedCoreSection supabase={supabase} applyStore={applyStore} from={from} to={to} showEbo={showEbo} showEcomm={showEcomm} />
+            <SharedCoreSection
+              supabase={supabase}
+              applyStore={applyStore}
+              applyChannel={applyChannel}
+              from={from}
+              to={to}
+              showEbo={showEbo}
+              showEcomm={showEcomm}
+            />
           </div>
         </Suspense>
       </SectionErrorBoundary>
@@ -794,7 +849,14 @@ export default async function SalesPage({
         <SectionErrorBoundary label="Ecomm detail">
           <Suspense fallback={<EcommDetailSkeleton />}>
             <div className="mt-8">
-              <EcommDetailSection supabase={supabase} from={from} to={to} channel={channel} channelHref={channelHref} />
+              <EcommDetailSection
+                supabase={supabase}
+                applyChannel={applyChannel}
+                from={from}
+                to={to}
+                channel={channel}
+                channelHref={channelHref}
+              />
             </div>
           </Suspense>
         </SectionErrorBoundary>

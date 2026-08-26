@@ -31,8 +31,13 @@ export function resolveViewScope(user: Pick<CurrentUser, "businessUnits">): View
     verticals: [
       { key: "ebo", label: "EBO", granted: hasRetail, pipelineConnected: true },
       { key: "ecomm", label: "ECOM", granted: hasEcomm, pipelineConnected: true },
-      { key: "mbo", label: "MBO", granted: hasRetail, pipelineConnected: false },
-      { key: "lfs", label: "LFS", granted: hasRetail, pipelineConnected: false },
+      // MBO/LFS hidden entirely for now (2026-08-26, Pankaj) — no pipeline
+      // exists for either yet, and rendering them as ScopeBar's disabled
+      // "pending" chips was more visual clutter than useful status. Just
+      // uncomment these two once a real pipeline exists — this is still
+      // the only place that needs to change, per this file's own header.
+      // { key: "mbo", label: "MBO", granted: hasRetail, pipelineConnected: false },
+      // { key: "lfs", label: "LFS", granted: hasRetail, pipelineConnected: false },
     ],
   };
 }
