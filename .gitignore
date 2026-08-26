@@ -16,3 +16,8 @@ Thumbs.db
 # Local /design mockup canvases — generated editor payloads (~2MB each),
 # regenerable from the skill; never worth putting in git history.
 web/.design-scratch/
+
+# Local credentials — never commit
+.env
+.env.local
+.env.*.local
