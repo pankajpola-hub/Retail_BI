@@ -113,9 +113,10 @@ export default async function UsersPage() {
     // Non-fatal: the table renders without emails rather than failing outright.
   }
 
-  // BO-004 (Phoenix Palassio, Lucknow) is discontinued — kept visible only on
-  // /network for historical reference; not offered as a store to grant.
-  const activeStores = (stores ?? []).filter((s) => s.store_id !== "BO-004");
+  // BO-004 (Phoenix Palassio, Lucknow) and BO-002 (Baramati, 0091) are both
+  // discontinued/not-yet-operational — kept visible only on /network for
+  // historical reference; not offered as a store to grant.
+  const activeStores = (stores ?? []).filter((s) => s.store_id !== "BO-004" && s.store_id !== "BO-002");
   const storeNames = new Map(activeStores.map((s) => [s.store_id, s.store_name]));
 
   const storesByUser = new Map<string, string[]>();

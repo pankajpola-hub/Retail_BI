@@ -63,7 +63,7 @@ export default async function WorkspacePage({
     listMyScheduledExports(),
   ]);
   const snapshot = requestedSnapshot ?? (await getOrCreateDefaultWorkspace());
-  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004");
+  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004" && s.store_id !== "BO-002");
   const storeNames = new Map(storeList.map((s) => [s.store_id, s.store_name]));
 
   const { workspace, components, filters } = snapshot;

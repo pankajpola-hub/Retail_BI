@@ -57,7 +57,7 @@ export async function fetchStockComponentData(scope: StockComponentScope): Promi
     .from<StoreRow>("stores")
     .select("store_id, store_name, branch_name_erp")
     .order("store_id");
-  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004");
+  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004" && s.store_id !== "BO-002");
   const storesInScope = storeIds.length > 0 ? storeList.filter((s) => storeIds.includes(s.store_id)) : storeList;
 
   // No date range — current stock is a point-in-time snapshot, same as

@@ -720,7 +720,7 @@ export default async function SalesPage({
   const { data: stores } = showEbo
     ? await supabase.schema("core").from<StoreRow>("stores").select("store_id, store_name").order("store_id")
     : { data: [] as StoreRow[] };
-  const activeStores = (stores ?? []).filter((s) => s.store_id !== "BO-004");
+  const activeStores = (stores ?? []).filter((s) => s.store_id !== "BO-004" && s.store_id !== "BO-002");
   const storeNames = new Map(activeStores.map((s) => [s.store_id, s.store_name]));
 
   return (
