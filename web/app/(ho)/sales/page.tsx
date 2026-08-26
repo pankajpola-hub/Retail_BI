@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import Link from "next/link";
+import { CalendarRange, Clock, Trophy, Users, Tag, ShoppingBag, TrendingUp, TrendingDown } from "lucide-react";
 import { createClient } from "@/lib/data/client";
 import type { QueryChain } from "@/lib/data/client";
 import { requireRole } from "@/lib/auth/roles";
@@ -23,11 +24,45 @@ import {
   type AgentDailyRow,
   type SchemeDailyRow,
   type HourlyRow,
-  type WeekRow,
 } from "@/lib/sales/aggregate";
 import { computeFootfallInsights, type ConversionRow, type CompletenessRow } from "@/lib/network/footfall";
 import { MatrixCell, TrafficSalesCell } from "@/components/ui/FootfallMatrixCells";
 import { Pill } from "@/components/ui/Pill";
+import { WeeklySalesFacetedTable, type WeeklyFacetedRow } from "./WeeklySalesFacetedTable";
+import { EcommChannelFacetedTable, type EcommChannelRow } from "./EcommChannelFacetedTable";
+
+/**
+ * Card wrapper (2026-08-26 polish pass) — same token pattern KpiCard
+ * already established (rounded-lg border border-line-soft bg-surface
+ * shadow-sm), applied to every section on this page instead of a bare
+ * heading floating over an unwrapped table/chart. `icon` is a small
+ * lucide-react glyph (already a dependency, previously unused on this
+ * page) giving each heading a visual anchor.
+ */
+function SectionCard({
+  icon,
+  title,
+  subtitle,
+  className = "",
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle?: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={`rounded-lg border border-line-soft bg-surface p-4 shadow-sm ${className}`}>
+      <div className="flex items-center gap-1.5 text-ink-3">
+        {icon}
+        <span className="text-[10.5px] font-semibold uppercase tracking-wide">{title}</span>
+      </div>
+      {subtitle && <p className="mt-1 text-[11px] text-ink-3">{subtitle}</p>}
+      <div className="mt-2">{children}</div>
+    </div>
+  );
+}
 // Reused unmodified from the Network page — both are already faceted,
 // already handle their own group-by/search, and the Workspace Builder is
 // already a second real caller of StoreLeagueFacetedContent's underlying
@@ -212,45 +247,44 @@ async function EboDetailSection({
   const agentRows = computeAgentRows(agentDaily);
   const hourlyPoints = computeHourlyPoints(hourly);
 
+  // Flattened once here (server-side) into the shape
+  // WeeklySalesFacetedTable actually renders — one row per (store,
+  // retail-week), "Network total" just another store-like bucket rather
+  // than a special case, per the component's own header.
+  const toFacetedRow = (storeId: string, storeName: string) => (w: ReturnType<typeof buildWeekSeries>[number]) => ({
+    ...w,
+    storeId,
+    storeName,
+    rangeLabel: `${weekDayLabel(w.weekStart)} – ${weekDayLabel(addDaysIso(w.weekStart, 6))}`,
+    discountPct: w.gross > 0 ? (w.discount / w.gross) * 100 : null,
+    atv: w.bills > 0 ? w.net / w.bills : null,
+  });
+  const weeklyFacetedRows: WeeklyFacetedRow[] = storesInView.flatMap((sid) =>
+    buildWeekSeries(weekRows, sid).map(toFacetedRow(sid, storeNames.get(sid) ?? sid))
+  );
+  if (storesInView.length > 1) {
+    weeklyFacetedRows.push(...buildWeekSeries(weekRows, null).map(toFacetedRow("__network__", "Network total")));
+  }
+
   return (
     <>
-      <span className="block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
-        Week-wise sales value &amp; quantity — EBO
-      </span>
-      <div className="mt-2 grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {storesInView.map((sid) => (
-          <WeeklySalesTable key={sid} title={storeNames.get(sid) ?? sid} rows={buildWeekSeries(weekRows, sid)} />
-        ))}
-        {storesInView.length > 1 && <WeeklySalesTable title="Network total" rows={buildWeekSeries(weekRows, null)} bold />}
+      <SectionCard icon={<CalendarRange className="h-4 w-4" />} title="Week-wise sales value & quantity — EBO">
+        <WeeklySalesFacetedTable rows={weeklyFacetedRows} />
+      </SectionCard>
+
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <SectionCard icon={<Clock className="h-4 w-4" />} title="Net sales by hour of day — EBO">
+          <HourlyBarChart points={hourlyPoints} ariaLabel="Net sales by hour of day, EBO" />
+        </SectionCard>
+
+        <SectionCard icon={<Trophy className="h-4 w-4" />} title="Store league — EBO" subtitle="Click a row for that store's own daily trend.">
+          <StoreLeagueFacetedContent league={league} from={from} to={to} />
+        </SectionCard>
       </div>
 
-      <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <div>
-          <span className="block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
-            Net sales by hour of day — EBO
-          </span>
-          <div className="mt-2">
-            <HourlyBarChart points={hourlyPoints} ariaLabel="Net sales by hour of day, EBO" />
-          </div>
-        </div>
-
-        <div>
-          <span className="block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
-            Store league — EBO
-          </span>
-          <p className="mt-1 text-[11px] text-ink-3">Click a row for that store&apos;s own daily trend.</p>
-          <div className="mt-2">
-            <StoreLeagueFacetedContent league={league} from={from} to={to} />
-          </div>
-        </div>
-      </div>
-
-      <span className="mt-8 block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
-        Agent-wise sales — EBO
-      </span>
-      <div className="mt-2">
+      <SectionCard icon={<Users className="h-4 w-4" />} title="Agent-wise sales — EBO" className="mt-6">
         <AgentSalesFacetedTable rows={agentRows} storeNames={Object.fromEntries(storeNames)} />
-      </div>
+      </SectionCard>
     </>
   );
 }
@@ -260,75 +294,6 @@ function addDaysIso(iso: string, days: number): string {
   const d = new Date(`${iso}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
-}
-
-/**
- * Week-wise sales value & quantity — retail-week grain (core.retail_calendar,
- * via vw_ebo_sales_weekly), not calendar date. Ported back onto /sales
- * (2026-08-26, Pankaj) — the underlying data (buildWeekSeries, WeekRow's own
- * qty/qtyChangePct) already existed for this exact table via the Workspace
- * Builder's WeeklySalesTable/WeeklyRowDrilldown, but neither carries the
- * Range/Qty/Qty WoW columns or a Grand Total row, so this is a dedicated,
- * slightly richer rendering rather than a reuse of either — same underlying
- * WeekRow[] data, no new query or aggregate function needed.
- */
-function WeeklySalesTable({ title, rows, bold }: { title: string; rows: WeekRow[]; bold?: boolean }) {
-  const weekLabel = (n: number) => `RW${String(n).padStart(2, "0")}`;
-  const pct = (v: number | null) =>
-    v === null ? <span className="text-ink-3">—</span> : (
-      <span className={v >= 0 ? "text-good" : "text-crit"}>{v >= 0 ? "+" : ""}{v.toFixed(1)}%</span>
-    );
-  const grandNet = rows.reduce((s, r) => s + r.net, 0);
-  const grandQty = rows.reduce((s, r) => s + r.qty, 0);
-
-  return (
-    <div className="border border-line-soft">
-      <div className="flex items-center justify-between border-b border-line-soft bg-surface-2 px-3 py-2">
-        <span className={`text-[11px] uppercase tracking-wide text-ink-2 ${bold ? "font-bold" : "font-semibold"}`}>{title}</span>
-        <span className="text-[10.5px] text-ink-3">{rows.length} weeks</span>
-      </div>
-      <table className="w-full text-[12.5px]">
-        <thead>
-          <tr className="border-b border-line-soft text-left text-[10px] uppercase tracking-wide text-ink-3">
-            <th className="px-3 py-1.5">Week</th>
-            <th className="px-3 py-1.5">Range</th>
-            <th className="px-3 py-1.5 text-right">Net sales</th>
-            <th className="px-3 py-1.5 text-right">Net WoW</th>
-            <th className="px-3 py-1.5 text-right">Qty</th>
-            <th className="px-3 py-1.5 text-right">Qty WoW</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.weekStart} className="border-b border-line-soft last:border-0">
-              <td className="px-3 py-1.5 font-semibold">{weekLabel(r.retailWeek)}</td>
-              <td className="px-3 py-1.5 text-ink-3">{weekDayLabel(r.weekStart)} – {weekDayLabel(addDaysIso(r.weekStart, 6))}</td>
-              <td className="px-3 py-1.5 text-right font-mono">{INR(r.net)}</td>
-              <td className="px-3 py-1.5 text-right font-mono">{pct(r.netChangePct)}</td>
-              <td className="px-3 py-1.5 text-right font-mono">{r.qty}</td>
-              <td className="px-3 py-1.5 text-right font-mono">{pct(r.qtyChangePct)}</td>
-            </tr>
-          ))}
-          {rows.length === 0 && (
-            <tr>
-              <td colSpan={6} className="px-3 py-4 text-center text-ink-3">No weeks in range.</td>
-            </tr>
-          )}
-        </tbody>
-        {rows.length > 0 && (
-          <tfoot>
-            <tr className="border-t border-line-soft bg-surface-2 font-semibold">
-              <td className="px-3 py-1.5" colSpan={2}>Grand Total</td>
-              <td className="px-3 py-1.5 text-right font-mono">{INR(grandNet)}</td>
-              <td className="px-3 py-1.5"></td>
-              <td className="px-3 py-1.5 text-right font-mono">{grandQty}</td>
-              <td className="px-3 py-1.5"></td>
-            </tr>
-          </tfoot>
-        )}
-      </table>
-    </div>
-  );
 }
 
 function EboDetailSkeleton() {
@@ -361,11 +326,8 @@ async function SchemePenetrationSection({ supabase, applyStore, from, to }: { su
   const { schemeRows, schemeMaxQty } = computeSchemeRows(schemeDaily);
 
   return (
-    <>
-      <span className="block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
-        Scheme penetration (by units sold) — EBO
-      </span>
-      <div className="mt-2 border border-line-soft p-3">
+    <SectionCard icon={<Tag className="h-4 w-4" />} title="Scheme penetration (by units sold) — EBO">
+      <div className="border border-line-soft p-3">
         <div className="flex flex-col gap-2">
           {schemeRows.map(([group, v]) => (
             <div key={group} className="grid grid-cols-[140px_1fr_auto] items-center gap-3 text-[12.5px]">
@@ -381,7 +343,7 @@ async function SchemePenetrationSection({ supabase, applyStore, from, to }: { su
           {schemeRows.length === 0 && <p className="text-sm text-ink-3">No scheme data in this window.</p>}
         </div>
       </div>
-    </>
+    </SectionCard>
   );
 }
 
@@ -657,63 +619,41 @@ async function EcommDetailSection({
   }
   const returnStatusRows = [...byReturnStatus.entries()].sort((a, b) => b[1] - a[1]);
 
+  const ecommChannelRows: EcommChannelRow[] = channelRows.map(([ch, c]) => ({
+    channel: ch,
+    orders: c.orders,
+    cancelled: c.cancelled,
+    cancellationRate: c.orders > 0 ? (100 * c.cancelled) / c.orders : null,
+    units: c.units,
+    net: c.net,
+    mrp: c.mrp,
+    discountPct: c.mrp > 0 ? (100 * c.discount) / c.mrp : null,
+  }));
+
   return (
     <>
-      <div className="flex items-baseline justify-between">
-        <span className="block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
-          By channel — ECOM{channel ? ` — ${channel}` : ""}
-        </span>
+      <SectionCard
+        icon={<ShoppingBag className="h-4 w-4" />}
+        title={`By channel — ECOM${channel ? ` — ${channel}` : ""}`}
+        subtitle="Click a channel for its own SKU breakdown."
+      >
         {channel && (
-          <Link href={channelHref(null)} className="text-[11.5px] text-accent underline">
-            Clear channel filter
-          </Link>
+          <div className="mb-2 flex justify-end">
+            <Link href={channelHref(null)} className="text-[11.5px] text-accent underline">
+              Clear channel filter
+            </Link>
+          </div>
         )}
-      </div>
-      <p className="mt-1 text-[11.5px] text-ink-3">Click a channel for its own SKU breakdown.</p>
-      <div className="mt-2 overflow-x-auto border border-line-soft">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-line-soft bg-surface-2 text-left text-[10px] uppercase tracking-wide text-ink-3">
-              <th className="px-3 py-2">Channel</th>
-              <th className="px-3 py-2 text-right">Orders</th>
-              <th className="px-3 py-2 text-right">Units</th>
-              <th className="px-3 py-2 text-right">Net value</th>
-              <th className="px-3 py-2 text-right">Discount %</th>
-            </tr>
-          </thead>
-          <tbody>
-            {channelRows.map(([ch, c]) => (
-              <tr key={ch} className={`border-b border-line-soft last:border-0 ${channel === ch ? "bg-accent-soft" : ""}`}>
-                <td className="px-3 py-2">
-                  <Link
-                    href={channelHref(channel === ch ? null : ch)}
-                    className={`hover:underline ${channel === ch ? "font-semibold text-accent-ink" : ""}`}
-                  >
-                    {ch}
-                  </Link>
-                </td>
-                <td className="px-3 py-2 text-right font-mono">{c.orders}</td>
-                <td className="px-3 py-2 text-right font-mono">{c.units}</td>
-                <td className="px-3 py-2 text-right font-mono">{INR(c.net)}</td>
-                <td className="px-3 py-2 text-right font-mono">{c.mrp > 0 ? `${((100 * c.discount) / c.mrp).toFixed(1)}%` : "—"}</td>
-              </tr>
-            ))}
-            {channelRows.length === 0 && (
-              <tr>
-                <td colSpan={5} className="px-3 py-4 text-center text-sm text-ink-3">No Ecomm orders in this range.</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+        <EcommChannelFacetedTable rows={ecommChannelRows} activeChannel={channel} channelHref={channelHref} />
+      </SectionCard>
 
-      <span className="mt-8 block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
-        Top styles — ECOM{channel ? ` — ${channel}` : ""}
-      </span>
-      <p className="mt-1 text-[11.5px] text-ink-3">
-        Only order lines that have finished Uniware item-enrichment — see /ecomm for the full incomplete-data caveat.
-      </p>
-      <div className="mt-2 overflow-x-auto border border-line-soft">
+      <SectionCard
+        icon={<Tag className="h-4 w-4" />}
+        title={`Top styles — ECOM${channel ? ` — ${channel}` : ""}`}
+        subtitle="Only order lines that have finished Uniware item-enrichment — see /ecomm for the full incomplete-data caveat."
+        className="mt-6"
+      >
+      <div className="overflow-x-auto border border-line-soft">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-line-soft bg-surface-2 text-left text-[10px] uppercase tracking-wide text-ink-3">
@@ -738,9 +678,10 @@ async function EcommDetailSection({
           </tbody>
         </table>
       </div>
+      </SectionCard>
 
-      <span className="mt-8 block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Returns — ECOM</span>
-      <div className="mt-2 overflow-x-auto border border-line-soft">
+      <SectionCard icon={<CalendarRange className="h-4 w-4" />} title="Returns — ECOM" className="mt-6">
+      <div className="overflow-x-auto border border-line-soft">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-line-soft bg-surface-2 text-left text-[10px] uppercase tracking-wide text-ink-3">
@@ -763,6 +704,7 @@ async function EcommDetailSection({
           </tbody>
         </table>
       </div>
+      </SectionCard>
     </>
   );
 }

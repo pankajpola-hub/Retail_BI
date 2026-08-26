@@ -180,19 +180,35 @@ export type WeekRow = {
   weekStart: string;
   net: number;
   qty: number;
+  // Added 2026-08-26 (WeeklySalesFacetedTable's richer advanced-filter set)
+  // — additive, existing callers (WeeklyRowDrilldown, Workspace's
+  // WeeklySalesTable) destructure only net/qty/netChangePct and are
+  // unaffected.
+  gross: number;
+  discount: number;
+  bills: number;
+  isCompleteWeek: boolean;
   netChangePct: number | null;
   qtyChangePct: number | null;
 };
 
 /** One store's (or, storeId=null, the whole network's) week-by-week series with WOW%. */
 export function buildWeekSeries(weekRows: WeeklyRow[], storeId: string | null): WeekRow[] {
-  const acc = new Map<string, { retailWeek: number; weekStart: string; net: number; qty: number }>();
+  const acc = new Map<
+    string,
+    { retailWeek: number; weekStart: string; net: number; qty: number; gross: number; discount: number; bills: number; isCompleteWeek: boolean }
+  >();
   for (const w of weekRows) {
     if (!w.week_start || w.retail_week === null || !w.store_id) continue;
     if (storeId !== null && w.store_id !== storeId) continue;
-    const cur = acc.get(w.week_start) ?? { retailWeek: w.retail_week, weekStart: w.week_start, net: 0, qty: 0 };
+    const cur =
+      acc.get(w.week_start) ??
+      { retailWeek: w.retail_week, weekStart: w.week_start, net: 0, qty: 0, gross: 0, discount: 0, bills: 0, isCompleteWeek: w.is_complete_week };
     cur.net += Number(w.net_sales);
     cur.qty += Number(w.sale_quantity);
+    cur.gross += Number(w.gross_sales);
+    cur.discount += Number(w.discount);
+    cur.bills += Number(w.sale_bills);
     acc.set(w.week_start, cur);
   }
   const sorted = [...acc.values()].sort((a, b) => a.weekStart.localeCompare(b.weekStart));
