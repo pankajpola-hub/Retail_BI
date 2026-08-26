@@ -196,11 +196,19 @@ export async function computeReplenishmentRows(
       .from<StoreRow>("stores")
       .select("store_id, store_name, branch_name_erp")
       .order("store_id"),
+    // .order() is required for .range()-based pagination to be a correct
+    // partition of the view across separate REST calls, not decoration —
+    // see lib/replenishment/mix.ts's identical pair of queries for the full
+    // story (confirmed live 2026-08-26 as a 791-row undercount on a sibling
+    // project's own paginated fetch). Ordered by every non-numeric
+    // dimension column actually selected below.
     fetchAllRows(() =>
       supabase
         .schema("sales")
         .from<StockRow>("vw_stock_with_scheme")
         .select("branch_name, item_code, item_name, shade_name, size, size_group, gender, season, mrp, closing_stock")
+        .order("branch_name", { ascending: true })
+        .order("item_code", { ascending: true })
     ),
     fetchAllRows(() =>
       supabase
@@ -210,6 +218,10 @@ export async function computeReplenishmentRows(
           "branch_name, item_code, bill_date, total_quantity, bill_type, gross_amount, item_name, shade_name, gender, size_group, size, season, mrp"
         )
         .gte("bill_date", fromDate)
+        .order("branch_name", { ascending: true })
+        .order("item_code", { ascending: true })
+        .order("bill_date", { ascending: true })
+        .order("bill_type", { ascending: true })
     ),
   ]);
   const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004");

@@ -111,11 +111,26 @@ export async function computeSaleStockMix(
       .from<StoreRow>("stores")
       .select("store_id, store_name, branch_name_erp")
       .order("store_id"),
+    // .order() is required for .range()-based pagination to be a correct
+    // partition of the view across separate REST calls, not decoration —
+    // confirmed live 2026-08-26 on a sibling project's own paginated fetch
+    // (web/app/api/sales-source/sale-detail/route.ts): without an explicit,
+    // near-total ORDER BY, Postgres can return rows in a different order
+    // between the page-1 and page-2 requests even against unchanged data,
+    // silently dropping some rows from every page (or duplicating others)
+    // with no error surfaced — a confirmed 791-row undercount there, from
+    // this exact gap. Ordered by every non-numeric dimension column
+    // actually selected below (not closing_stock/total_quantity/bill_type,
+    // which aren't identifying) — reduces, though for a view with no known
+    // guaranteed-unique key can't perfectly eliminate, tie-shuffling across
+    // page boundaries.
     fetchAllRows(() =>
       supabase
         .schema("sales")
         .from<StockRow>("vw_stock_with_scheme")
         .select("branch_name, item_code, item_name, shade_name, size, size_group, gender, season, mrp, closing_stock")
+        .order("branch_name", { ascending: true })
+        .order("item_code", { ascending: true })
     ),
     fetchAllRows(() =>
       supabase
@@ -123,6 +138,10 @@ export async function computeSaleStockMix(
         .from<SaleRow>("vw_sale_transactions_export")
         .select("branch_name, item_code, bill_date, total_quantity, bill_type, item_name, shade_name, season, gender, size_group, size, mrp")
         .gte("bill_date", fromDate)
+        .order("branch_name", { ascending: true })
+        .order("item_code", { ascending: true })
+        .order("bill_date", { ascending: true })
+        .order("bill_type", { ascending: true })
     ),
   ]);
   const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004");
