@@ -8,6 +8,8 @@ import { resolveViewScope, type VerticalKey } from "@/lib/scope/resolveViewScope
 import { ScopeBar } from "@/components/ui/ScopeBar";
 import { KpiCard } from "@/components/ui/KpiCard";
 import { TrendChart } from "@/components/ui/TrendChart";
+import { ComparisonTrendChart } from "@/components/ui/ComparisonTrendChart";
+import { DeltaBadge } from "@/components/ui/DeltaBadge";
 import { HourlyBarChart } from "@/components/ui/HourlyBarChart";
 import { MultiSelectFilter } from "@/components/ui/StoreFilter";
 import { KpiGridSkeleton, ChartSkeleton, TableSkeleton, SectionLabelSkeleton, MatrixSkeleton } from "@/components/ui/Skeleton";
@@ -118,39 +120,14 @@ type ApplyStore = <T extends { eq: (col: string, val: string) => T; in: (col: st
   col?: string
 ) => T;
 
-async function SharedCoreSection({
-  supabase,
-  applyStore,
-  applyChannel,
-  from,
-  to,
-  showEbo,
-  showEcomm,
-}: {
-  supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
-  applyStore: ApplyStore;
-  applyChannel: ApplyStore;
-  from: string;
-  to: string;
-  showEbo: boolean;
-  showEcomm: boolean;
-}) {
-  const [{ data: eboDaily }, { data: ecommDaily }] = await timeAll("sales:shared_core", [
-    showEbo
-      ? (applyStore(
-          supabase.schema("sales").from<EboDailyRow>("vw_ebo_sales_daily").select("store_id, bill_date, net_sales, gross_sales, discount").gte("bill_date", from).lte("bill_date", to)
-        ) as unknown as QueryChain<EboDailyRow>)
-      : Promise.resolve({ data: [] as EboDailyRow[] }),
-    showEcomm
-      ? (applyChannel(
-          supabase.schema("sales").from<EcommDailyRow>("vw_ecomm_daily").select("channel, order_date, net_selling_value, gross_mrp_value, discount_value, units").gte("order_date", from).lte("order_date", to)
-        ) as unknown as QueryChain<EcommDailyRow>)
-      : Promise.resolve({ data: [] as EcommDailyRow[] }),
-  ] as const);
-
-  const ebo = eboDaily ?? [];
-  const ecomm = ecommDaily ?? [];
-
+/**
+ * Shared-core roll-up for ONE date window. Extracted (2026-08-26, period
+ * comparison) purely so the exact same arithmetic runs over the current and
+ * the comparison window — the comparison numbers are never derived by a
+ * second, parallel formula. Same rule lib/sales/aggregate.ts's header states
+ * for the EBO metrics: one definition, several callers.
+ */
+function rollUpCore(ebo: EboDailyRow[], ecomm: EcommDailyRow[]) {
   // Revenue, discount and MRP are money — comparable across a bill and an
   // order, so summing them across verticals is legitimate. Units are also
   // summed (a unit is a unit regardless of channel). Nothing here is a
@@ -170,7 +147,6 @@ async function SharedCoreSection({
   const netSales = eboNet + ecommNet;
   const grossSales = eboGross + ecommGross;
   const discount = eboDiscount + ecommDiscount;
-  const discountPct = grossSales > 0 ? (100 * discount) / grossSales : null;
 
   // Daily trend — same-day sums across whichever verticals are in scope,
   // one point per date. EBO's bill_date and ECOM's order_date are both
@@ -181,23 +157,131 @@ async function SharedCoreSection({
   for (const r of ecomm) byDate.set(r.order_date, (byDate.get(r.order_date) ?? 0) + num(r.net_selling_value));
   const trendPoints = [...byDate.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([date, value]) => ({ label: date, value }));
 
+  return {
+    eboNet,
+    ecommNet,
+    ecommUnits,
+    netSales,
+    grossSales,
+    discount,
+    discountPct: grossSales > 0 ? (100 * discount) / grossSales : null,
+    trendPoints,
+  };
+}
+
+async function SharedCoreSection({
+  supabase,
+  applyStore,
+  applyChannel,
+  from,
+  to,
+  compareFrom,
+  compareTo,
+  showEbo,
+  showEcomm,
+}: {
+  supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
+  applyStore: ApplyStore;
+  applyChannel: ApplyStore;
+  from: string;
+  to: string;
+  compareFrom: string | null;
+  compareTo: string | null;
+  showEbo: boolean;
+  showEcomm: boolean;
+}) {
+  // Period comparison doubles this section's fetch — so the two comparison
+  // queries are only ISSUED when a comparison range is actually set (and,
+  // independently, only for the verticals in scope). With no comparison
+  // active this array is byte-for-byte the two queries it always was; the
+  // resolved-empty placeholders cost nothing.
+  const comparing = Boolean(compareFrom && compareTo);
+  const [{ data: eboDaily }, { data: ecommDaily }, { data: cmpEboDaily }, { data: cmpEcommDaily }] = await timeAll("sales:shared_core", [
+    showEbo
+      ? (applyStore(
+          supabase.schema("sales").from<EboDailyRow>("vw_ebo_sales_daily").select("store_id, bill_date, net_sales, gross_sales, discount").gte("bill_date", from).lte("bill_date", to)
+        ) as unknown as QueryChain<EboDailyRow>)
+      : Promise.resolve({ data: [] as EboDailyRow[] }),
+    showEcomm
+      ? (applyChannel(
+          supabase.schema("sales").from<EcommDailyRow>("vw_ecomm_daily").select("channel, order_date, net_selling_value, gross_mrp_value, discount_value, units").gte("order_date", from).lte("order_date", to)
+        ) as unknown as QueryChain<EcommDailyRow>)
+      : Promise.resolve({ data: [] as EcommDailyRow[] }),
+    showEbo && comparing
+      ? (applyStore(
+          supabase.schema("sales").from<EboDailyRow>("vw_ebo_sales_daily").select("store_id, bill_date, net_sales, gross_sales, discount").gte("bill_date", compareFrom as string).lte("bill_date", compareTo as string)
+        ) as unknown as QueryChain<EboDailyRow>)
+      : Promise.resolve({ data: [] as EboDailyRow[] }),
+    showEcomm && comparing
+      ? (applyChannel(
+          supabase.schema("sales").from<EcommDailyRow>("vw_ecomm_daily").select("channel, order_date, net_selling_value, gross_mrp_value, discount_value, units").gte("order_date", compareFrom as string).lte("order_date", compareTo as string)
+        ) as unknown as QueryChain<EcommDailyRow>)
+      : Promise.resolve({ data: [] as EcommDailyRow[] }),
+  ] as const);
+
+  const cur = rollUpCore(eboDaily ?? [], ecommDaily ?? []);
+  const cmp = comparing ? rollUpCore(cmpEboDaily ?? [], cmpEcommDaily ?? []) : null;
+
   return (
     <>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <KpiCard label="Net sales" value={INR(netSales)} sub={showEbo && showEcomm ? `EBO ${INR(eboNet)} + ECOM ${INR(ecommNet)}` : undefined} />
-        <KpiCard label="Gross (MRP)" value={INR(grossSales)} />
-        <KpiCard label="Discount" value={discountPct !== null ? `${discountPct.toFixed(1)}%` : "—"} sub={INR(discount) + " given"} />
-        {showEcomm && <KpiCard label="Ecomm units" value={String(ecommUnits)} />}
+        <KpiCard
+          label="Net sales"
+          value={INR(cur.netSales)}
+          delta={cmp && <DeltaBadge current={cur.netSales} previous={cmp.netSales} baselineLabel={`vs ${INR(cmp.netSales)}`} />}
+          sub={showEbo && showEcomm ? `EBO ${INR(cur.eboNet)} + ECOM ${INR(cur.ecommNet)}` : undefined}
+        />
+        <KpiCard
+          label="Gross (MRP)"
+          value={INR(cur.grossSales)}
+          delta={cmp && <DeltaBadge current={cur.grossSales} previous={cmp.grossSales} baselineLabel={`vs ${INR(cmp.grossSales)}`} />}
+        />
+        <KpiCard
+          label="Discount"
+          value={cur.discountPct !== null ? `${cur.discountPct.toFixed(1)}%` : "—"}
+          // A discount RATE is itself a percentage, so its change is shown in
+          // percentage points, and a rising discount rate is bad news — hence
+          // mode="pp" + invert, not a naive percent-of-a-percent in green.
+          delta={
+            cmp && (
+              <DeltaBadge
+                current={cur.discountPct}
+                previous={cmp.discountPct}
+                mode="pp"
+                invert
+                baselineLabel={cmp.discountPct !== null ? `vs ${cmp.discountPct.toFixed(1)}%` : "vs —"}
+              />
+            )
+          }
+          sub={INR(cur.discount) + " given"}
+        />
+        {showEcomm && (
+          <KpiCard
+            label="Ecomm units"
+            value={String(cur.ecommUnits)}
+            delta={cmp && <DeltaBadge current={cur.ecommUnits} previous={cmp.ecommUnits} baselineLabel={`vs ${cmp.ecommUnits}`} />}
+          />
+        )}
         {!showEbo && !showEcomm && <KpiCard label="Net sales" value="—" tone="muted" sub="No vertical selected" />}
       </div>
 
       <div className="mt-6">
         <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Net sales by day</span>
         <div className="mt-2 border border-line-soft p-3">
-          {trendPoints.length > 0 ? (
-            <TrendChart points={trendPoints} ariaLabel="Daily net sales across the selected verticals" />
-          ) : (
+          {cur.trendPoints.length === 0 && (!cmp || cmp.trendPoints.length === 0) ? (
             <p className="py-10 text-center text-sm text-ink-3">No sales data in this window.</p>
+          ) : cmp ? (
+            <ComparisonTrendChart
+              current={cur.trendPoints}
+              comparison={cmp.trendPoints}
+              from={from}
+              to={to}
+              compareFrom={compareFrom as string}
+              compareTo={compareTo as string}
+              ariaLabel="Daily net sales across the selected verticals, current period against the comparison period"
+            />
+          ) : (
+            <TrendChart points={cur.trendPoints} ariaLabel="Daily net sales across the selected verticals" />
           )}
         </div>
       </div>
@@ -224,6 +308,8 @@ async function EboDetailSection({
   applyStore,
   from,
   to,
+  compareFrom,
+  compareTo,
   storeNames,
   today,
 }: {
@@ -231,9 +317,14 @@ async function EboDetailSection({
   applyStore: ApplyStore;
   from: string;
   to: string;
+  compareFrom: string | null;
+  compareTo: string | null;
   storeNames: Map<string, string>;
   today: Date;
 }) {
+  const comparing = Boolean(compareFrom && compareTo);
+  const compareWeeklyStart = new Date(compareFrom ?? from);
+  compareWeeklyStart.setDate(compareWeeklyStart.getDate() - 7);
   const weeklyStart = new Date(from);
   weeklyStart.setDate(weeklyStart.getDate() - 7);
   // Daily grain only needs one prior day for a DoD baseline (same spirit as
@@ -246,7 +337,7 @@ async function EboDetailSection({
   const monthlyStart = new Date(from);
   monthlyStart.setDate(monthlyStart.getDate() - 400);
 
-  const [{ data: weeks }, { data: agentDaily }, { data: hourly }, { data: dailyFull }, { data: monthly }] = await timeAll(
+  const [{ data: weeks }, { data: agentDaily }, { data: hourly }, { data: dailyFull }, { data: monthly }, { data: compareWeeks }] = await timeAll(
     "sales:ebo_detail",
     [
       applyStore(
@@ -264,10 +355,23 @@ async function EboDetailSection({
       applyStore(
         supabase.schema("sales").from<MonthlyRow>("vw_ebo_sales_monthly").select("*").gte("month_start", isoDate(monthlyStart)).lte("month_start", to)
       ) as unknown as QueryChain<MonthlyRow>,
+      // ONE extra query for the whole comparison strip below, and only when
+      // a comparison range is actually set — the weekly view already carries
+      // every metric that strip shows (net/gross/discount/bills/qty), so no
+      // second daily/agent/hourly/monthly fetch is needed to compare.
+      comparing
+        ? (applyStore(
+            supabase.schema("sales").from<WeeklyRow>("vw_ebo_sales_weekly").select("*").gte("week_start", isoDate(compareWeeklyStart)).lte("week_start", compareTo as string)
+          ) as unknown as QueryChain<WeeklyRow>)
+        : Promise.resolve({ data: [] as WeeklyRow[] }),
     ] as const
   );
 
-  const { weekRows, storesInView } = computeSalesTotals(weeks, from);
+  const totals = computeSalesTotals(weeks, from);
+  const { weekRows, storesInView } = totals;
+  // Same helper, second window — the comparison numbers come from the exact
+  // function that produces the current ones, never a parallel formula.
+  const compareTotals = comparing ? computeSalesTotals(compareWeeks, compareFrom as string) : null;
   const league = computeLeague(weekRows, storesInView, storeNames);
   const agentRows = computeAgentRows(agentDaily);
   const hourlyPoints = computeHourlyPoints(hourly);
@@ -315,6 +419,60 @@ async function EboDetailSection({
 
   return (
     <>
+      {compareTotals && (
+        // Rendered ONLY while a comparison is active — with comparison off
+        // this section is exactly what it was before Phase 4, no new
+        // always-on KPI row appearing on a page nobody asked to change.
+        // Weekly grain (same rows the league and period table already use),
+        // so the window is whole retail weeks touching the range, not the
+        // raw day boundaries — stated on screen rather than left to guess.
+        <div className="mb-6">
+          <p className="mb-2 text-[11.5px] text-ink-3">
+            EBO totals vs {compareFrom} – {compareTo} (retail weeks touching each range)
+          </p>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            <KpiCard
+              label="Net sales"
+              value={INR(totals.totalNetSales)}
+              delta={<DeltaBadge current={totals.totalNetSales} previous={compareTotals.totalNetSales} baselineLabel={`vs ${INR(compareTotals.totalNetSales)}`} />}
+            />
+            <KpiCard
+              label="Sale bills"
+              value={totals.totalSaleBills.toLocaleString("en-IN")}
+              delta={<DeltaBadge current={totals.totalSaleBills} previous={compareTotals.totalSaleBills} baselineLabel={`vs ${compareTotals.totalSaleBills.toLocaleString("en-IN")}`} />}
+            />
+            <KpiCard
+              label="Units"
+              value={totals.totalSaleQty.toLocaleString("en-IN")}
+              delta={<DeltaBadge current={totals.totalSaleQty} previous={compareTotals.totalSaleQty} baselineLabel={`vs ${compareTotals.totalSaleQty.toLocaleString("en-IN")}`} />}
+            />
+            <KpiCard
+              label="ATV"
+              value={totals.networkAtv !== null ? INR(totals.networkAtv) : "—"}
+              delta={<DeltaBadge current={totals.networkAtv} previous={compareTotals.networkAtv} baselineLabel={compareTotals.networkAtv !== null ? `vs ${INR(compareTotals.networkAtv)}` : "vs —"} />}
+            />
+            <KpiCard
+              label="UPT"
+              value={totals.networkUpt !== null ? totals.networkUpt.toFixed(2) : "—"}
+              delta={<DeltaBadge current={totals.networkUpt} previous={compareTotals.networkUpt} baselineLabel={compareTotals.networkUpt !== null ? `vs ${compareTotals.networkUpt.toFixed(2)}` : "vs —"} />}
+            />
+            <KpiCard
+              label="Discount %"
+              value={totals.discountPct !== null ? `${totals.discountPct.toFixed(1)}%` : "—"}
+              delta={
+                <DeltaBadge
+                  current={totals.discountPct}
+                  previous={compareTotals.discountPct}
+                  mode="pp"
+                  invert
+                  baselineLabel={compareTotals.discountPct !== null ? `vs ${compareTotals.discountPct.toFixed(1)}%` : "vs —"}
+                />
+              }
+            />
+          </div>
+        </div>
+      )}
+
       <SectionCard icon={<CalendarRange className="h-4 w-4" />} title="Sales value & quantity by period — EBO">
         <PeriodSalesFacetedTable daily={dailyFacetedRows} weekly={weeklyFacetedRows} monthly={monthlyFacetedRows} yearly={yearlyFacetedRows} />
       </SectionCard>
@@ -784,7 +942,7 @@ function SharedCoreSkeleton() {
 export default async function SalesPage({
   searchParams,
 }: {
-  searchParams: { from?: string; to?: string; store?: string; bu?: string; channel?: string; channels?: string };
+  searchParams: { from?: string; to?: string; compareFrom?: string; compareTo?: string; store?: string; bu?: string; channel?: string; channels?: string };
 }) {
   // Role-only gate for this first cut — see the file header for why the real
   // narrowing is per-vertical (resolveViewScope.granted) rather than one
@@ -807,6 +965,14 @@ export default async function SalesPage({
   defaultFrom.setDate(defaultFrom.getDate() - 29);
   const from = searchParams.from ?? isoDate(defaultFrom);
   const to = searchParams.to ?? isoDate(today);
+
+  // Period comparison (Phase 4, 2026-08-26) — OFF by default, and only
+  // active when BOTH ends are present. Half a range is treated as no range
+  // at all rather than silently completing it, so a hand-edited URL can
+  // never produce a delta against a window the user didn't ask for.
+  const compareFrom = searchParams.compareFrom && searchParams.compareTo ? searchParams.compareFrom : null;
+  const compareTo = searchParams.compareFrom && searchParams.compareTo ? searchParams.compareTo : null;
+  const comparing = Boolean(compareFrom && compareTo);
 
   const storeFilters = (searchParams.store ?? "").split(",").filter(Boolean);
   const applyStore: ApplyStore = (q, col = "store_id") => {
@@ -840,6 +1006,10 @@ export default async function SalesPage({
     if (searchParams.channels) params.set("channels", searchParams.channels);
     if (from) params.set("from", from);
     if (to) params.set("to", to);
+    if (compareFrom && compareTo) {
+      params.set("compareFrom", compareFrom);
+      params.set("compareTo", compareTo);
+    }
     if (target) params.set("channel", target);
     const qs = params.toString();
     return qs ? `/sales?${qs}` : "/sales";
@@ -873,6 +1043,7 @@ export default async function SalesPage({
     `${from} to ${to}`,
     showEbo ? (storeFilters.length > 0 ? `${storeFilters.length} store${storeFilters.length > 1 ? "s" : ""}` : "all stores") : null,
     showEcomm ? (channelFilters.length > 0 ? `${channelFilters.length} channel${channelFilters.length > 1 ? "s" : ""}` : "all channels") : null,
+    comparing ? `compared to ${compareFrom} to ${compareTo}` : null,
   ].filter(Boolean).join(" · ");
 
   return (
@@ -889,6 +1060,9 @@ export default async function SalesPage({
           selectedVerticals={selectedVerticals}
           from={from}
           to={to}
+          compareFrom={compareFrom}
+          compareTo={compareTo}
+          showComparison
           locationSlot={
             showEbo ? (
               <MultiSelectFilter
@@ -921,6 +1095,8 @@ export default async function SalesPage({
               applyChannel={applyChannel}
               from={from}
               to={to}
+              compareFrom={compareFrom}
+              compareTo={compareTo}
               showEbo={showEbo}
               showEcomm={showEcomm}
             />
@@ -938,7 +1114,16 @@ export default async function SalesPage({
           <SectionErrorBoundary label="EBO detail">
             <Suspense fallback={<EboDetailSkeleton />}>
               <div className="mt-4">
-                <EboDetailSection supabase={supabase} applyStore={applyStore} from={from} to={to} storeNames={storeNames} today={today} />
+                <EboDetailSection
+                  supabase={supabase}
+                  applyStore={applyStore}
+                  from={from}
+                  to={to}
+                  compareFrom={compareFrom}
+                  compareTo={compareTo}
+                  storeNames={storeNames}
+                  today={today}
+                />
               </div>
             </Suspense>
           </SectionErrorBoundary>

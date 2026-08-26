@@ -1,6 +1,7 @@
 import type { VerticalScope } from "@/lib/scope/resolveViewScope";
 import { MultiSelectFilter } from "./StoreFilter";
 import { DateRangePicker } from "./DateRangePicker";
+import { ComparisonDateRangePicker } from "./ComparisonDateRangePicker";
 
 /**
  * Visual grouping of three existing, already-working filter patterns into
@@ -23,12 +24,24 @@ export function ScopeBar({
   locationSlot,
   from,
   to,
+  compareFrom = null,
+  compareTo = null,
+  showComparison = false,
 }: {
   verticals: VerticalScope[];
   selectedVerticals: string[];
   locationSlot: React.ReactNode;
   from: string;
   to: string;
+  /**
+   * Period comparison (Phase 4, 2026-08-26). Off unless `showComparison` is
+   * passed, so any page that mounts this bar without opting in renders
+   * exactly the bar it rendered before. Comparison is only *active* when
+   * both compareFrom and compareTo are set — see the picker's own header.
+   */
+  compareFrom?: string | null;
+  compareTo?: string | null;
+  showComparison?: boolean;
 }) {
   const selectable = verticals.filter((v) => v.granted && v.pipelineConnected);
   const pending = verticals.filter((v) => v.granted && !v.pipelineConnected);
@@ -81,7 +94,10 @@ export function ScopeBar({
       <div className="hidden self-stretch border-l border-line-soft sm:block" />
       <div>
         <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-3">Period</div>
-        <DateRangePicker from={from} to={to} />
+        <div className="flex flex-wrap items-center gap-2">
+          <DateRangePicker from={from} to={to} />
+          {showComparison && <ComparisonDateRangePicker from={from} to={to} compareFrom={compareFrom} compareTo={compareTo} />}
+        </div>
       </div>
     </div>
   );
