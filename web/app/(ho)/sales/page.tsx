@@ -7,6 +7,7 @@ import { resolveViewScope, type VerticalKey } from "@/lib/scope/resolveViewScope
 import { ScopeBar } from "@/components/ui/ScopeBar";
 import { KpiCard } from "@/components/ui/KpiCard";
 import { TrendChart } from "@/components/ui/TrendChart";
+import { HourlyBarChart } from "@/components/ui/HourlyBarChart";
 import { MultiSelectFilter } from "@/components/ui/StoreFilter";
 import { KpiGridSkeleton, ChartSkeleton, TableSkeleton, SectionLabelSkeleton, MatrixSkeleton } from "@/components/ui/Skeleton";
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
@@ -16,9 +17,13 @@ import {
   computeLeague,
   computeAgentRows,
   computeSchemeRows,
+  computeHourlyPoints,
+  buildWeekSeries,
   type WeeklyRow,
   type AgentDailyRow,
   type SchemeDailyRow,
+  type HourlyRow,
+  type WeekRow,
 } from "@/lib/sales/aggregate";
 import { computeFootfallInsights, type ConversionRow, type CompletenessRow } from "@/lib/network/footfall";
 import { MatrixCell, TrafficSalesCell } from "@/components/ui/FootfallMatrixCells";
@@ -190,27 +195,54 @@ async function EboDetailSection({
   const weeklyStart = new Date(from);
   weeklyStart.setDate(weeklyStart.getDate() - 7);
 
-  const [{ data: weeks }, { data: agentDaily }] = await timeAll("sales:ebo_detail", [
+  const [{ data: weeks }, { data: agentDaily }, { data: hourly }] = await timeAll("sales:ebo_detail", [
     applyStore(
       supabase.schema("sales").from<WeeklyRow>("vw_ebo_sales_weekly").select("*").gte("week_start", isoDate(weeklyStart)).lte("week_start", to)
     ) as unknown as QueryChain<WeeklyRow>,
     applyStore(
       supabase.schema("sales").from<AgentDailyRow>("vw_ebo_agent_daily").select("*").gte("bill_date", from).lte("bill_date", to)
     ) as unknown as QueryChain<AgentDailyRow>,
+    applyStore(
+      supabase.schema("sales").from<HourlyRow>("vw_ebo_sales_hourly").select("*").gte("bill_date", from).lte("bill_date", to)
+    ) as unknown as QueryChain<HourlyRow>,
   ] as const);
 
   const { weekRows, storesInView } = computeSalesTotals(weeks, from);
   const league = computeLeague(weekRows, storesInView, storeNames);
   const agentRows = computeAgentRows(agentDaily);
+  const hourlyPoints = computeHourlyPoints(hourly);
 
   return (
     <>
       <span className="block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
-        Store league — EBO
+        Week-wise sales value &amp; quantity — EBO
       </span>
-      <p className="mt-1 text-[11px] text-ink-3">Click a row for that store&apos;s own daily trend.</p>
-      <div className="mt-2">
-        <StoreLeagueFacetedContent league={league} from={from} to={to} />
+      <div className="mt-2 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {storesInView.map((sid) => (
+          <WeeklySalesTable key={sid} title={storeNames.get(sid) ?? sid} rows={buildWeekSeries(weekRows, sid)} />
+        ))}
+        {storesInView.length > 1 && <WeeklySalesTable title="Network total" rows={buildWeekSeries(weekRows, null)} bold />}
+      </div>
+
+      <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div>
+          <span className="block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
+            Net sales by hour of day — EBO
+          </span>
+          <div className="mt-2">
+            <HourlyBarChart points={hourlyPoints} ariaLabel="Net sales by hour of day, EBO" />
+          </div>
+        </div>
+
+        <div>
+          <span className="block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
+            Store league — EBO
+          </span>
+          <p className="mt-1 text-[11px] text-ink-3">Click a row for that store&apos;s own daily trend.</p>
+          <div className="mt-2">
+            <StoreLeagueFacetedContent league={league} from={from} to={to} />
+          </div>
+        </div>
       </div>
 
       <span className="mt-8 block text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
@@ -223,11 +255,91 @@ async function EboDetailSection({
   );
 }
 
+const weekDayLabel = (iso: string) => new Date(iso + "T00:00:00").toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+function addDaysIso(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Week-wise sales value & quantity — retail-week grain (core.retail_calendar,
+ * via vw_ebo_sales_weekly), not calendar date. Ported back onto /sales
+ * (2026-08-26, Pankaj) — the underlying data (buildWeekSeries, WeekRow's own
+ * qty/qtyChangePct) already existed for this exact table via the Workspace
+ * Builder's WeeklySalesTable/WeeklyRowDrilldown, but neither carries the
+ * Range/Qty/Qty WoW columns or a Grand Total row, so this is a dedicated,
+ * slightly richer rendering rather than a reuse of either — same underlying
+ * WeekRow[] data, no new query or aggregate function needed.
+ */
+function WeeklySalesTable({ title, rows, bold }: { title: string; rows: WeekRow[]; bold?: boolean }) {
+  const weekLabel = (n: number) => `RW${String(n).padStart(2, "0")}`;
+  const pct = (v: number | null) =>
+    v === null ? <span className="text-ink-3">—</span> : (
+      <span className={v >= 0 ? "text-good" : "text-crit"}>{v >= 0 ? "+" : ""}{v.toFixed(1)}%</span>
+    );
+  const grandNet = rows.reduce((s, r) => s + r.net, 0);
+  const grandQty = rows.reduce((s, r) => s + r.qty, 0);
+
+  return (
+    <div className="border border-line-soft">
+      <div className="flex items-center justify-between border-b border-line-soft bg-surface-2 px-3 py-2">
+        <span className={`text-[11px] uppercase tracking-wide text-ink-2 ${bold ? "font-bold" : "font-semibold"}`}>{title}</span>
+        <span className="text-[10.5px] text-ink-3">{rows.length} weeks</span>
+      </div>
+      <table className="w-full text-[12.5px]">
+        <thead>
+          <tr className="border-b border-line-soft text-left text-[10px] uppercase tracking-wide text-ink-3">
+            <th className="px-3 py-1.5">Week</th>
+            <th className="px-3 py-1.5">Range</th>
+            <th className="px-3 py-1.5 text-right">Net sales</th>
+            <th className="px-3 py-1.5 text-right">Net WoW</th>
+            <th className="px-3 py-1.5 text-right">Qty</th>
+            <th className="px-3 py-1.5 text-right">Qty WoW</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.weekStart} className="border-b border-line-soft last:border-0">
+              <td className="px-3 py-1.5 font-semibold">{weekLabel(r.retailWeek)}</td>
+              <td className="px-3 py-1.5 text-ink-3">{weekDayLabel(r.weekStart)} – {weekDayLabel(addDaysIso(r.weekStart, 6))}</td>
+              <td className="px-3 py-1.5 text-right font-mono">{INR(r.net)}</td>
+              <td className="px-3 py-1.5 text-right font-mono">{pct(r.netChangePct)}</td>
+              <td className="px-3 py-1.5 text-right font-mono">{r.qty}</td>
+              <td className="px-3 py-1.5 text-right font-mono">{pct(r.qtyChangePct)}</td>
+            </tr>
+          ))}
+          {rows.length === 0 && (
+            <tr>
+              <td colSpan={6} className="px-3 py-4 text-center text-ink-3">No weeks in range.</td>
+            </tr>
+          )}
+        </tbody>
+        {rows.length > 0 && (
+          <tfoot>
+            <tr className="border-t border-line-soft bg-surface-2 font-semibold">
+              <td className="px-3 py-1.5" colSpan={2}>Grand Total</td>
+              <td className="px-3 py-1.5 text-right font-mono">{INR(grandNet)}</td>
+              <td className="px-3 py-1.5"></td>
+              <td className="px-3 py-1.5 text-right font-mono">{grandQty}</td>
+              <td className="px-3 py-1.5"></td>
+            </tr>
+          </tfoot>
+        )}
+      </table>
+    </div>
+  );
+}
+
 function EboDetailSkeleton() {
   return (
     <>
       <SectionLabelSkeleton />
-      <TableSkeleton rows={6} cols={7} />
+      <TableSkeleton rows={5} cols={6} />
+      <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <ChartSkeleton height={220} />
+        <TableSkeleton rows={6} cols={7} />
+      </div>
       <div className="mt-8">
         <SectionLabelSkeleton />
         <TableSkeleton rows={6} cols={6} />
@@ -763,12 +875,24 @@ export default async function SalesPage({
   const activeStores = (stores ?? []).filter((s) => s.store_id !== "BO-004" && s.store_id !== "BO-002");
   const storeNames = new Map(activeStores.map((s) => [s.store_id, s.store_name]));
 
+  // Plain-language restatement of the active scope — "which numbers am I
+  // looking at" as a fact on screen, not a guess from the filter bar alone
+  // (2026-08-26 layout recommendation, Pankaj).
+  const activeVerticalLabels = verticals.filter((v) => activeVerticals.includes(v.key)).map((v) => v.label);
+  const scopeSummary = [
+    activeVerticalLabels.length > 0 ? activeVerticalLabels.join(" + ") : "No vertical selected",
+    `${from} to ${to}`,
+    showEbo ? (storeFilters.length > 0 ? `${storeFilters.length} store${storeFilters.length > 1 ? "s" : ""}` : "all stores") : null,
+    showEcomm ? (channelFilters.length > 0 ? `${channelFilters.length} channel${channelFilters.length > 1 ? "s" : ""}` : "all channels") : null,
+  ].filter(Boolean).join(" · ");
+
   return (
     <main className="py-6">
       <h1 className="font-serif text-2xl">Sales</h1>
       <p className="mt-1 text-[12.5px] text-ink-3">
         Every vertical you have access to, in one place — choose which to view below.
       </p>
+      <p className="mt-1.5 text-[11.5px] font-medium text-ink-2">Showing: {scopeSummary}</p>
 
       <div className="mt-3">
         <ScopeBar
@@ -816,50 +940,65 @@ export default async function SalesPage({
       </SectionErrorBoundary>
 
       {showEbo && (
-        <SectionErrorBoundary label="EBO detail">
-          <Suspense fallback={<EboDetailSkeleton />}>
-            <div className="mt-8">
-              <EboDetailSection supabase={supabase} applyStore={applyStore} from={from} to={to} storeNames={storeNames} />
-            </div>
-          </Suspense>
-        </SectionErrorBoundary>
-      )}
+        <div className="mt-10">
+          <div className="flex items-center gap-3">
+            <h2 className="font-serif text-lg text-ink">EBO</h2>
+            <div className="h-px flex-1 bg-line-soft" />
+          </div>
 
-      {showEbo && (
-        <SectionErrorBoundary label="Footfall & diagnosis">
-          <Suspense fallback={<FootfallDiagnosisSkeleton />}>
-            <div className="mt-8">
-              <FootfallDiagnosisSection supabase={supabase} applyStore={applyStore} from={from} to={to} storeNames={storeNames} today={today} />
-            </div>
-          </Suspense>
-        </SectionErrorBoundary>
-      )}
+          <SectionErrorBoundary label="EBO detail">
+            <Suspense fallback={<EboDetailSkeleton />}>
+              <div className="mt-4">
+                <EboDetailSection supabase={supabase} applyStore={applyStore} from={from} to={to} storeNames={storeNames} />
+              </div>
+            </Suspense>
+          </SectionErrorBoundary>
 
-      {showEbo && (
-        <SectionErrorBoundary label="Scheme penetration">
-          <Suspense fallback={<SchemePenetrationSkeleton />}>
-            <div className="mt-8">
-              <SchemePenetrationSection supabase={supabase} applyStore={applyStore} from={from} to={to} />
-            </div>
-          </Suspense>
-        </SectionErrorBoundary>
+          <SectionErrorBoundary label="Footfall & diagnosis">
+            <Suspense fallback={<FootfallDiagnosisSkeleton />}>
+              <div className="mt-8">
+                <FootfallDiagnosisSection supabase={supabase} applyStore={applyStore} from={from} to={to} storeNames={storeNames} today={today} />
+              </div>
+            </Suspense>
+          </SectionErrorBoundary>
+
+          <SectionErrorBoundary label="Scheme penetration">
+            <Suspense fallback={<SchemePenetrationSkeleton />}>
+              <div className="mt-8">
+                <SchemePenetrationSection supabase={supabase} applyStore={applyStore} from={from} to={to} />
+              </div>
+            </Suspense>
+          </SectionErrorBoundary>
+        </div>
       )}
 
       {showEcomm && (
-        <SectionErrorBoundary label="Ecomm detail">
-          <Suspense fallback={<EcommDetailSkeleton />}>
-            <div className="mt-8">
-              <EcommDetailSection
-                supabase={supabase}
-                applyChannel={applyChannel}
-                from={from}
-                to={to}
-                channel={channel}
-                channelHref={channelHref}
-              />
-            </div>
-          </Suspense>
-        </SectionErrorBoundary>
+        <div className="mt-10">
+          <div className="flex items-center gap-3">
+            <h2 className="font-serif text-lg text-ink">ECOM</h2>
+            <div className="h-px flex-1 bg-line-soft" />
+            {channelFilters.length > 0 && (
+              <span className="rounded-full bg-accent-soft px-2.5 py-0.5 text-[11px] font-medium text-accent-ink">
+                {channelFilters.join(", ")}
+              </span>
+            )}
+          </div>
+
+          <SectionErrorBoundary label="Ecomm detail">
+            <Suspense fallback={<EcommDetailSkeleton />}>
+              <div className="mt-4">
+                <EcommDetailSection
+                  supabase={supabase}
+                  applyChannel={applyChannel}
+                  from={from}
+                  to={to}
+                  channel={channel}
+                  channelHref={channelHref}
+                />
+              </div>
+            </Suspense>
+          </SectionErrorBoundary>
+        </div>
       )}
     </main>
   );
