@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { CalendarRange, Clock, Trophy, Users, Tag, ShoppingBag, TrendingUp, TrendingDown } from "lucide-react";
-import { createClient } from "@/lib/data/client";
+import { CalendarRange, Clock, Trophy, Users, Tag, ShoppingBag, TrendingUp, TrendingDown, Shirt } from "lucide-react";
+import { createClient, fetchAllRows } from "@/lib/data/client";
 import type { QueryChain } from "@/lib/data/client";
 import { requireRole } from "@/lib/auth/roles";
 import { resolveViewScope, type VerticalKey } from "@/lib/scope/resolveViewScope";
@@ -37,6 +37,8 @@ import { MatrixCell, TrafficSalesCell } from "@/components/ui/FootfallMatrixCell
 import { Pill } from "@/components/ui/Pill";
 import { PeriodSalesFacetedTable, type PeriodFacetedRow } from "./PeriodSalesFacetedTable";
 import { EcommChannelFacetedTable, type EcommChannelRow } from "./EcommChannelFacetedTable";
+import { ProductAttributeSalesTable } from "./ProductAttributeSalesTable";
+import type { SaleAttributeLineRow } from "@/lib/sales/attributeBreakdown";
 
 /**
  * Card wrapper (2026-08-26 polish pass) — same token pattern KpiCard
@@ -514,6 +516,84 @@ function EboDetailSkeleton() {
         <SectionLabelSkeleton />
         <TableSkeleton rows={6} cols={6} />
       </div>
+    </>
+  );
+}
+
+/**
+ * EBO-only — PRODUCT-attribute breakdown ("how did the SS2026 collection
+ * perform"), Phase 3 of the /sales polish plan. Deliberately NOT a calendar
+ * grain: it is independent of, and composes with, the Daily/Weekly/Monthly/
+ * Yearly toggle EboDetailSection's own PeriodSalesFacetedTable already
+ * ships. Same mechanism as Sale vs Stock Mix's "View by" attribute combo,
+ * applied to Sale rather than Stock/Mix data.
+ *
+ * EBO-only by data, not by preference: sales.vw_ecomm_order_lines (0067)
+ * carries item_sku/style/size/color/brand off Uniware and has no season,
+ * gender, size_group, category or market_segment at all, so the same
+ * breakdown genuinely cannot be computed for ECOM today. Gated with the rest
+ * of the EBO block rather than rendered empty.
+ *
+ * Its own Suspense boundary and its own fetch — this is the only LINE-grain
+ * query on the page (everything else reads a pre-aggregated rollup view), so
+ * it must not be able to hold up the sections that don't need it. Volume is
+ * modest at today's scale (a full fiscal year of the real Sale exports is
+ * ~4.7k-14.5k lines, so a 30-day default range is low thousands), but it
+ * pages via fetchAllRows regardless: Supabase's project "Max Rows" setting
+ * silently caps EVERY response at 1000 rows with no error, and a line-grain
+ * query is exactly where that bites (see lib/data/client.ts's own note, and
+ * the ~95%-of-rows-dropped bug it was found by).
+ */
+async function ProductAttributeSection({
+  supabase,
+  applyStore,
+  from,
+  to,
+}: {
+  supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
+  applyStore: ApplyStore;
+  from: string;
+  to: string;
+}) {
+  const lines = await fetchAllRows<SaleAttributeLineRow>(() =>
+    applyStore(
+      supabase
+        .schema("sales")
+        .from<SaleAttributeLineRow>("vw_ebo_sale_attribute_lines")
+        .select(
+          "store_id, bill_date, bill_no, bill_type, total_quantity, gross_amount, net_amount, season, market_segment, category, subcategory, gender, size_group, shade_name, mrp"
+        )
+        .gte("bill_date", from)
+        .lte("bill_date", to)
+        // .order() is required for .range()-based pagination to be a correct
+        // partition of the view across separate REST calls, not decoration —
+        // without a near-total ORDER BY, Postgres may return rows in a
+        // different order between the page-1 and page-2 requests against
+        // unchanged data, silently dropping or duplicating rows with no
+        // error. Same discipline (and the same confirmed 791-row undercount
+        // behind it) as lib/replenishment/mix.ts's own paginated fetches.
+        .order("bill_date", { ascending: true })
+        .order("bill_no", { ascending: true })
+        .order("item_code", { ascending: true })
+    ) as unknown as QueryChain<SaleAttributeLineRow>
+  );
+
+  return (
+    <SectionCard
+      icon={<Shirt className="h-4 w-4" />}
+      title="Sales by product attribute — EBO"
+      subtitle="Season + Year by default. Drag chips to combine attributes — e.g. Season + Gender. Bills count every bill containing the attribute, so they overlap across groups and do not sum to the network total; net sales, qty and gross do."
+    >
+      <ProductAttributeSalesTable lines={lines} />
+    </SectionCard>
+  );
+}
+
+function ProductAttributeSkeleton() {
+  return (
+    <>
+      <SectionLabelSkeleton />
+      <TableSkeleton rows={6} cols={7} />
     </>
   );
 }
@@ -1124,6 +1204,14 @@ export default async function SalesPage({
                   storeNames={storeNames}
                   today={today}
                 />
+              </div>
+            </Suspense>
+          </SectionErrorBoundary>
+
+          <SectionErrorBoundary label="Product attribute breakdown">
+            <Suspense fallback={<ProductAttributeSkeleton />}>
+              <div className="mt-6">
+                <ProductAttributeSection supabase={supabase} applyStore={applyStore} from={from} to={to} />
               </div>
             </Suspense>
           </SectionErrorBoundary>
