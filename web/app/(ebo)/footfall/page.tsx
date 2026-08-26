@@ -79,9 +79,10 @@ export default async function FootfallPage({
 
   // core.stores is RLS-filtered to the caller's permitted stores already,
   // so this list can't offer a store they aren't allowed to write to.
-  // BO-004 (Phoenix Palassio, Lucknow) is discontinued — kept visible only
-  // on /network for historical reference, hidden here.
-  const selectableStores = (stores ?? []).filter((s) => s.store_id !== "BO-004");
+  // BO-004 (Phoenix Palassio, Lucknow) and BO-002 (Baramati, 0091) are both
+  // discontinued/not-yet-operational — kept visible only on /network for
+  // historical reference, hidden here.
+  const selectableStores = (stores ?? []).filter((s) => s.store_id !== "BO-004" && s.store_id !== "BO-002");
 
   return (
     <main className="py-6">

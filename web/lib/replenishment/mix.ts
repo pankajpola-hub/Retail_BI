@@ -144,7 +144,10 @@ export async function computeSaleStockMix(
         .order("bill_type", { ascending: true })
     ),
   ]);
-  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004");
+  // BO-004 (Phoenix Palassio, Lucknow) and BO-002 (Baramati) are both
+  // discontinued/not-yet-operational (0091) — excluded from every per-store
+  // view the same way, this app-wide.
+  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004" && s.store_id !== "BO-002");
   const storeBranchToId = new Map(storeList.map((s) => [s.branch_name_erp, s.store_id]));
 
   // Same style+color grain as Replenishment (lib/replenishment/compute.ts) —

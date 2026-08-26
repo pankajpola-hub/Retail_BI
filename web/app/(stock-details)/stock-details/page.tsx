@@ -313,9 +313,10 @@ export default async function StockDetailsPage({
     .from<StoreRow>("stores")
     .select("store_id, store_name, branch_name_erp")
     .order("store_id");
-  // BO-004 (Phoenix Palassio, Lucknow) is discontinued — kept visible only on
-  // /network for historical reference, hidden from every other store filter.
-  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004");
+  // BO-004 (Phoenix Palassio, Lucknow) and BO-002 (Baramati, 0091) are both
+  // discontinued/not-yet-operational — kept visible only on /network for
+  // historical reference, hidden from every other store filter.
+  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004" && s.store_id !== "BO-002");
 
   const storeLabels = Object.fromEntries(storeList.map((s) => [s.store_id, s.store_name]));
   const selectedStoreIds = (searchParams.store ?? "")
