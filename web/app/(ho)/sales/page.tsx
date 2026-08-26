@@ -20,15 +20,20 @@ import {
   computeSchemeRows,
   computeHourlyPoints,
   buildWeekSeries,
+  buildDailyPeriodSeries,
+  buildMonthlyPeriodSeries,
+  buildYearlyPeriodSeries,
   type WeeklyRow,
   type AgentDailyRow,
   type SchemeDailyRow,
   type HourlyRow,
+  type DailyFullRow,
+  type MonthlyRow,
 } from "@/lib/sales/aggregate";
 import { computeFootfallInsights, type ConversionRow, type CompletenessRow } from "@/lib/network/footfall";
 import { MatrixCell, TrafficSalesCell } from "@/components/ui/FootfallMatrixCells";
 import { Pill } from "@/components/ui/Pill";
-import { WeeklySalesFacetedTable, type WeeklyFacetedRow } from "./WeeklySalesFacetedTable";
+import { PeriodSalesFacetedTable, type PeriodFacetedRow } from "./PeriodSalesFacetedTable";
 import { EcommChannelFacetedTable, type EcommChannelRow } from "./EcommChannelFacetedTable";
 
 /**
@@ -220,27 +225,47 @@ async function EboDetailSection({
   from,
   to,
   storeNames,
+  today,
 }: {
   supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
   applyStore: ApplyStore;
   from: string;
   to: string;
   storeNames: Map<string, string>;
+  today: Date;
 }) {
   const weeklyStart = new Date(from);
   weeklyStart.setDate(weeklyStart.getDate() - 7);
+  // Daily grain only needs one prior day for a DoD baseline (same spirit as
+  // weeklyStart's -7 days). Monthly goes back much further (~400 days) so
+  // Monthly AND Yearly (derived from these same monthly rows, see below)
+  // both get a real prior-period baseline — monthly rows are cheap,
+  // pre-aggregated, one row per store per month, so this costs little.
+  const dailyStart = new Date(from);
+  dailyStart.setDate(dailyStart.getDate() - 1);
+  const monthlyStart = new Date(from);
+  monthlyStart.setDate(monthlyStart.getDate() - 400);
 
-  const [{ data: weeks }, { data: agentDaily }, { data: hourly }] = await timeAll("sales:ebo_detail", [
-    applyStore(
-      supabase.schema("sales").from<WeeklyRow>("vw_ebo_sales_weekly").select("*").gte("week_start", isoDate(weeklyStart)).lte("week_start", to)
-    ) as unknown as QueryChain<WeeklyRow>,
-    applyStore(
-      supabase.schema("sales").from<AgentDailyRow>("vw_ebo_agent_daily").select("*").gte("bill_date", from).lte("bill_date", to)
-    ) as unknown as QueryChain<AgentDailyRow>,
-    applyStore(
-      supabase.schema("sales").from<HourlyRow>("vw_ebo_sales_hourly").select("*").gte("bill_date", from).lte("bill_date", to)
-    ) as unknown as QueryChain<HourlyRow>,
-  ] as const);
+  const [{ data: weeks }, { data: agentDaily }, { data: hourly }, { data: dailyFull }, { data: monthly }] = await timeAll(
+    "sales:ebo_detail",
+    [
+      applyStore(
+        supabase.schema("sales").from<WeeklyRow>("vw_ebo_sales_weekly").select("*").gte("week_start", isoDate(weeklyStart)).lte("week_start", to)
+      ) as unknown as QueryChain<WeeklyRow>,
+      applyStore(
+        supabase.schema("sales").from<AgentDailyRow>("vw_ebo_agent_daily").select("*").gte("bill_date", from).lte("bill_date", to)
+      ) as unknown as QueryChain<AgentDailyRow>,
+      applyStore(
+        supabase.schema("sales").from<HourlyRow>("vw_ebo_sales_hourly").select("*").gte("bill_date", from).lte("bill_date", to)
+      ) as unknown as QueryChain<HourlyRow>,
+      applyStore(
+        supabase.schema("sales").from<DailyFullRow>("vw_ebo_sales_daily").select("*").gte("bill_date", isoDate(dailyStart)).lte("bill_date", to)
+      ) as unknown as QueryChain<DailyFullRow>,
+      applyStore(
+        supabase.schema("sales").from<MonthlyRow>("vw_ebo_sales_monthly").select("*").gte("month_start", isoDate(monthlyStart)).lte("month_start", to)
+      ) as unknown as QueryChain<MonthlyRow>,
+    ] as const
+  );
 
   const { weekRows, storesInView } = computeSalesTotals(weeks, from);
   const league = computeLeague(weekRows, storesInView, storeNames);
@@ -248,28 +273,50 @@ async function EboDetailSection({
   const hourlyPoints = computeHourlyPoints(hourly);
 
   // Flattened once here (server-side) into the shape
-  // WeeklySalesFacetedTable actually renders — one row per (store,
-  // retail-week), "Network total" just another store-like bucket rather
-  // than a special case, per the component's own header.
-  const toFacetedRow = (storeId: string, storeName: string) => (w: ReturnType<typeof buildWeekSeries>[number]) => ({
-    ...w,
-    storeId,
-    storeName,
-    rangeLabel: `${weekDayLabel(w.weekStart)} – ${weekDayLabel(addDaysIso(w.weekStart, 6))}`,
-    discountPct: w.gross > 0 ? (w.discount / w.gross) * 100 : null,
-    atv: w.bills > 0 ? w.net / w.bills : null,
-  });
-  const weeklyFacetedRows: WeeklyFacetedRow[] = storesInView.flatMap((sid) =>
-    buildWeekSeries(weekRows, sid).map(toFacetedRow(sid, storeNames.get(sid) ?? sid))
+  // PeriodSalesFacetedTable actually renders — one row per (store, period),
+  // "Network total" just another store-like bucket rather than a special
+  // case, per that component's own header. Four grains, one per builder in
+  // lib/sales/aggregate.ts, all fed by the queries above — no re-fetch when
+  // the user toggles grain client-side.
+  const todayStr = isoDate(today);
+  const todayMonthStart = todayStr.slice(0, 7) + "-01";
+  // "Current" fiscal year for the Yearly grain's isComplete flag — the FY
+  // on the most recent monthly row fetched (financial_year isn't on
+  // WeeklyRow, so this is derived from the monthly rows already in hand
+  // rather than a separate computation).
+  const latestMonthlyFy = [...(monthly ?? [])].sort((a, b) => (b.month_start ?? "").localeCompare(a.month_start ?? ""))[0]?.financial_year ?? "";
+  const buildRows = <T extends { periodKey: string }>(builder: (storeId: string | null) => T[]) => {
+    const perStore = storesInView.flatMap((sid) => builder(sid).map((r) => ({ ...r, storeId: sid, storeName: storeNames.get(sid) ?? sid })));
+    if (storesInView.length > 1) {
+      perStore.push(...builder(null).map((r) => ({ ...r, storeId: "__network__", storeName: "Network total" })));
+    }
+    return perStore;
+  };
+  const weeklyFacetedRows: PeriodFacetedRow[] = buildRows((sid) =>
+    buildWeekSeries(weekRows, sid).map((w) => ({
+      periodKey: w.weekStart,
+      periodLabel: `RW${String(w.retailWeek).padStart(2, "0")}`,
+      rangeLabel: `${weekDayLabel(w.weekStart)} – ${weekDayLabel(addDaysIso(w.weekStart, 6))}`,
+      net: w.net,
+      gross: w.gross,
+      discount: w.discount,
+      discountPct: w.gross > 0 ? (w.discount / w.gross) * 100 : null,
+      bills: w.bills,
+      qty: w.qty,
+      atv: w.bills > 0 ? w.net / w.bills : null,
+      netChangePct: w.netChangePct,
+      qtyChangePct: w.qtyChangePct,
+      isComplete: w.isCompleteWeek,
+    }))
   );
-  if (storesInView.length > 1) {
-    weeklyFacetedRows.push(...buildWeekSeries(weekRows, null).map(toFacetedRow("__network__", "Network total")));
-  }
+  const dailyFacetedRows: PeriodFacetedRow[] = buildRows((sid) => buildDailyPeriodSeries(dailyFull ?? [], sid, todayStr));
+  const monthlyFacetedRows: PeriodFacetedRow[] = buildRows((sid) => buildMonthlyPeriodSeries(monthly ?? [], sid, todayMonthStart));
+  const yearlyFacetedRows: PeriodFacetedRow[] = buildRows((sid) => buildYearlyPeriodSeries(monthly ?? [], sid, latestMonthlyFy));
 
   return (
     <>
-      <SectionCard icon={<CalendarRange className="h-4 w-4" />} title="Week-wise sales value & quantity — EBO">
-        <WeeklySalesFacetedTable rows={weeklyFacetedRows} />
+      <SectionCard icon={<CalendarRange className="h-4 w-4" />} title="Sales value & quantity by period — EBO">
+        <PeriodSalesFacetedTable daily={dailyFacetedRows} weekly={weeklyFacetedRows} monthly={monthlyFacetedRows} yearly={yearlyFacetedRows} />
       </SectionCard>
 
       <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -891,7 +938,7 @@ export default async function SalesPage({
           <SectionErrorBoundary label="EBO detail">
             <Suspense fallback={<EboDetailSkeleton />}>
               <div className="mt-4">
-                <EboDetailSection supabase={supabase} applyStore={applyStore} from={from} to={to} storeNames={storeNames} />
+                <EboDetailSection supabase={supabase} applyStore={applyStore} from={from} to={to} storeNames={storeNames} today={today} />
               </div>
             </Suspense>
           </SectionErrorBoundary>

@@ -25,6 +25,36 @@ export type WeeklyRow = {
   sale_quantity: number | string;
   is_complete_week: boolean;
 };
+// Full-column daily/monthly rows (2026-08-26, date-grain toggle) — richer
+// than the narrow `DailyRow` above (which only ever fed the trend chart).
+// sales.vw_ebo_sales_daily/vw_ebo_sales_monthly (0005) already compute
+// atv/discount_pct/sale_bills/sale_quantity server-side, same formulas the
+// weekly view uses — read directly rather than re-derived, for the same
+// consistency reason 0050 repointed atv/upt onto the weekly view (see this
+// file's own header on why the formulas live in exactly one place).
+export type DailyFullRow = {
+  store_id: string | null;
+  bill_date: string | null;
+  sale_bills: number | string;
+  gross_sales: number | string;
+  discount: number | string;
+  net_sales: number | string;
+  atv: number | string | null;
+  discount_pct: number | string | null;
+  sale_quantity: number | string;
+};
+export type MonthlyRow = {
+  store_id: string | null;
+  month_start: string | null;
+  financial_year: string | null;
+  sale_bills: number | string;
+  gross_sales: number | string;
+  discount: number | string;
+  net_sales: number | string;
+  atv: number | string | null;
+  discount_pct: number | string | null;
+  sale_quantity: number | string;
+};
 export type SchemeDailyRow = { scheme_group: string | null; quantity: number | string | null; net_sales: number | string | null };
 export type HourlyRow = { bill_hour: number | null; net_sales: number | string };
 export type AgentDailyRow = { store_id: string | null; agent_name: string | null; bills: number | string; quantity: number | string; net_sales: number | string };
@@ -220,4 +250,141 @@ export function buildWeekSeries(weekRows: WeeklyRow[], storeId: string | null): 
       qtyChangePct: prev && prev.qty > 0 ? ((row.qty - prev.qty) / prev.qty) * 100 : null,
     };
   });
+}
+
+// -----------------------------------------------------------------------------
+// Date-grain toggle (2026-08-26) — Daily / Weekly / Monthly / Yearly, one
+// common output shape so a single table component can switch between them.
+// Weekly stays WeekRow/buildWeekSeries above (unchanged, other callers
+// depend on its exact shape); these three cover the other grains.
+// -----------------------------------------------------------------------------
+export type PeriodRow = {
+  periodKey: string; // sortable, unique per period
+  periodLabel: string; // short display label, e.g. "26 Aug", "Aug 2026", "FY2026-27"
+  rangeLabel: string; // human date range this period spans
+  net: number;
+  gross: number;
+  discount: number;
+  discountPct: number | null;
+  bills: number;
+  qty: number;
+  atv: number | null;
+  netChangePct: number | null;
+  qtyChangePct: number | null;
+  isComplete: boolean;
+};
+
+const MONTH_LABEL = (iso: string) => new Date(iso + "T00:00:00").toLocaleDateString("en-IN", { month: "short", year: "numeric" });
+
+function periodOverPeriodPct(rows: { net: number; qty: number }[]): { netChangePct: number | null; qtyChangePct: number | null }[] {
+  return rows.map((row, i) => {
+    const prev = rows[i - 1];
+    return {
+      netChangePct: prev && prev.net > 0 ? ((row.net - prev.net) / prev.net) * 100 : null,
+      qtyChangePct: prev && prev.qty > 0 ? ((row.qty - prev.qty) / prev.qty) * 100 : null,
+    };
+  });
+}
+
+/** One store's (or, storeId=null, network's) day-by-day series with DoD%, from vw_ebo_sales_daily's own already-full rows. */
+export function buildDailyPeriodSeries(dailyRows: DailyFullRow[], storeId: string | null, today: string): PeriodRow[] {
+  const acc = new Map<string, { bills: number; gross: number; discount: number; net: number; qty: number }>();
+  for (const d of dailyRows) {
+    if (!d.bill_date || !d.store_id) continue;
+    if (storeId !== null && d.store_id !== storeId) continue;
+    const cur = acc.get(d.bill_date) ?? { bills: 0, gross: 0, discount: 0, net: 0, qty: 0 };
+    cur.bills += Number(d.sale_bills);
+    cur.gross += Number(d.gross_sales);
+    cur.discount += Number(d.discount);
+    cur.net += Number(d.net_sales);
+    cur.qty += Number(d.sale_quantity);
+    acc.set(d.bill_date, cur);
+  }
+  const sorted = [...acc.entries()].sort(([a], [b]) => a.localeCompare(b));
+  const deltas = periodOverPeriodPct(sorted.map(([, v]) => v));
+  return sorted.map(([date, v], i) => ({
+    periodKey: date,
+    periodLabel: DAY_LABEL(date),
+    rangeLabel: DAY_LABEL(date),
+    net: v.net,
+    gross: v.gross,
+    discount: v.discount,
+    discountPct: v.gross > 0 ? (v.discount / v.gross) * 100 : null,
+    bills: v.bills,
+    qty: v.qty,
+    atv: v.bills > 0 ? v.net / v.bills : null,
+    isComplete: date < today,
+    ...deltas[i]!,
+  }));
+}
+
+/** One store's (or, storeId=null, network's) month-by-month series with MoM%, from vw_ebo_sales_monthly's own already-full rows. */
+export function buildMonthlyPeriodSeries(monthlyRows: MonthlyRow[], storeId: string | null, todayMonthStart: string): PeriodRow[] {
+  const acc = new Map<string, { bills: number; gross: number; discount: number; net: number; qty: number }>();
+  for (const m of monthlyRows) {
+    if (!m.month_start || !m.store_id) continue;
+    if (storeId !== null && m.store_id !== storeId) continue;
+    const cur = acc.get(m.month_start) ?? { bills: 0, gross: 0, discount: 0, net: 0, qty: 0 };
+    cur.bills += Number(m.sale_bills);
+    cur.gross += Number(m.gross_sales);
+    cur.discount += Number(m.discount);
+    cur.net += Number(m.net_sales);
+    cur.qty += Number(m.sale_quantity);
+    acc.set(m.month_start, cur);
+  }
+  const sorted = [...acc.entries()].sort(([a], [b]) => a.localeCompare(b));
+  const deltas = periodOverPeriodPct(sorted.map(([, v]) => v));
+  return sorted.map(([monthStart, v], i) => ({
+    periodKey: monthStart,
+    periodLabel: MONTH_LABEL(monthStart),
+    rangeLabel: MONTH_LABEL(monthStart),
+    net: v.net,
+    gross: v.gross,
+    discount: v.discount,
+    discountPct: v.gross > 0 ? (v.discount / v.gross) * 100 : null,
+    bills: v.bills,
+    qty: v.qty,
+    atv: v.bills > 0 ? v.net / v.bills : null,
+    isComplete: monthStart < todayMonthStart,
+    ...deltas[i]!,
+  }));
+}
+
+/**
+ * One store's (or, storeId=null, network's) year-by-year series with YoY%.
+ * No dedicated DB view exists for this grain — aggregated here from the
+ * already-fetched monthly rows, grouped by financial_year (this app's own
+ * Apr-Mar fiscal convention, matching sales.vw_sale_transactions_export's
+ * financial_year — not calendar year, which would split a single retail
+ * season across two buckets).
+ */
+export function buildYearlyPeriodSeries(monthlyRows: MonthlyRow[], storeId: string | null, currentFinancialYear: string): PeriodRow[] {
+  const acc = new Map<string, { bills: number; gross: number; discount: number; net: number; qty: number }>();
+  for (const m of monthlyRows) {
+    if (!m.financial_year || !m.store_id) continue;
+    if (storeId !== null && m.store_id !== storeId) continue;
+    const cur = acc.get(m.financial_year) ?? { bills: 0, gross: 0, discount: 0, net: 0, qty: 0 };
+    cur.bills += Number(m.sale_bills);
+    cur.gross += Number(m.gross_sales);
+    cur.discount += Number(m.discount);
+    cur.net += Number(m.net_sales);
+    cur.qty += Number(m.sale_quantity);
+    acc.set(m.financial_year, cur);
+  }
+  const sorted = [...acc.entries()].sort(([a], [b]) => a.localeCompare(b));
+  const deltas = periodOverPeriodPct(sorted.map(([, v]) => v));
+  return sorted.map(([fy, v], i) => ({
+    periodKey: fy,
+    periodLabel: fy,
+    rangeLabel: fy,
+    net: v.net,
+    gross: v.gross,
+    discount: v.discount,
+    discountPct: v.gross > 0 ? (v.discount / v.gross) * 100 : null,
+    bills: v.bills,
+    qty: v.qty,
+    atv: v.bills > 0 ? v.net / v.bills : null,
+    isComplete: fy < currentFinancialYear,
+    ...deltas[i]!,
+  }));
 }
