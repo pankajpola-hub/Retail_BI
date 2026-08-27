@@ -173,9 +173,34 @@ Reason: these touch nearly every table file in the app, which would conflict wit
   `line_seq` derivation per writer). Small blast radius today (+1 unit, +Rs 89) but unbounded if
   someone re-uploads Excel for a sync-owned date range. Recommended fix (not yet built): refuse/
   auto-delete Excel rows for dates the sync owns.
-- **C-07** (P2) — `atv` defined differently at daily grain (SALE-only numerator) vs weekly/
-  monthly (returns-inclusive numerator). Needs a `sale_net_amount` column threaded through
-  `vw_ebo_sales_daily` so weekly/monthly can recompute correctly — a real (small) migration.
+- **C-07 — INVESTIGATED AND REJECTED 2026-08-27, do not re-attempt without re-reading this.**
+  The audit's premise was wrong: it treated "weekly/monthly ATV includes returns in the
+  numerator while daily's doesn't" as a bug to fix by making weekly/monthly match daily
+  (sale-bills-only numerator). That exact question was already investigated and explicitly
+  DECIDED the other way, twice, in migrations `0050_semantic_layer_grain_corrections.sql` and
+  `0051_correct_atv_sale_bills_only_rollup_note.sql`:
+    - `0050`'s own header: "Per Objective.md's non-negotiable rule: no business logic changes.
+      Where production is internally inconsistent (see ATV below), this migration DOCUMENTS
+      the inconsistency rather than resolving it — resolving it would change a displayed
+      number, which is a business ruling, not a migration."
+    - The catalogue was corrected to point `atv` at the WEEKLY definition
+      (`net_sales/sale_bills`, returns netted off) because that is what `computeSalesTotals`/
+      `computeLeague` in `aggregate.ts` — and every page — actually renders. The daily view's
+      sale-bills-only figure was registered as a SEPARATE, deliberately distinct metric
+      (`atv_sale_bills_only`, `sales.vw_ebo_sales_daily.atv`) that "is a legitimate, meaningful
+      figure... it simply is not what any page currently displays."
+  A same-session attempt at "the C-07 fix" got as far as writing migration
+  `0095_atv_weekly_monthly_sale_only.sql` and editing `aggregate.ts`'s four period-series
+  builders to sum a new `sale_net_amount`/`saleNet` field instead of `net_sales`/`net` for ATV
+  — before this was found and the whole change was reverted (migration file deleted, never
+  run against the DB; `aggregate.ts`/`page.tsx` reverted with `git checkout`). Confirmed clean:
+  `git status` shows no diff, `tsc --noEmit` clean.
+  If this is ever revisited, it needs a genuine PRODUCT decision (does the business want
+  ATV to mean "net revenue per sale bill after returns" or "average sale-bill size ignoring
+  returns"), not a mechanical "make the grains agree" fix — and should update
+  `workspace.metric_definitions` (`atv` vs `atv_sale_bills_only`) and
+  `web/scripts/verify-metrics.mjs` (which explicitly asserts the current weekly formula as
+  correct) consistently with whatever is decided, not just the view/TS code.
 - **C-10** (P2, latent) — store exclusion (`BO-004`/`BO-002`) implemented twice: SQL views via
   `is_active`, TypeScript via a hardcoded id list in 9 files (also D-18, partially overlapping —
   D-18 was assigned to the frontend-polish agent as a code-quality note but NOT as a full fix of
