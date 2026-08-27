@@ -143,6 +143,67 @@ export function ProductAttributeSalesTable({ lines }: { lines: SaleAttributeLine
     [filtered, state.groupBy, groupKeyGetters]
   );
 
+  /**
+   * Grand-total row, pinned to the bottom, computed from `filtered`.
+   *
+   * WHAT SUMS AND WHAT DOESN'T. aggregateSalesByAttributes() puts every sale
+   * line in exactly ONE bucket, so net / gross / qty / returnsValue partition
+   * the scope and add up exactly. `bills` does NOT: it is
+   * `billKeys.size` — the count of DISTINCT bills touching the group — and one
+   * bill spanning two seasons is counted in both. Σbills therefore
+   * over-counts, which is what the section subtitle already warns about, so
+   * the Bills footer stays an em-dash.
+   *
+   * That is also why ATV and UPT are em-dashed here, a deliberate deviation
+   * from the audit's suggested `Σnet/Σbills` / `Σqty/Σbills`: both divide by
+   * the very denominator just established as invalid, so they would print a
+   * confidently UNDERSTATED number (inflated denominator). A row-level ATV is
+   * `saleNet/bills` and `saleNet` is not carried on the row either, so there
+   * is no exact reconstruction available. An em-dash is the honest answer;
+   * the true network ATV is on the KPI cards above, computed from the raw
+   * lines rather than from these overlapping buckets.
+   *
+   * Discount % IS recomputable — both of its terms are additive — using
+   * attributeBreakdown.ts:320-321's own formula: discount = gross - net,
+   * pct = discount/gross*100.
+   *
+   * Share is the sum of the filtered rows' own netSharePct, which is
+   * identically Σfiltered.net / totalNet * 100 — so it reads 100% when
+   * nothing is filtered out, and the true partial share when something is.
+   * That is strictly more informative than hard-coding "100%".
+   */
+  const pinnedTotal = useMemo<SaleAttributeRow[]>(() => {
+    if (filtered.length === 0) return [];
+    let net = 0;
+    let gross = 0;
+    let qty = 0;
+    let returnsValue = 0;
+    let netSharePct = 0;
+    for (const r of filtered) {
+      net += r.net;
+      gross += r.gross;
+      qty += r.qty;
+      returnsValue += r.returnsValue;
+      netSharePct += r.netSharePct;
+    }
+    const discount = gross - net;
+    return [
+      {
+        values: ["Total", ...combo.slice(1).map(() => "")],
+        net,
+        gross,
+        discount,
+        discountPct: gross > 0 ? (discount / gross) * 100 : null,
+        bills: 0, // never rendered — the Bills formatter em-dashes the pinned row.
+        qty,
+        atv: null,
+        upt: null,
+        returnsValue,
+        netSharePct,
+      },
+    ];
+  }, [filtered, combo]);
+
   const poolAttributes = SALE_ATTRIBUTE_KEYS.filter((a) => !combo.includes(a));
   const comboLabel = combo.map((a) => SALE_ATTRIBUTE_LABELS[a]).join(" + ");
   const colCount = combo.length + 8;
@@ -200,7 +261,18 @@ export function ProductAttributeSalesTable({ lines }: { lines: SaleAttributeLine
       { field: "net", headerName: "Net sales", flex: 0.9, ...right, valueFormatter: (p) => INR(p.value) },
       { field: "netSharePct", headerName: "Share", flex: 0.6, ...right, valueFormatter: (p) => PCT(p.value) },
       { field: "qty", headerName: "Qty", flex: 0.6, ...right, valueFormatter: (p) => Math.round(p.value).toLocaleString("en-IN") },
-      { field: "bills", headerName: "Bills", flex: 0.6, ...right, valueFormatter: (p) => Math.round(p.value).toLocaleString("en-IN") },
+      // Bills overlap across attribute groups (one bill can contain two
+      // seasons), so they do not sum to the network total — the same caveat
+      // the section subtitle carries. The pinned total em-dashes it rather
+      // than printing an over-count.
+      {
+        field: "bills",
+        headerName: "Bills",
+        flex: 0.6,
+        ...right,
+        valueFormatter: (p) => (p.node?.rowPinned === "bottom" ? "—" : Math.round(p.value).toLocaleString("en-IN")),
+        headerTooltip: "Counts every bill containing the attribute — bills overlap across groups, so they do not add up to a network total.",
+      },
       { field: "atv", headerName: "ATV", flex: 0.7, ...right, valueFormatter: (p) => (p.value === null ? "—" : INR(p.value)) },
       { field: "upt", headerName: "UPT", flex: 0.6, ...right, valueFormatter: (p) => (p.value === null ? "—" : Number(p.value).toFixed(2)) },
       { field: "discountPct", headerName: "Discount %", flex: 0.7, ...right, valueFormatter: (p) => PCT(p.value) },
@@ -327,7 +399,13 @@ export function ProductAttributeSalesTable({ lines }: { lines: SaleAttributeLine
         animateRows={false}
         rowData={gridRows}
         columnDefs={columnDefs as unknown as ColDef<GridRow>[]}
-        heightPx={Math.min(640, Math.max(160, 46 + gridRows.length * 38))}
+        pinnedBottomRowData={pinnedTotal as unknown as GridRow[]}
+        heightPx={Math.min(640, Math.max(160, 46 + gridRows.length * 38)) + (pinnedTotal.length > 0 ? 40 : 0)}
+        getRowStyle={(p) =>
+          p.node.rowPinned === "bottom"
+            ? { background: "var(--surface-2)", fontWeight: 700, borderTop: "2px solid var(--line)" }
+            : undefined
+        }
         getRowId={(p) => (isGroupHeader(p.data) ? p.data.id : (p.data as SaleAttributeRow).values.join("|"))}
         overlayNoRowsTemplate={`No ${comboLabel.toLowerCase()} groups match these filters.`}
       />

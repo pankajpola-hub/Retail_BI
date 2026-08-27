@@ -11,6 +11,8 @@ type LeagueRow = {
   storeId: string;
   name: string;
   net: number;
+  gross: number;
+  discount: number;
   bills: number;
   qty: number;
   atv: number | null;
@@ -55,6 +57,47 @@ export function StoreLeagueDrilldown({ league, from, to }: { league: LeagueRow[]
       });
     }
   }
+
+  /**
+   * Grand-total row pinned to the bottom. Stores partition the sales, so
+   * net / gross / discount / bills / qty all add up exactly.
+   *
+   * The three ratios are recomputed from the summed numerator and denominator
+   * using computeLeague()'s own per-store formulas (lib/sales/aggregate.ts) —
+   * never an average of the per-row values:
+   *   ATV    = Σnet      / Σbills   (null when Σbills == 0)
+   *   UPT    = Σqty      / Σbills   (null when Σbills == 0)
+   *   Disc % = Σdiscount / Σgross   (null when Σgross == 0)
+   */
+  const pinnedTotal = useMemo<LeagueRow[]>(() => {
+    if (league.length === 0) return [];
+    let net = 0;
+    let gross = 0;
+    let discount = 0;
+    let bills = 0;
+    let qty = 0;
+    for (const r of league) {
+      net += r.net;
+      gross += r.gross;
+      discount += r.discount;
+      bills += r.bills;
+      qty += r.qty;
+    }
+    return [
+      {
+        storeId: "__total__",
+        name: "Total",
+        net,
+        gross,
+        discount,
+        bills,
+        qty,
+        atv: bills > 0 ? net / bills : null,
+        upt: bills > 0 ? qty / bills : null,
+        discountPct: gross > 0 ? (discount / gross) * 100 : null,
+      },
+    ];
+  }, [league]);
 
   const columnDefs = useMemo<ColDef<LeagueRow>[]>(
     () => [
@@ -121,9 +164,20 @@ export function StoreLeagueDrilldown({ league, from, to }: { league: LeagueRow[]
       <DataGrid<LeagueRow>
         rowData={league}
         columnDefs={columnDefs}
-        heightPx={Math.max(120, 46 + league.length * 40)}
-        onRowClicked={(e) => e.data && openDrilldown(e.data.storeId, e.data.name)}
+        pinnedBottomRowData={pinnedTotal}
+        heightPx={Math.max(120, 46 + league.length * 40) + (pinnedTotal.length > 0 ? 42 : 0)}
+        // The pinned total is a summary, not a store — clicking it must not
+        // try to fetch a trend for a storeId that doesn't exist.
+        onRowClicked={(e) => {
+          if (e.node.rowPinned === "bottom") return;
+          if (e.data) openDrilldown(e.data.storeId, e.data.name);
+        }}
         rowStyle={{ cursor: "pointer" }}
+        getRowStyle={(p) =>
+          p.node.rowPinned === "bottom"
+            ? { background: "var(--surface-2)", fontWeight: 700, borderTop: "2px solid var(--line)", cursor: "default" }
+            : undefined
+        }
         overlayNoRowsTemplate="No stores with sales in this window."
       />
 

@@ -126,6 +126,11 @@ export function computeLeague(weekRows: WeeklyRow[], storesInView: string[], sto
       storeId,
       name: storeNames.get(storeId) ?? storeId,
       net: v.net,
+      // gross/discount are carried through (not just folded into discountPct)
+      // so a table footer can recompute Σdiscount/Σgross rather than average
+      // the per-store percentages, which would be wrong.
+      gross: v.gross,
+      discount: v.discount,
       bills: v.bills,
       qty: v.qty,
       atv: v.bills > 0 ? v.net / v.bills : null,

@@ -1007,6 +1007,17 @@ async function EcommDetailSection({
               </tr>
             )}
           </tbody>
+          {/* topSkuRows is .slice(0, 20) — this totals the styles SHOWN, which
+              is why the label says so rather than "Total". */}
+          {topSkuRows.length > 0 && (
+            <tfoot>
+              <tr className="border-t-2 border-line bg-surface-2 font-bold">
+                <td className="px-3 py-2">Total — top {topSkuRows.length} styles</td>
+                <td className="px-3 py-2 text-right font-mono">{topSkuRows.reduce((s, r) => s + r.units, 0)}</td>
+                <td className="px-3 py-2 text-right font-mono">{INR(topSkuRows.reduce((s, r) => s + r.net, 0))}</td>
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
       </SectionCard>
@@ -1033,6 +1044,15 @@ async function EcommDetailSection({
               </tr>
             )}
           </tbody>
+          {/* Statuses partition the returns, so this is the full return count. */}
+          {returnStatusRows.length > 0 && (
+            <tfoot>
+              <tr className="border-t-2 border-line bg-surface-2 font-bold">
+                <td className="px-3 py-2">Total</td>
+                <td className="px-3 py-2 text-right font-mono">{returnStatusRows.reduce((s, [, c]) => s + c, 0)}</td>
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
       </SectionCard>
