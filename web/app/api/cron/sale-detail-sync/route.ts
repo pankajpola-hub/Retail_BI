@@ -56,9 +56,37 @@ function toDDMMYYYY(isoDate: string): string {
   return `${d}/${m}/${y}`;
 }
 
-function toUnsigned(v: number | string | null): number {
+/**
+ * Keeps sale_detail's own sign — a RETURN arrives negative and is STORED
+ * negative.
+ *
+ * This used to be `toUnsigned()` with a Math.abs(), on the belief (recorded
+ * in the original sync plan) that raw_logic.sales_transactions holds unsigned
+ * magnitudes with every consumer applying the sign itself from bill_type.
+ * That belief was wrong, and it silently inflated every current-FY number in
+ * the app until 2026-08-27. Two facts settle the convention:
+ *
+ * 1. The ERP's own Sale Register export — the source of truth the user
+ *    reconciles against — emits returns NEGATIVE (qty -1, net -1150.00).
+ * 2. Every Excel-uploaded row already in the table (19,254 of 24,010) stores
+ *    them negative, and the whole sales.vw_ebo_* reporting chain
+ *    (vw_ebo_sales_lines -> vw_ebo_bill -> vw_ebo_sales_daily/_weekly/
+ *    _monthly, and 0092's vw_ebo_sale_attribute_lines) sums net_amount AS
+ *    STORED with no sign logic of its own. It needs the stored value signed.
+ *
+ * With Math.abs() in place, a return was added to sales instead of subtracted
+ * — an error of exactly 2x the returns value. Measured against the user's own
+ * ERP export for 01-25 Aug 2026: Undri showed 621,403 against a true 585,315,
+ * and quantity 501 against a true 471.
+ *
+ * lib/replenishment/compute.ts and lib/replenishment/mix.ts used to apply
+ * `sign = bill_type === "RETURN" ? -1 : 1` on top of this; that is removed in
+ * the same change, since double-signing an already-signed value is what made
+ * those two pages wrong on the Excel-era rows.
+ */
+function toSigned(v: number | string | null): number {
   const n = v === null || v === undefined ? 0 : Number(v);
-  return Number.isFinite(n) ? Math.abs(n) : 0;
+  return Number.isFinite(n) ? n : 0;
 }
 
 /**
@@ -132,9 +160,9 @@ export async function GET(request: Request) {
           bill_date: billDate,
           bill_no: r.bill_no,
           item_code: r.barcode,
-          total_quantity: toUnsigned(r.signed_quantity),
-          gross_amount: toUnsigned(r.signed_gross_amount),
-          net_amount: toUnsigned(r.signed_net_amount),
+          total_quantity: toSigned(r.signed_quantity),
+          gross_amount: toSigned(r.signed_gross_amount),
+          net_amount: toSigned(r.signed_net_amount),
           agent_name: r.agent_name,
           scheme_name: r.scheme_name,
           scheme_group_name: r.scheme_group_name,

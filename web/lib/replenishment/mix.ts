@@ -245,13 +245,20 @@ export async function computeSaleStockMix(
     const rowStoreId = storeBranchToId.get(r.branch_name);
     if (!rowStoreId) continue; // warehouse/office channel rows aren't store demand
     if (storeId && rowStoreId !== storeId) continue;
-    const sign = r.bill_type === "RETURN" ? -1 : r.bill_type === "SALE" ? 1 : 0;
-    if (sign === 0) continue;
+    // OTHER bill types (neither SALE nor RETURN) aren't store demand.
+    if (r.bill_type !== "SALE" && r.bill_type !== "RETURN") continue;
     const { key, styleNo, color } = styleColorKeyOf(r.item_code);
     const cur = salesByKey.get(key) ?? { styleNo, color, qty: 0 };
-    cur.qty += sign * Number(r.total_quantity);
+    // No sign multiplication (removed 2026-08-27) — total_quantity is stored
+    // ALREADY SIGNED, a RETURN row being negative. Multiplying by -1 here
+    // negated an already-negative return into positive demand, inflating the
+    // sale mix by 2x the returned quantity. Same fix as compute.ts:342; see
+    // toSigned()'s header in app/api/cron/sale-detail-sync/route.ts for why
+    // signed-at-rest is the canonical convention.
+    const qty = Number(r.total_quantity);
+    cur.qty += qty;
     salesByKey.set(key, cur);
-    salesByItem.set(r.item_code, (salesByItem.get(r.item_code) ?? 0) + sign * Number(r.total_quantity));
+    salesByItem.set(r.item_code, (salesByItem.get(r.item_code) ?? 0) + qty);
   }
 
   const totalStock = [...stockByKey.values()].reduce((s, v) => s + Math.max(0, v.qty), 0);
