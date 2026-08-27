@@ -89,6 +89,15 @@ export function BulkUploadForm() {
   const overwriteCount =
     state.kind === "preview" || state.kind === "committing" ? state.rows.filter((r) => !r.error && r.existing).length : 0;
 
+  // Preview totals — deliberately over the VALID rows only, i.e. exactly the
+  // rows `commit()` above sends to /bulk-commit. Erroring rows are never
+  // written, so including them would overstate what is about to be saved.
+  // Both columns are plain unit counts, so both are straight sums.
+  const previewRows = state.kind === "preview" || state.kind === "committing" ? state.rows : [];
+  const committableRows = previewRows.filter((r) => !r.error);
+  const freshTotal = committableRows.reduce((s, r) => s + (r.freshTarget ?? 0), 0);
+  const discountedTotal = committableRows.reduce((s, r) => s + (r.discountedTarget ?? 0), 0);
+
   return (
     <div className="border border-line-soft p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -156,6 +165,19 @@ export function BulkUploadForm() {
                   </tr>
                 ))}
               </tbody>
+              {committableRows.length > 0 && (
+                <tfoot>
+                  <tr className="border-t-2 border-line bg-surface-2 font-semibold">
+                    <td className="px-2 py-1.5" />
+                    <td className="px-2 py-1.5" colSpan={2}>
+                      Total ({committableRows.length} valid row{committableRows.length === 1 ? "" : "s"})
+                    </td>
+                    <td className="px-2 py-1.5 text-right font-mono">{freshTotal}</td>
+                    <td className="px-2 py-1.5 text-right font-mono">{discountedTotal}</td>
+                    <td className="px-2 py-1.5 text-[12px] text-ink-3">About to be saved</td>
+                  </tr>
+                </tfoot>
+              )}
             </table>
           </div>
 

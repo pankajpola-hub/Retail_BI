@@ -77,6 +77,18 @@ export default async function FootfallPage({
 
   const missingCount = (recent ?? []).filter((r) => !r.has_footfall).length;
 
+  // Footer totals for the daily log. `vw_footfall_completeness` returns a row
+  // for EVERY day in the range, including days with no entry yet (has_footfall
+  // = false, footfall = null) — those render "not entered" above, so they must
+  // not count towards either the sum or the mean. The average is therefore
+  // Σfootfall / (days actually entered), not / (days in range): a missing day
+  // is unknown, not zero, and dividing by the wider denominator would quietly
+  // understate the store's real daily average by the missingCount already
+  // warned about at the top of this section.
+  const enteredDays = (recent ?? []).filter((r) => r.has_footfall);
+  const footfallTotal = enteredDays.reduce((s, r) => s + Number(r.footfall ?? 0), 0);
+  const footfallAvg = enteredDays.length > 0 ? Math.round(footfallTotal / enteredDays.length) : null;
+
   // core.stores is RLS-filtered to the caller's permitted stores already,
   // so this list can't offer a store they aren't allowed to write to.
   // BO-004 (Phoenix Palassio, Lucknow) and BO-002 (Baramati, 0091) are both
@@ -168,6 +180,21 @@ export default async function FootfallPage({
                 </tr>
               )}
             </tbody>
+            {enteredDays.length > 0 && (
+              <tfoot>
+                <tr className="border-t-2 border-line bg-surface-2 font-semibold">
+                  <td className="px-3 py-1.5">Total</td>
+                  <td className="px-3 py-1.5 text-right font-mono">{footfallTotal.toLocaleString("en-IN")}</td>
+                  <td className="px-3 py-1.5 text-[12px] font-normal text-ink-3">
+                    {footfallAvg === null
+                      ? "—"
+                      : `Avg/day ${footfallAvg.toLocaleString("en-IN")} · ${enteredDays.length} day${
+                          enteredDays.length === 1 ? "" : "s"
+                        } entered`}
+                  </td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </div>
