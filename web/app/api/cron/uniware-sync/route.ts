@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { cronAuthFailure } from "@/lib/cron/auth";
 import { createAdminClient } from "@/lib/data/admin";
 import {
   searchSaleOrders,
@@ -115,10 +116,9 @@ type SyncSummary = {
  * failure.
  */
 export async function GET(request: Request) {
-  const auth = request.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ ok: false, error: { code: "unauthorized", message: "Not authorized." } }, { status: 401 });
-  }
+  // Fail-closed shared secret check — see lib/cron/auth.ts (audit B-07).
+  const denied = cronAuthFailure(request);
+  if (denied) return denied;
 
   const startedAt = new Date();
   const admin = await createAdminClient();
@@ -128,6 +128,39 @@ export async function GET(request: Request) {
     returnsSync: { enabled: uniwareRestEnabled(), codesFound: 0, returnsProcessed: 0, returnsFailed: 0, returnsUpserted: 0 },
   };
   const errors: string[] = [];
+
+  // "Started" row, written BEFORE any phase runs (audit B-08). The
+  // completion row at the end of this handler only ever gets written if the
+  // handler reaches it — and the worst failure mode here is precisely the
+  // one that prevents that: a platform FUNCTION_INVOCATION_TIMEOUT kills the
+  // process outright, so a hung Uniware call used to leave NO row at all, an
+  // invisible gap rather than a recorded failure (0068's own column comment
+  // reads a null `success` as exactly that: "the route crashed before
+  // writing this row").
+  //
+  // ops.fn_log_uniware_sync_run (0068) is insert-only — there is no update
+  // door, and adding one is a migration, out of scope here — so this is a
+  // second row rather than a row that gets completed in place. A killed
+  // invocation is therefore visible in /api/cron/uniware-sync/status as a
+  // row with finished_at null and success null that never got a matching
+  // completion row with the same started_at.
+  //
+  // Best-effort, exactly like the completion write below: a logging failure
+  // must not turn a working sync into a 500.
+  try {
+    await admin.schema("ops").rpc("fn_log_uniware_sync_run", {
+      p_started_at: startedAt.toISOString(),
+      p_finished_at: null,
+      p_header_orders_upserted: 0,
+      p_item_orders_processed: 0,
+      p_item_orders_failed: 0,
+      p_errors: [],
+      p_success: null,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    errors.push(`sync_runs start log write: ${message}`);
+  }
 
   // ---- Phase 1: header sync ----
   // Walked in <=30-day chunks across the full lookback window (see

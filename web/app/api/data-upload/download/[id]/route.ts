@@ -57,7 +57,13 @@ export async function GET(_request: Request, { params }: { params: { id: string 
   return new NextResponse(new Uint8Array(buffer), {
     headers: {
       "Content-Type": "application/octet-stream",
-      "Content-Disposition": `attachment; filename="${upload.file_name.replace(/"/g, "")}"`,
+      // file_name originates from client JSON (data-upload/register/route.ts
+      // takes body?.fileName and only checks it is a non-empty string), so
+      // it reaches this header as attacker-influenced text. Stripping just
+      // the double quote left CR, LF and ";" through — a header-injection
+      // shape (audit B-12). Allow-list instead of deny-list: anything
+      // outside word chars, dot, dash and space becomes "_".
+      "Content-Disposition": `attachment; filename="${upload.file_name.replace(/[^\w.\- ]/g, "_")}"`,
       "Content-Length": String(buffer.length),
     },
   });

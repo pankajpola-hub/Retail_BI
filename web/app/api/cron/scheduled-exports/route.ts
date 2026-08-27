@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { cronAuthFailure } from "@/lib/cron/auth";
 import { createAdminClient } from "@/lib/data/admin";
 import { runDueScheduledExports } from "@/lib/exports/scheduledExports";
 
@@ -19,10 +20,9 @@ export const maxDuration = 60;
  * weekly cron entry needed.
  */
 export async function GET(request: Request) {
-  const auth = request.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ ok: false, error: { code: "unauthorized", message: "Not authorized." } }, { status: 401 });
-  }
+  // Fail-closed shared secret check — see lib/cron/auth.ts (audit B-07).
+  const denied = cronAuthFailure(request);
+  if (denied) return denied;
 
   const admin = await createAdminClient();
   const errors: string[] = [];

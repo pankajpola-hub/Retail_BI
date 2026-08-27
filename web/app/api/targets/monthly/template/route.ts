@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { createClient } from "@/lib/data/client";
+import { roleFailure } from "@/app/api/_shared/requireRole";
 
 // Any date within the target month works — only the month it falls in is
 // used, matching the single-target form (which asks for a month, not a
@@ -19,6 +20,14 @@ export async function GET() {
   if (!user) {
     return NextResponse.json({ ok: false, error: { code: "unauthorized", message: "Not signed in." } }, { status: 401 });
   }
+
+  // Same ho_admin/super_admin gate as /bulk-preview and /bulk-commit (audit
+  // B-11) — this is the first step of the same upload flow, and the sheet it
+  // returns embeds a real core.stores.store_name. Low impact on its own
+  // (store names are not secret), but there is no reason for a role that
+  // cannot upload targets to be able to download the upload template.
+  const denied = await roleFailure(supabase, user.id, "Only HO Admin / Super Admin can download the monthly targets template.");
+  if (denied) return denied;
 
   const { data: stores } = await supabase.schema("core").from<StoreRow>("stores").select("store_name").order("store_id");
   const exampleStore = stores?.[0]?.store_name ?? "Undri";
