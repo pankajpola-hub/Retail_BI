@@ -10,17 +10,23 @@ import {
   computeHourlyPoints,
   computeAgentRows,
   buildWeekSeries,
+  buildDailyPeriodSeries,
+  buildMonthlyPeriodSeries,
+  buildYearlyPeriodSeries,
   HOUR_START,
   HOUR_END,
   type DailyRow,
   type WeeklyRow,
+  type DailyFullRow,
+  type MonthlyRow,
+  type PeriodRow,
   type SchemeDailyRow,
   type HourlyRow,
   type AgentDailyRow,
 } from "@/lib/sales/aggregate";
 import { timeAll } from "@/lib/perf/timing";
 import { StoreLeagueDrilldown } from "@/app/(workspace)/workspace/StoreLeagueDrilldown";
-import { WeeklyRowDrilldown } from "@/app/(workspace)/workspace/WeeklyRowDrilldown";
+import { PeriodSalesFacetedTable, type PeriodFacetedRow } from "@/app/(ho)/sales/PeriodSalesFacetedTable";
 import type { MetricDefinition, DimensionDefinition } from "@/lib/workspace/semantic";
 import { planQueries, buildQuery, isSatisfiable, type QueryRequirement, type DimensionPredicate } from "@/lib/workspace/queryPlanner";
 
@@ -59,10 +65,16 @@ import { planQueries, buildQuery, isSatisfiable, type QueryRequirement, type Dim
  * bills — which is exactly why the parity fixture never caught it. See that
  * migration's header for the full account.
  *
- * All 6 components below share ONE Promise.all fetch (same as
- * SalesSection) — the Workspace page calls fetchSalesComponentData() ONCE
- * per render regardless of how many of these 6 the user has added, then
- * hands the same resolved data to whichever ones are present.
+ * All components below share ONE fetchSalesComponentData() call per page
+ * render (workspace/page.tsx calls it once, not once per added component,
+ * regardless of how many of these are on the workspace) — see that file's
+ * own `salesDataPromise` comment for how that single call now streams to
+ * each grid item independently instead of blocking the whole page.
+ *
+ * D-05 parity (2026-08-27) added two more grains (Daily full-column, Monthly)
+ * to the fetch below so WeeklySalesTable could swap onto the same
+ * PeriodSalesFacetedTable component sales/page.tsx uses — see that
+ * component's own header comment for the full port rationale.
  */
 
 export type SalesComponentScope = {
@@ -71,6 +83,14 @@ export type SalesComponentScope = {
   from: string;
   to: string;
   weeklyStart: string;
+  /**
+   * "Now", as the caller's page render saw it — threaded through rather than
+   * computed fresh in here so a mid-render clock tick can't disagree with
+   * whatever the rest of the page already decided "today" is. Only used for
+   * the Daily/Monthly/Yearly grains' isComplete flags (buildDailyPeriodSeries
+   * etc.), mirroring app/(ho)/sales/page.tsx's EboDetailSection.
+   */
+  today: Date;
   /**
    * The workspace.metric_definitions rows this module plans against, keyed by
    * id — fetched by the CALLER alongside its own registry read so the
@@ -138,6 +158,16 @@ function plannedOrFallback<T>(
   return buildQuery<T>(supabase, only!);
 }
 
+const isoDate = (d: Date) => d.toISOString().slice(0, 10);
+// Same formatting as sales/page.tsx (:525-530) — kept in sync by inspection
+// since that file is a page module this one deliberately doesn't import from.
+const weekDayLabel = (iso: string) => new Date(iso + "T00:00:00").toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+function addDaysIso(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 async function fetchRaw(scope: SalesComponentScope) {
   const { supabase, storeIds, from, to, weeklyStart, metricsById, dimensionsById, dimensionFilters } = scope;
   const applyStore = <T extends { eq: (c: string, v: string) => T; in: (c: string, v: string[]) => T }>(q: T): T => {
@@ -146,6 +176,14 @@ async function fetchRaw(scope: SalesComponentScope) {
     return q.in("store_id", storeIds);
   };
   const period = { from, to };
+  // Daily/Monthly grain windows for the period-faceted table — exactly the
+  // same lookback sales/page.tsx's EboDetailSection uses (:363-366): one day
+  // back gives Daily a DoD baseline, ~400 days back gives Monthly (and
+  // Yearly, which reuses these same monthly rows) a real prior-period one.
+  const dailyStart = new Date(from);
+  dailyStart.setDate(dailyStart.getDate() - 1);
+  const monthlyStart = new Date(from);
+  monthlyStart.setDate(monthlyStart.getDate() - 400);
   // One filters object shared by all three planned requirements, so a
   // governed filter can never be applied to one component and forgotten on
   // another within the same render.
@@ -175,7 +213,7 @@ async function fetchRaw(scope: SalesComponentScope) {
     );
   }
 
-  const [{ data: daily }, { data: weeks }, { data: schemeDaily }, { data: hourly }, { data: agentDaily }] = await timeAll(
+  const [{ data: daily }, { data: weeks }, { data: schemeDaily }, { data: hourly }, { data: agentDaily }, { data: dailyFull }, { data: monthly }] = await timeAll(
     "workspace:sales-components",
     [
       plannedOrFallback<DailyRow>(
@@ -215,30 +253,108 @@ async function fetchRaw(scope: SalesComponentScope) {
       // no metric_definitions row modelling that grain, same reason the
       // weekly fetch above stays hand-written.
       applyStore(supabase.schema("sales").from<AgentDailyRow>("vw_ebo_agent_daily").select("*").gte("bill_date", from).lte("bill_date", to) as unknown as QueryChain<AgentDailyRow>),
+      // Daily/Monthly grain — added for the period-faceted table's grain
+      // toggle (D-05 parity items 3/4/5). NOT planned, same reason as weekly
+      // above: these are wide, full-column reads (atv/discount_pct already
+      // computed server-side by the view), not a single named metric.
+      applyStore(
+        supabase.schema("sales").from<DailyFullRow>("vw_ebo_sales_daily").select("*").gte("bill_date", isoDate(dailyStart)).lte("bill_date", to) as unknown as QueryChain<DailyFullRow>
+      ),
+      applyStore(
+        supabase.schema("sales").from<MonthlyRow>("vw_ebo_sales_monthly").select("*").gte("month_start", isoDate(monthlyStart)).lte("month_start", to) as unknown as QueryChain<MonthlyRow>
+      ),
     ] as const
   );
 
-  return { daily, weeks, schemeDaily, hourly, agentDaily };
+  return { daily, weeks, schemeDaily, hourly, agentDaily, dailyFull, monthly };
+}
+
+/**
+ * Flattens one grain's builder output into one row per (store, period), plus
+ * a synthetic "Network total" bucket when more than one store is in view —
+ * same shape/rule as sales/page.tsx's EboDetailSection buildRows(), so the
+ * faceted table's "Network total" summary block behaves identically on both
+ * pages. Duplicated rather than imported from sales/page.tsx because that
+ * file is a page module (not a lib), same reasoning already documented for
+ * this file's own applyStore() vs sales/page.tsx's.
+ */
+function buildPeriodRows<T extends PeriodRow>(
+  storesInView: string[],
+  storeNames: Map<string, string>,
+  builder: (storeId: string | null) => T[]
+): PeriodFacetedRow[] {
+  const perStore: PeriodFacetedRow[] = storesInView.flatMap((sid) =>
+    builder(sid).map((r) => ({ ...r, storeId: sid, storeName: storeNames.get(sid) ?? sid }))
+  );
+  if (storesInView.length > 1) {
+    perStore.push(...builder(null).map((r) => ({ ...r, storeId: "__network__", storeName: "Network total" })));
+  }
+  return perStore;
 }
 
 function deriveSalesComponentData(
   raw: Awaited<ReturnType<typeof fetchRaw>>,
   storeNames: Map<string, string>,
   from: string,
-  to: string
+  to: string,
+  today: Date
 ) {
   const totals = computeSalesTotals(raw.weeks, from);
   const league = computeLeague(totals.weekRows, totals.storesInView, storeNames);
   const { schemeRows, schemeMaxQty } = computeSchemeRows(raw.schemeDaily);
   const trendPoints = computeTrendPoints(raw.daily);
   const hourlyPoints = computeHourlyPoints(raw.hourly);
+
+  // Four pre-computed grain row-sets for the period-faceted table — same
+  // builders, same window logic, same "Network total" bucket rule as
+  // sales/page.tsx's EboDetailSection (:409-446).
+  const { storesInView } = totals;
+  const todayStr = isoDate(today);
+  const todayMonthStart = todayStr.slice(0, 7) + "-01";
+  const latestMonthlyFy =
+    [...(raw.monthly ?? [])].sort((a, b) => (b.month_start ?? "").localeCompare(a.month_start ?? ""))[0]?.financial_year ?? "";
+  const weeklyPeriodRows = buildPeriodRows(storesInView, storeNames, (sid) =>
+    buildWeekSeries(totals.weekRows, sid).map((w) => ({
+      periodKey: w.weekStart,
+      periodLabel: `RW${String(w.retailWeek).padStart(2, "0")}`,
+      rangeLabel: `${weekDayLabel(w.weekStart)} – ${weekDayLabel(addDaysIso(w.weekStart, 6))}`,
+      net: w.net,
+      gross: w.gross,
+      discount: w.discount,
+      discountPct: w.gross > 0 ? (w.discount / w.gross) * 100 : null,
+      bills: w.bills,
+      qty: w.qty,
+      atv: w.bills > 0 ? w.net / w.bills : null,
+      netChangePct: w.netChangePct,
+      qtyChangePct: w.qtyChangePct,
+      isComplete: w.isCompleteWeek,
+    }))
+  );
+  const dailyPeriodRows = buildPeriodRows(storesInView, storeNames, (sid) => buildDailyPeriodSeries(raw.dailyFull ?? [], sid, todayStr));
+  const monthlyPeriodRows = buildPeriodRows(storesInView, storeNames, (sid) => buildMonthlyPeriodSeries(raw.monthly ?? [], sid, todayMonthStart));
+  const yearlyPeriodRows = buildPeriodRows(storesInView, storeNames, (sid) => buildYearlyPeriodSeries(raw.monthly ?? [], sid, latestMonthlyFy));
   const agentRows = computeAgentRows(raw.agentDaily);
-  return { totals, league, schemeRows, schemeMaxQty, trendPoints, hourlyPoints, agentRows, storeNames, periodFrom: from, periodTo: to };
+  return {
+    totals,
+    league,
+    schemeRows,
+    schemeMaxQty,
+    trendPoints,
+    hourlyPoints,
+    agentRows,
+    storeNames,
+    periodFrom: from,
+    periodTo: to,
+    dailyPeriodRows,
+    weeklyPeriodRows,
+    monthlyPeriodRows,
+    yearlyPeriodRows,
+  };
 }
 
 export async function fetchSalesComponentData(scope: SalesComponentScope, storeNames: Map<string, string>) {
   const raw = await fetchRaw(scope);
-  return deriveSalesComponentData(raw, storeNames, scope.from, scope.to);
+  return deriveSalesComponentData(raw, storeNames, scope.from, scope.to, scope.today);
 }
 
 const INR = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
@@ -257,58 +373,38 @@ export function SalesKpiGrid({ data }: { data: SalesComponentData }) {
   );
 }
 
+/**
+ * D-05 parity items 3/4/5 (2026-08-27) — full swap from the old per-store
+ * `<table>` blocks (WeeklyRowDrilldown, Weekly-only) to the shared
+ * PeriodSalesFacetedTable component sales/page.tsx's EboDetailSection
+ * renders, now that fetchRaw() above fetches all four grains.
+ *
+ * EXPLICIT DECISION (audit's own item 4, docs/audit/D-frontend.md): this is
+ * the full swap, not the "widen WeeklyRowDrilldown's columns instead" option
+ * the audit also offered. Reasoning: the user's literal ask was "all
+ * features of sales are not available on Workspace, copy all there" — parity
+ * with Sales, not a second diverging table design. The swap costs the
+ * per-row click-to-drill (WeeklyRowDrilldown -> getStoreDrilldownTrend); in
+ * exchange this table gains 3 more grains, faceting/group-by/saved views,
+ * sorting, and 8 more columns (gross, discount %, bills, qty, qty change) the
+ * old table never had. That trade reads as a net gain for "copy all
+ * features", not a wash — and Store League (StoreLeagueTable, below) still
+ * offers its own row-click drilldown into a store's daily trend, so the
+ * drilldown INTERACTION isn't lost from the page, just from this one table.
+ *
+ * `pageKey="workspace_period"` (distinct from Sales' own "sales_period",
+ * PeriodSalesFacetedTable.tsx:19/367) so a saved facet/group-by view on one
+ * page never collides with or overwrites the other's.
+ */
 export function WeeklySalesTable({ data }: { data: SalesComponentData }) {
-  const { weekRows, storesInView } = data.totals;
-  const weekLabel = (n: number) => `RW${String(n).padStart(2, "0")}`;
-  const networkTotal = storesInView.length > 1 ? buildWeekSeries(weekRows, null) : null;
   return (
-    <div className="grid grid-cols-1 gap-4 overflow-y-auto">
-      {/* Per-store tables — rows are clickable (Phase 8 drilldown, extended
-          2026-08-20: WeeklyRowDrilldown.tsx), each opening that store's own
-          daily breakdown for just the clicked week, fetched on demand. */}
-      {storesInView.map((sid) => {
-        const storeName = data.storeNames.get(sid) ?? sid;
-        return (
-          <div key={sid} className="border border-line-soft">
-            <div className="border-b border-line-soft bg-surface-2 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-ink-2">{storeName}</div>
-            <WeeklyRowDrilldown storeId={sid} storeName={storeName} rows={buildWeekSeries(weekRows, sid)} />
-          </div>
-        );
-      })}
-      {/* Network total — a sum across stores, not a single store to drill
-          into (same honesty rule the Mix component follows), so this one
-          stays a plain, inert table. */}
-      {networkTotal && (
-        <div className="border border-line-soft">
-          <div className="border-b border-line-soft bg-surface-2 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-ink-2">Network total</div>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-line-soft text-left text-[10px] uppercase tracking-wide text-ink-3">
-                <th className="px-3 py-2">Week</th>
-                <th className="px-3 py-2 text-right">Net sales</th>
-                <th className="px-3 py-2 text-right">WOW</th>
-              </tr>
-            </thead>
-            <tbody>
-              {networkTotal.map((row) => (
-                <tr key={row.weekStart} className="border-b border-line-soft last:border-0">
-                  <td className="px-3 py-1.5 font-semibold">{weekLabel(row.retailWeek)}</td>
-                  <td className="px-3 py-1.5 text-right font-mono">{INR(row.net)}</td>
-                  <td className={`px-3 py-1.5 text-right font-mono ${row.netChangePct === null ? "text-ink-3" : row.netChangePct >= 0 ? "text-good" : "text-crit"}`}>
-                    {row.netChangePct !== null ? `${row.netChangePct >= 0 ? "+" : ""}${row.netChangePct.toFixed(1)}%` : "—"}
-                  </td>
-                </tr>
-              ))}
-              {networkTotal.length === 0 && (
-                <tr>
-                  <td colSpan={3} className="px-3 py-4 text-center text-sm text-ink-3">No weeks in range.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
+    <PeriodSalesFacetedTable
+      daily={data.dailyPeriodRows}
+      weekly={data.weeklyPeriodRows}
+      monthly={data.monthlyPeriodRows}
+      yearly={data.yearlyPeriodRows}
+      pageKey="workspace_period"
+    />
   );
 }
 

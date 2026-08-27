@@ -252,7 +252,7 @@ export default async function WorkspacePage({
   // behaviour changed.
   const salesDataPromise: Promise<SalesComponentData> | null = needsSalesData
     ? fetchSalesComponentData(
-        { supabase, storeIds, from, to, weeklyStart: isoDate(weeklyStart), metricsById, dimensionsById, dimensionFilters },
+        { supabase, storeIds, from, to, weeklyStart: isoDate(weeklyStart), today, metricsById, dimensionsById, dimensionFilters },
         storeNames
       )
     : null;

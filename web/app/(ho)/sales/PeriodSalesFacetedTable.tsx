@@ -178,11 +178,22 @@ export function PeriodSalesFacetedTable({
   weekly,
   monthly,
   yearly,
+  pageKey = PAGE_KEY,
 }: {
   daily: PeriodFacetedRow[];
   weekly: PeriodFacetedRow[];
   monthly: PeriodFacetedRow[];
   yearly: PeriodFacetedRow[];
+  /**
+   * Keys saved facet/group-by views (FacetFilterBar). Optional, defaults to
+   * this file's own PAGE_KEY ("sales_period") so the one existing caller
+   * (app/(ho)/sales/page.tsx) is unaffected. The Workspace Builder passes a
+   * distinct key ("workspace_period", lib/workspace/renderSalesComponents.tsx)
+   * so a view saved on one page never collides with the other's — see A-13's
+   * "one key for all four grains" comment on PAGE_KEY below for why it's
+   * still one key per PAGE, not per grain.
+   */
+  pageKey?: string;
 }) {
   const [grain, setGrain] = useState<Grain>("weekly");
   // Grouped by Store by default (2026-08-27): a flat list ran one store's
@@ -364,7 +375,7 @@ export function PeriodSalesFacetedTable({
         // grain-independent — every field it can reference exists in all four
         // row-sets — so keying per grain made a view saved on Weekly simply
         // vanish on Daily/Monthly/Yearly.
-        pageKey={PAGE_KEY}
+        pageKey={pageKey}
         rows={rows}
         facets={facets}
         advFields={advFields}
