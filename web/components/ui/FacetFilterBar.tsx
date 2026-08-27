@@ -174,6 +174,7 @@ export function FacetFilterBar<T>({
   facets,
   advFields,
   groupByOptions,
+  defaultGroupBy,
   state,
   onChange,
 }: {
@@ -182,6 +183,13 @@ export function FacetFilterBar<T>({
   facets: FacetDef<T>[];
   advFields: AdvField<T>[];
   groupByOptions: { key: string; label: string }[];
+  // The grouping "Clear all" falls back to, rather than no grouping at all.
+  // Group-by levels are rendered in their own row and have no chip in the
+  // active-filters row where the "Clear all" button lives, so a caller that
+  // starts the table off grouped would see that grouping collapse with
+  // nothing in the chip row to explain why. Optional and defaulting to [], so
+  // callers that pass nothing keep today's clear-everything behaviour exactly.
+  defaultGroupBy?: string[];
   state: FacetFilterState;
   onChange: (next: FacetFilterState) => void;
 }) {
@@ -216,7 +224,7 @@ export function FacetFilterBar<T>({
     onChange({ ...state, facets: { ...state.facets, [key]: values } });
   }
   function clearAll() {
-    onChange(emptyFilterState());
+    onChange({ ...emptyFilterState(), groupBy: defaultGroupBy ?? [] });
   }
   function addCondition() {
     const first = advFields[0];

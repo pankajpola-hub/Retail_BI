@@ -79,13 +79,16 @@ type MovementSearchParams = {
   page?: string;
   perPage?: string;
   // Sale vs Stock Mix tab — mix_-prefixed so nothing above can collide.
+  // Only these two are real server params: computeSaleStockMix aggregates at
+  // the store scope and over a sales window, so both change what gets
+  // COMPUTED. Style/Color/Status filtering and pagination moved client-side
+  // into SaleStockMixFacetedContent.tsx (FacetFilterBar's own React state) —
+  // the old mix_style/mix_color/mix_status/mix_page/mix_perPage params were
+  // still declared and forwarded here long after their last read site went
+  // away, which made a stale bookmark look as though a filter were applied.
+  // Declaring only what is actually read keeps that honest.
   mix_store?: string;
-  mix_style?: string;
-  mix_color?: string;
   mix_period?: string;
-  mix_status?: string;
-  mix_page?: string;
-  mix_perPage?: string;
 };
 
 // Preserves every param already in the URL (both tabs' state) and only
@@ -162,32 +165,6 @@ async function ReplenishmentContent({
   // the full row set below). Only the recompute inputs (what-if
   // assumptions, priority weights) still round-trip the server, since
   // those change the actual numbers.
-  function buildHref(overrides: Record<string, string | number>): string {
-    const params = new URLSearchParams();
-    const current: Record<string, string | undefined> = {
-      tab: "replenishment",
-      targetCover: String(targetCoverDays),
-      leadTime: String(leadTimeDays),
-      safetyDays: String(safetyDays),
-      wStockout: String(SCORE_W.stockoutRisk),
-      wVelocity: String(SCORE_W.velocity),
-      wCover: String(SCORE_W.cover),
-      wRevenue: String(SCORE_W.salesValue),
-      wTrend: String(SCORE_W.trend),
-      wProductivity: String(SCORE_W.productivity),
-      mix_store: searchParams.mix_store,
-      mix_style: searchParams.mix_style,
-      mix_color: searchParams.mix_color,
-      mix_period: searchParams.mix_period,
-      mix_status: searchParams.mix_status,
-      mix_page: searchParams.mix_page,
-      mix_perPage: searchParams.mix_perPage,
-    };
-    for (const [k, v] of Object.entries(current)) if (v) params.set(k, v);
-    for (const [k, v] of Object.entries(overrides)) params.set(k, String(v));
-    return `?${params.toString()}`;
-  }
-
   // Download regenerates the full network dataset server-side for the
   // current what-if/weight inputs — it does NOT know the client-side
   // facet/search state (that's purely in the browser), so it always
@@ -295,6 +272,15 @@ async function ReplenishmentContent({
           <input type="hidden" name="wRevenue" value={SCORE_W.salesValue} />
           <input type="hidden" name="wTrend" value={SCORE_W.trend} />
           <input type="hidden" name="wProductivity" value={SCORE_W.productivity} />
+          {/* Carries the Mix tab's server params across this form's native
+              GET submit, which otherwise REPLACES the entire query string
+              with just this form's own fields — pressing Recalculate used to
+              silently reset the other tab to "All stores, last 30 days".
+              Rendered only when set, so a freshly loaded page doesn't submit
+              `&mix_store=&mix_period=`. Same "don't lose the other tab's
+              state" contract tabHref keeps (see the file header). */}
+          {searchParams.mix_store ? <input type="hidden" name="mix_store" value={searchParams.mix_store} /> : null}
+          {searchParams.mix_period ? <input type="hidden" name="mix_period" value={searchParams.mix_period} /> : null}
           <Label className="flex flex-col gap-1">
             Target cover (days)
             <Input type="number" name="targetCover" min={1} defaultValue={targetCoverDays} className="w-24" />
@@ -325,6 +311,15 @@ async function ReplenishmentContent({
           <input type="hidden" name="targetCover" value={targetCoverDays} />
           <input type="hidden" name="leadTime" value={leadTimeDays} />
           <input type="hidden" name="safetyDays" value={safetyDays} />
+          {/* Carries the Mix tab's server params across this form's native
+              GET submit, which otherwise REPLACES the entire query string
+              with just this form's own fields — pressing Recalculate used to
+              silently reset the other tab to "All stores, last 30 days".
+              Rendered only when set, so a freshly loaded page doesn't submit
+              `&mix_store=&mix_period=`. Same "don't lose the other tab's
+              state" contract tabHref keeps (see the file header). */}
+          {searchParams.mix_store ? <input type="hidden" name="mix_store" value={searchParams.mix_store} /> : null}
+          {searchParams.mix_period ? <input type="hidden" name="mix_period" value={searchParams.mix_period} /> : null}
 
           <div>
             <Label className="flex items-center justify-between gap-2 font-semibold text-ink-2">
@@ -517,16 +512,22 @@ async function SaleStockMixContent({
         <input type="hidden" name="tab" value="mix" />
         {/* Preserves the Replenishment tab's own server params across this
             form's native GET submit — same "don't lose the other tab's
-            state" principle as tabHref/buildHref elsewhere in this file. */}
-        <input type="hidden" name="targetCover" value={searchParams.targetCover ?? ""} />
-        <input type="hidden" name="leadTime" value={searchParams.leadTime ?? ""} />
-        <input type="hidden" name="safetyDays" value={searchParams.safetyDays ?? ""} />
-        <input type="hidden" name="wStockout" value={searchParams.wStockout ?? ""} />
-        <input type="hidden" name="wVelocity" value={searchParams.wVelocity ?? ""} />
-        <input type="hidden" name="wCover" value={searchParams.wCover ?? ""} />
-        <input type="hidden" name="wRevenue" value={searchParams.wRevenue ?? ""} />
-        <input type="hidden" name="wTrend" value={searchParams.wTrend ?? ""} />
-        <input type="hidden" name="wProductivity" value={searchParams.wProductivity ?? ""} />
+            state" principle as tabHref elsewhere in this file. Each input is
+            rendered only when the param is actually set: an unconditional
+            `value={... ?? ""}` still serialises on submit, so Apply on a
+            freshly loaded page emitted a dozen empty params
+            (?targetCover=&leadTime=&wStockout=&…). The readers rejected them
+            harmlessly, but the noise defeats the point of a page whose whole
+            premise is URL-addressable state. */}
+        {searchParams.targetCover ? <input type="hidden" name="targetCover" value={searchParams.targetCover} /> : null}
+        {searchParams.leadTime ? <input type="hidden" name="leadTime" value={searchParams.leadTime} /> : null}
+        {searchParams.safetyDays ? <input type="hidden" name="safetyDays" value={searchParams.safetyDays} /> : null}
+        {searchParams.wStockout ? <input type="hidden" name="wStockout" value={searchParams.wStockout} /> : null}
+        {searchParams.wVelocity ? <input type="hidden" name="wVelocity" value={searchParams.wVelocity} /> : null}
+        {searchParams.wCover ? <input type="hidden" name="wCover" value={searchParams.wCover} /> : null}
+        {searchParams.wRevenue ? <input type="hidden" name="wRevenue" value={searchParams.wRevenue} /> : null}
+        {searchParams.wTrend ? <input type="hidden" name="wTrend" value={searchParams.wTrend} /> : null}
+        {searchParams.wProductivity ? <input type="hidden" name="wProductivity" value={searchParams.wProductivity} /> : null}
         <Label className="flex flex-col gap-1">
           Store
           <Select name="mix_store" defaultValue={storeId}>
