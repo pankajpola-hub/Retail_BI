@@ -1,5 +1,5 @@
 -- =============================================================================
--- 0095 · C-09 fix — store-scoped views for vw_sale_transactions_export /
+-- 0097 · C-09 fix — store-scoped views for vw_sale_transactions_export /
 --        vw_stock_with_scheme, resolving the product decision 0094 deferred
 -- =============================================================================
 -- BACKGROUND (see 0094's header, docs/audit/B-api-security.md and
