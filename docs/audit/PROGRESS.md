@@ -82,13 +82,25 @@ every batch's markers survived (`useProgressTransition`, `blank`/`not_blank`, th
 guard, `Select all shown`, `defaultGroupBy`).
 
 **Still needed, human action**:
-1. Run `npm install` in `web/` once (removed `react-hook-form` from `package.json`, lockfile
-   needs regenerating).
-2. Visually verify dark-mode ag-grid theming on a real browser (`/sales`, toggle dark mode).
-3. Run migrations `0093` and `0094` against the live DB (commands above) if not already done.
-4. Deploy (`npx vercel --prod --yes`) and smoke-test.
+1. ✅ DONE 2026-08-27 — `npm install` run in `web/`, `react-hook-form` removed, lockfile clean.
+   (`npm audit` now flags 2 high-severity transitive vulnerabilities — not investigated yet,
+   do NOT run `npm audit fix --force` without reviewing what it changes first.)
+2. Visually verify dark-mode ag-grid theming on a real browser (`/sales`, toggle dark mode). —
+   still outstanding.
+3. ✅ DONE 2026-08-27 — migrations `0093` and `0094` both run against the live DB by the user,
+   verified: `return_rows_still_positive` = 0 (was 227), `0094` applied clean (4 views +
+   1 function + comments, no errors). Note for future verification: `sales.vw_ebo_sales_lines`
+   and its dependents filter on `core.fn_user_store_ids()`, which returns empty for a raw
+   superuser psql connection (no JWT/role claim) — a `select count(*)` against these views from
+   psql will show 0 even when the fix is correct. Verify app-level fixes through the app/API,
+   not a raw psql count.
+4. Deploy (`npx vercel --prod --yes`) and smoke-test. — still outstanding.
 
-### Wave 2 (table subtotals, D-04/D-07/A-13) — 3 parallel worktree agents launched, NOT YET MERGED
+### Wave 2 (table subtotals, D-04/D-07/A-13) — all 3 agents done, ALL MERGED to `master`
+
+Reviewed and merged 2026-08-27 (commits `9936fd4`, `4b25a53`, on top of the earlier
+`1853183`). `tsc --noEmit` and full `next build` (all 36 routes) both clean after
+the merges. Worktrees + branches deleted.
 
 User confirmed: proceed with subtotals + Workspace parity, sequenced (subtotals first, since
 Workspace parity's own port plan reuses several of these same shared components — e.g. item 4
