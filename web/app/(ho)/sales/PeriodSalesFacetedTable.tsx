@@ -27,6 +27,94 @@ const PINNED_TOTAL_ROW_STYLE: RowStyle = {
   borderTop: "2px solid var(--line)",
 };
 
+/** Lighter than the pinned grand total — a per-store subtotal is a summary
+ *  of one block, not of the whole table. */
+const SUBTOTAL_ROW_STYLE: RowStyle = {
+  background: "var(--surface-2)",
+  fontWeight: 600,
+  borderTop: "1px solid var(--line)",
+};
+
+const SUBTOTAL_PERIOD_KEY = "__subtotal__";
+function isSubtotalRow(row: GridRow | undefined): boolean {
+  return !!row && !isGroupHeader(row) && (row as PeriodFacetedRow).periodKey === SUBTOTAL_PERIOD_KEY;
+}
+
+function sumPeriodRows(rows: PeriodFacetedRow[]): Pick<PeriodFacetedRow, "net" | "gross" | "discount" | "bills" | "qty"> {
+  let net = 0, gross = 0, discount = 0, bills = 0, qty = 0;
+  for (const r of rows) {
+    net += r.net;
+    gross += r.gross;
+    discount += r.discount;
+    bills += r.bills;
+    qty += r.qty;
+  }
+  return { net, gross, discount, bills, qty };
+}
+
+function buildSubtotalRow(rows: PeriodFacetedRow[], seq: number): PeriodFacetedRow {
+  const { net, gross, discount, bills, qty } = sumPeriodRows(rows);
+  return {
+    storeId: `${SUBTOTAL_PERIOD_KEY}:${seq}`,
+    storeName: "Subtotal",
+    periodKey: SUBTOTAL_PERIOD_KEY,
+    periodLabel: `${rows.length} period${rows.length === 1 ? "" : "s"}`,
+    rangeLabel: "",
+    net,
+    gross,
+    discount,
+    discountPct: gross > 0 ? (discount / gross) * 100 : null,
+    bills,
+    qty,
+    atv: bills > 0 ? net / bills : null,
+    netChangePct: null,
+    qtyChangePct: null,
+    isComplete: true,
+  };
+}
+
+/**
+ * Inserts a subtotal row after each group's period rows — one "Subtotal" per
+ * store block when grouped by Store, not just the single grand total at the
+ * very bottom. (User feedback after the first D-04 pass: a lone grand total
+ * wasn't what "add subtotal to every table" meant when the table is grouped
+ * — each store's own block needed its own total too.)
+ *
+ * Handles nested grouping generically — closing an inner group bubbles its
+ * rows up into the parent's accumulator, so a parent's subtotal still covers
+ * its children — even though today only one groupBy level ("store") is
+ * offered, so in practice this only ever produces one subtotal per store.
+ * A no-op (returns `gridRows` unchanged) when no grouping is active, since
+ * buildGroupedRows() then returns a flat list with no headers to attach to.
+ */
+function withGroupSubtotals(gridRows: GridRow[]): GridRow[] {
+  type Frame = { level: number; rows: PeriodFacetedRow[] };
+  const stack: Frame[] = [];
+  const out: GridRow[] = [];
+  let seq = 0;
+
+  function flushTo(level: number) {
+    while (stack.length > 0 && stack[stack.length - 1]!.level >= level) {
+      const frame = stack.pop()!;
+      if (frame.rows.length > 0) out.push(buildSubtotalRow(frame.rows, seq++));
+      if (stack.length > 0) stack[stack.length - 1]!.rows.push(...frame.rows);
+    }
+  }
+
+  for (const row of gridRows) {
+    if (isGroupHeader(row)) {
+      flushTo(row.level);
+      out.push(row);
+      stack.push({ level: row.level, rows: [] });
+    } else {
+      out.push(row);
+      if (stack.length > 0) stack[stack.length - 1]!.rows.push(row as PeriodFacetedRow);
+    }
+  }
+  flushTo(0);
+  return out;
+}
+
 export type PeriodFacetedRow = PeriodRow & { storeId: string; storeName: string };
 
 type GridRow = PeriodFacetedRow | GroupHeaderRow;
@@ -129,7 +217,7 @@ export function PeriodSalesFacetedTable({
 
   const filtered = useMemo(() => applyFacetFilter(rows, facets, advFields, state), [rows, facets, advFields, state]);
   const gridRows = useMemo<GridRow[]>(
-    () => networkGroupLast(buildGroupedRows(filtered, state.groupBy, groupKeyGetters)),
+    () => withGroupSubtotals(networkGroupLast(buildGroupedRows(filtered, state.groupBy, groupKeyGetters))),
     [filtered, state.groupBy, groupKeyGetters]
   );
 
@@ -306,6 +394,7 @@ export function PeriodSalesFacetedTable({
         // why the pinned grand total sets its own weight/border here too.
         getRowStyle={(p): RowStyle | undefined => {
           if (p.node.rowPinned === "bottom") return PINNED_TOTAL_ROW_STYLE;
+          if (isSubtotalRow(p.data)) return SUBTOTAL_ROW_STYLE;
           return isNetworkRow(p.data) && !isGroupHeader(p.data)
             ? { background: "var(--surface-2)", fontWeight: 600 }
             : undefined;
