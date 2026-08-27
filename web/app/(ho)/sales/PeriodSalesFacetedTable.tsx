@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { TrendingUp, TrendingDown } from "lucide-react";
-import type { ColDef, ICellRendererParams } from "ag-grid-community";
+import type { ColDef, ICellRendererParams, RowStyle } from "ag-grid-community";
 import { DataGrid } from "@/components/ui/DataGrid";
 import {
   FacetFilterBar,
@@ -19,14 +19,20 @@ import type { PeriodRow } from "@/lib/sales/aggregate";
 const PAGE_KEY = "sales_period";
 const INR = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
 
+/** Shared look for the pinned grand-total row. Inline rather than a Tailwind
+ *  class because AG Grid's own .ag-row rules win the cascade otherwise. */
+const PINNED_TOTAL_ROW_STYLE: RowStyle = {
+  background: "var(--surface-2)",
+  fontWeight: 700,
+  borderTop: "2px solid var(--line)",
+};
+
 export type PeriodFacetedRow = PeriodRow & { storeId: string; storeName: string };
 
 type GridRow = PeriodFacetedRow | GroupHeaderRow;
 function isGroupHeader(row: GridRow | undefined): row is GroupHeaderRow {
   return !!row && "__groupHeader" in row && row.__groupHeader === true;
 }
-
-const COL_COUNT = 11;
 
 /** Synthetic all-stores bucket appended by page.tsx's buildRows(). */
 const NETWORK_STORE_ID = "__network__";
@@ -127,14 +133,75 @@ export function PeriodSalesFacetedTable({
     [filtered, state.groupBy, groupKeyGetters]
   );
 
-  const columnDefs = useMemo<ColDef<PeriodFacetedRow>[]>(
-    () => [
+  /**
+   * D-07 — a REAL grand-total row, pinned to the bottom by AG Grid, computed
+   * from `filtered` so it always reflects the active facet filters.
+   *
+   * The double-count trap: page.tsx's buildRows() appends a synthetic
+   * "Network total" store bucket (`storeId === "__network__"`) to the SAME
+   * array as the real per-store rows, so a naive sum over `filtered` is
+   * exactly 2x the truth. Real store rows are therefore summed on their own;
+   * the network bucket is only used when a filter has left nothing else
+   * (e.g. the user faceted down to "Network total" alone), where it IS the
+   * answer rather than a duplicate of it.
+   *
+   * Ratios are recomputed from the summed numerator and denominator, using
+   * the same formulas lib/sales/aggregate.ts builds each row with
+   * (buildDailyPeriodSeries: discountPct = discount/gross*100, atv =
+   * net/bills) — never an average of the per-row ratios. Both change columns
+   * are null: a period-over-period delta has no meaningful column sum.
+   */
+  const pinnedTotal = useMemo<PeriodFacetedRow[]>(() => {
+    if (filtered.length === 0) return [];
+    const realStoreRows = filtered.filter((r) => r.storeId !== NETWORK_STORE_ID);
+    const excludedNetwork = realStoreRows.length > 0 && realStoreRows.length !== filtered.length;
+    const source = realStoreRows.length > 0 ? realStoreRows : filtered;
+
+    let net = 0;
+    let gross = 0;
+    let discount = 0;
+    let bills = 0;
+    let qty = 0;
+    for (const r of source) {
+      net += r.net;
+      gross += r.gross;
+      discount += r.discount;
+      bills += r.bills;
+      qty += r.qty;
+    }
+
+    return [
+      {
+        storeId: NETWORK_STORE_ID,
+        storeName: "Total",
+        periodKey: "__total__",
+        periodLabel: `${source.length} rows`,
+        rangeLabel: excludedNetwork ? "excl. Network total bucket" : "",
+        net,
+        gross,
+        discount,
+        discountPct: gross > 0 ? (discount / gross) * 100 : null,
+        bills,
+        qty,
+        atv: bills > 0 ? net / bills : null,
+        netChangePct: null,
+        qtyChangePct: null,
+        isComplete: true,
+      },
+    ];
+  }, [filtered]);
+
+  const columnDefs = useMemo<ColDef<PeriodFacetedRow>[]>(() => {
+    // COL_COUNT was a hand-maintained `11` that had to match this array's
+    // length (D-07.3) — derived from the array itself now. The closure only
+    // runs at cell-render time, long after `defs` is assigned.
+    const defs: ColDef<PeriodFacetedRow>[] = [
       {
         field: "storeName",
         headerName: "Store",
         flex: 1.1,
         sortable: true,
-        colSpan: (p: { data?: GridRow }) => (isGroupHeader(p.data) ? COL_COUNT : 1),
+        colSpan: (p: { data?: GridRow }) => (isGroupHeader(p.data) ? defs.length : 1),
         cellRenderer: (p: ICellRendererParams<GridRow>) => {
           if (isGroupHeader(p.data)) {
             const g = p.data;
@@ -182,9 +249,9 @@ export function PeriodSalesFacetedTable({
         cellRenderer: (p: ICellRendererParams<PeriodFacetedRow, number | null>) => <ChangeCell value={p.value ?? null} />,
       },
       { field: "atv", headerName: "ATV", flex: 0.8, sortable: true, cellClass: "text-right font-mono", headerClass: "text-right", valueFormatter: (p) => (p.value === null ? "—" : INR(p.value)) },
-    ],
-    []
-  );
+    ];
+    return defs;
+  }, []);
 
   return (
     <>
@@ -204,7 +271,12 @@ export function PeriodSalesFacetedTable({
       </div>
 
       <FacetFilterBar
-        pageKey={`${PAGE_KEY}_${grain}`}
+        // A-13 — one key for all four grains, not `${PAGE_KEY}_${grain}`. The
+        // saved state (search, facets, advanced conditions, group-by) is
+        // grain-independent — every field it can reference exists in all four
+        // row-sets — so keying per grain made a view saved on Weekly simply
+        // vanish on Daily/Monthly/Yearly.
+        pageKey={PAGE_KEY}
         rows={rows}
         facets={facets}
         advFields={advFields}
@@ -224,15 +296,20 @@ export function PeriodSalesFacetedTable({
         animateRows={false}
         rowData={gridRows}
         columnDefs={columnDefs as unknown as ColDef<GridRow>[]}
-        heightPx={Math.min(560, Math.max(160, 46 + gridRows.length * 38))}
+        pinnedBottomRowData={pinnedTotal}
+        // +40 for the pinned total, which renders inside this wrapper height
+        // but outside the scrollable body.
+        heightPx={Math.min(600, Math.max(160, 46 + gridRows.length * 38)) + (pinnedTotal.length > 0 ? 40 : 0)}
         // Network total's data rows read as a summary block, not another store:
         // tinted + semibold. Inline (not a Tailwind class) because AG Grid's own
-        // .ag-row background/`font` rules otherwise win the cascade.
-        getRowStyle={(p) =>
-          isNetworkRow(p.data) && !isGroupHeader(p.data)
+        // .ag-row background/`font` rules otherwise win the cascade — which is
+        // why the pinned grand total sets its own weight/border here too.
+        getRowStyle={(p): RowStyle | undefined => {
+          if (p.node.rowPinned === "bottom") return PINNED_TOTAL_ROW_STYLE;
+          return isNetworkRow(p.data) && !isGroupHeader(p.data)
             ? { background: "var(--surface-2)", fontWeight: 600 }
-            : undefined
-        }
+            : undefined;
+        }}
         getRowId={(p) => (isGroupHeader(p.data) ? p.data.id : `${(p.data as PeriodFacetedRow).storeId}|${(p.data as PeriodFacetedRow).periodKey}`)}
         overlayNoRowsTemplate="No periods match these filters."
       />

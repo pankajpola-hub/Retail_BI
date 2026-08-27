@@ -81,6 +81,49 @@ export function EcommChannelFacetedTable({
 
   const filtered = useMemo(() => applyFacetFilter(rows, facets, [], state), [rows, facets, state]);
 
+  /**
+   * Grand-total row, pinned to the bottom, computed from `filtered` so it
+   * follows the active facet filters. Channels partition the order lines, so
+   * orders/cancelled/units/net/mrp all sum cleanly.
+   *
+   * Both ratios are recomputed from the summed numerator and denominator with
+   * the exact formulas page.tsx:957/960 builds each row with — never an
+   * average of the per-row percentages:
+   *   Cancel %   = 100 * Σcancelled / Σorders      (null when Σorders  == 0)
+   *   Discount % = 100 * Σdiscount  / Σmrp         (null when Σmrp     == 0)
+   * `discount` is not carried on the row, but it is exactly Σ(mrp * pct/100)
+   * per channel, which reconstructs the numerator with no loss.
+   */
+  const pinnedTotal = useMemo<EcommChannelRow[]>(() => {
+    if (filtered.length === 0) return [];
+    let orders = 0;
+    let cancelled = 0;
+    let units = 0;
+    let net = 0;
+    let mrp = 0;
+    let discount = 0;
+    for (const r of filtered) {
+      orders += r.orders;
+      cancelled += r.cancelled;
+      units += r.units;
+      net += r.net;
+      mrp += r.mrp;
+      discount += r.discountPct === null ? 0 : (r.mrp * r.discountPct) / 100;
+    }
+    return [
+      {
+        channel: "Total",
+        orders,
+        cancelled,
+        cancellationRate: orders > 0 ? (100 * cancelled) / orders : null,
+        units,
+        net,
+        mrp,
+        discountPct: mrp > 0 ? (100 * discount) / mrp : null,
+      },
+    ];
+  }, [filtered]);
+
   const columnDefs = useMemo<ColDef<EcommChannelRow>[]>(
     () => [
       {
@@ -90,6 +133,8 @@ export function EcommChannelFacetedTable({
         sortable: true,
         cellRenderer: (p: ICellRendererParams<EcommChannelRow>) => {
           const ch = p.data!.channel;
+          // The pinned grand total is not a channel — no drill-down link.
+          if (p.node.rowPinned === "bottom") return <span className="font-bold">{ch}</span>;
           const active = activeChannel === ch;
           return (
             <Link href={channelHref(active ? null : ch)} className={`hover:underline ${active ? "font-semibold text-accent-ink" : ""}`}>
@@ -119,7 +164,13 @@ export function EcommChannelFacetedTable({
         animateRows={false}
         rowData={filtered}
         columnDefs={columnDefs}
-        heightPx={Math.min(480, Math.max(160, 46 + filtered.length * 38))}
+        pinnedBottomRowData={pinnedTotal}
+        heightPx={Math.min(480, Math.max(160, 46 + filtered.length * 38)) + (pinnedTotal.length > 0 ? 40 : 0)}
+        getRowStyle={(p) =>
+          p.node.rowPinned === "bottom"
+            ? { background: "var(--surface-2)", fontWeight: 700, borderTop: "2px solid var(--line)" }
+            : undefined
+        }
         getRowId={(p) => p.data.channel}
         overlayNoRowsTemplate="No channels match these filters."
       />

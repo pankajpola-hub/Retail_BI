@@ -54,6 +54,61 @@ export function StoreDiagnosisFacetedTable({ rows }: { rows: StoreDiagnosisRow[]
   const filtered = useMemo(() => applyFacetFilter(rows, facets, advFields, state), [rows, facets, advFields, state]);
   const gridRows = useMemo(() => buildGroupedRows(filtered, state.groupBy, groupKeyGetters), [filtered, state.groupBy, groupKeyGetters]);
 
+  /**
+   * <tfoot> totals over `filtered`.
+   *
+   * Every figure is the NETWORK-LEVEL version of the same formula
+   * lib/network/footfall.ts uses per store (:219-234, :262-267) — i.e. the
+   * numerator and denominator are summed first, then divided. For the two Δ
+   * columns that is exactly the "weighted average" the audit asks for, and it
+   * needs no separate weighting step: summing the prior-period base and the
+   * current-period base before dividing IS weighting each store by its own
+   * base, which is the only definition that reproduces the true network Δ.
+   *
+   *   Sales Δ    = (ΣsalesNow    - ΣsalesPrev)    / ΣsalesPrev    * 100
+   *                → weighted by each store's PRIOR net sales
+   *   Footfall Δ = (ΣfootfallNow - ΣfootfallPrev) / ΣfootfallPrev * 100
+   *                → weighted by each store's PRIOR footfall
+   *   Conv       = Σbills / Σfootfall * 100
+   *   ₹/visitor  = ΣsalesNow / ΣfootfallNow
+   *   Opportunity= Σ combinedOpportunity   (a plain sum — each store's
+   *                headroom in rupees; the single most useful total here)
+   *
+   * `bills` is not carried on the row, but it is recoverable exactly:
+   * footfall.ts:229 sets nonConverting = footfallNow - bills, so
+   * bills = footfallNow - nonConverting. Prior-period bills likewise come back
+   * from footfallPrev * conversionPrev / 100 (footfall.ts:220's definition
+   * rearranged), which is what makes the conversion pp-delta exact too.
+   */
+  const totals = useMemo(() => {
+    let salesNow = 0;
+    let salesPrev = 0;
+    let footfallNow = 0;
+    let footfallPrev = 0;
+    let billsNow = 0;
+    let billsPrev = 0;
+    let opportunity = 0;
+    for (const s of filtered) {
+      salesNow += s.salesNow;
+      salesPrev += s.salesPrev;
+      footfallNow += s.footfallNow;
+      footfallPrev += s.footfallPrev;
+      billsNow += s.footfallNow - s.nonConverting;
+      billsPrev += (s.footfallPrev * s.conversionPrev) / 100;
+      opportunity += s.combinedOpportunity;
+    }
+    const conversionNow = footfallNow > 0 ? (billsNow / footfallNow) * 100 : null;
+    const conversionPrev = footfallPrev > 0 ? (billsPrev / footfallPrev) * 100 : null;
+    return {
+      salesChangePct: salesPrev > 0 ? ((salesNow - salesPrev) / salesPrev) * 100 : null,
+      footfallChangePct: footfallPrev > 0 ? ((footfallNow - footfallPrev) / footfallPrev) * 100 : null,
+      conversionNow,
+      conversionChangePts: conversionNow !== null && conversionPrev !== null ? conversionNow - conversionPrev : null,
+      salesPerVisitor: footfallNow > 0 ? salesNow / footfallNow : null,
+      opportunity,
+    };
+  }, [filtered]);
+
   return (
     <>
       <FacetFilterBar
@@ -126,6 +181,48 @@ export function StoreDiagnosisFacetedTable({ rows }: { rows: StoreDiagnosisRow[]
               </tr>
             )}
           </tbody>
+          {filtered.length > 0 && (
+            <tfoot>
+              <tr className="border-t-2 border-line bg-surface-2 font-bold">
+                <td className="px-3 py-2">Total — {filtered.length} stores</td>
+                <td
+                  className={`px-3 py-2 text-right font-mono ${
+                    totals.salesChangePct === null ? "text-ink-3" : totals.salesChangePct >= 0 ? "text-good" : "text-crit"
+                  }`}
+                >
+                  {totals.salesChangePct !== null
+                    ? `${totals.salesChangePct >= 0 ? "+" : ""}${totals.salesChangePct.toFixed(1)}%`
+                    : "—"}
+                </td>
+                <td
+                  className={`px-3 py-2 text-right font-mono ${
+                    totals.footfallChangePct === null ? "text-ink-3" : totals.footfallChangePct >= 0 ? "text-good" : "text-crit"
+                  }`}
+                >
+                  {totals.footfallChangePct !== null
+                    ? `${totals.footfallChangePct >= 0 ? "+" : ""}${totals.footfallChangePct.toFixed(1)}%`
+                    : "—"}
+                </td>
+                <td className="px-3 py-2 text-right font-mono">
+                  {totals.conversionNow !== null ? `${totals.conversionNow.toFixed(1)}%` : "—"}
+                  {totals.conversionChangePts !== null && (
+                    <span className={`ml-1 text-[11px] font-normal ${totals.conversionChangePts >= 0 ? "text-good" : "text-crit"}`}>
+                      {totals.conversionChangePts >= 0 ? "+" : ""}
+                      {totals.conversionChangePts.toFixed(1)}pp
+                    </span>
+                  )}
+                </td>
+                <td className="px-3 py-2 text-right font-mono">
+                  {totals.salesPerVisitor !== null ? INR(totals.salesPerVisitor) : "—"}
+                </td>
+                <td className="px-3 py-2" />
+                <td className="px-3 py-2 text-right font-mono">
+                  {totals.opportunity > 0 ? INR(totals.opportunity) : "—"}
+                </td>
+                <td className="px-3 py-2" />
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
     </>

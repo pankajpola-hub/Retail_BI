@@ -57,6 +57,27 @@ export function AgentSalesFacetedTable({ rows, storeNames }: { rows: AgentRow[];
   const filtered = useMemo(() => applyFacetFilter(rows, facets, advFields, state), [rows, facets, advFields, state]);
   const gridRows = useMemo(() => buildGroupedRows(filtered, state.groupBy, groupKeyGetters), [filtered, state.groupBy, groupKeyGetters]);
 
+  /**
+   * <tfoot> totals over `filtered` (the group-by banners in `gridRows` are
+   * presentation only and carry no numbers of their own).
+   *
+   * Bills / Units / Net sum. ATV is recomputed as Σnet/Σbills — the same
+   * expression the per-row cell uses below (`row.bills > 0 ? row.net /
+   * row.bills : "—"`), applied to the totals — NOT an average of the per-agent
+   * ATVs, which would weight a 2-bill agent the same as a 200-bill one.
+   */
+  const totals = useMemo(() => {
+    let bills = 0;
+    let qty = 0;
+    let net = 0;
+    for (const r of filtered) {
+      bills += r.bills;
+      qty += r.qty;
+      net += r.net;
+    }
+    return { bills, qty, net, atv: bills > 0 ? net / bills : null };
+  }, [filtered]);
+
   return (
     <>
       <FacetFilterBar
@@ -107,6 +128,18 @@ export function AgentSalesFacetedTable({ rows, storeNames }: { rows: AgentRow[];
               </tr>
             )}
           </tbody>
+          {filtered.length > 0 && (
+            <tfoot>
+              <tr className="border-t-2 border-line bg-surface-2 font-bold">
+                <td className="px-3 py-2">Total</td>
+                <td className="px-3 py-2 text-ink-3">{filtered.length} agents</td>
+                <td className="px-3 py-2 text-right font-mono">{totals.bills}</td>
+                <td className="px-3 py-2 text-right font-mono">{totals.qty}</td>
+                <td className="px-3 py-2 text-right font-mono">{INR(totals.net)}</td>
+                <td className="px-3 py-2 text-right font-mono">{totals.atv !== null ? INR(totals.atv) : "—"}</td>
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
     </>
