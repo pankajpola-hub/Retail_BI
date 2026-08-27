@@ -130,9 +130,31 @@ export function ReplenishmentFacetedContent({ rows, itemRows }: { rows: Row[]; i
   );
   const gridRows = useMemo(() => buildGroupedRows(filtered, state.groupBy, groupKeyGetters), [filtered, state.groupBy, groupKeyGetters]);
 
+  // The attribute view is a second RENDERING of the same filtered set, not a
+  // second, unfiltered dataset (2026-08-27 fix). The persistent Store
+  // dropdown above already scoped both views, but it was the ONLY filter that
+  // survived the toggle — Priority / Action / Trend / Gender / Season, the
+  // quick search and every advanced condition all lived inside FacetFilterBar
+  // and silently stopped applying the moment a combo chip went in. This
+  // extends the storeFilter reasoning to the rest of the bar.
+  //
+  // `filtered` is style-color-per-store grain and `scopedItemRows` is
+  // item_code grain, and several filterable fields (priority, action, trend,
+  // score, coverDays, recommendedQty) are computed by the allocator and exist
+  // only on the rolled-up Row — so rather than re-deriving the predicates at
+  // item grain, keep the rows that survived the filter and take their items.
+  // Exact: every item rolls up into exactly one style-color-per-store row,
+  // hence storeId in the key (unlike the Mix tab, whose rows are store-scoped
+  // as a whole rather than per-store).
+  const filteredItemRows = useMemo(() => {
+    if (filtered.length === scopedRows.length) return scopedItemRows;
+    const keep = new Set(filtered.map((r) => `${r.styleNo}\u0000${r.color}\u0000${r.storeId}`));
+    return scopedItemRows.filter((r) => keep.has(`${r.styleNo}\u0000${r.color}\u0000${r.storeId}`));
+  }, [filtered, scopedRows, scopedItemRows]);
+
   const attributeRows = useMemo(
-    () => aggregateReplenishmentByAttributes(scopedItemRows, combo, mrpBucketSize),
-    [scopedItemRows, combo, mrpBucketSize]
+    () => aggregateReplenishmentByAttributes(filteredItemRows, combo, mrpBucketSize),
+    [filteredItemRows, combo, mrpBucketSize]
   );
 
   const poolAttributes = ATTRIBUTE_KEYS.filter((a) => !combo.includes(a));
@@ -264,17 +286,24 @@ export function ReplenishmentFacetedContent({ rows, itemRows }: { rows: Row[]; i
         </div>
       </div>
 
+      {/* Mounted in BOTH views — the filters it holds now apply to the
+          attribute grid too, so unmounting it there would hide active state
+          that is still in effect. Group-by is the one control that only means
+          something in the default grid (the attribute view is already grouped
+          by the combo), so its options are withheld while a combo is active
+          rather than offering a no-op. */}
+      <FacetFilterBar
+        pageKey={PAGE_KEY}
+        rows={scopedRows}
+        facets={facets}
+        advFields={advFields}
+        groupByOptions={combo.length === 0 ? groupByOptions : []}
+        state={state}
+        onChange={setState}
+      />
+
       {combo.length === 0 ? (
         <>
-          <FacetFilterBar
-            pageKey={PAGE_KEY}
-            rows={scopedRows}
-            facets={facets}
-            advFields={advFields}
-            groupByOptions={groupByOptions}
-            state={state}
-            onChange={setState}
-          />
           <div className="mb-2 text-[12px] text-ink-3">
             {filtered.length === scopedRows.length
               ? `${filtered.length} rows`
@@ -286,6 +315,8 @@ export function ReplenishmentFacetedContent({ rows, itemRows }: { rows: Row[]; i
         <>
           <div className="mb-2 text-[12px] text-ink-3">
             {attributeRows.length} {combo.map((a) => ATTRIBUTE_LABELS[a]).join(" + ").toLowerCase()} groups
+            {filtered.length !== scopedRows.length &&
+              ` · from ${filtered.length} of ${scopedRows.length} rows after filters`}
           </div>
           <AttributeReplenishmentGrid rows={attributeRows} attributes={combo} />
         </>

@@ -96,9 +96,35 @@ export function SaleStockMixFacetedContent({
   const filtered = useMemo(() => applyFacetFilter(rows, facets, advFields, state), [rows, facets, advFields, state]);
   const gridRows = useMemo(() => buildGroupedRows(filtered, state.groupBy, groupKeyGetters), [filtered, state.groupBy, groupKeyGetters]);
 
+  // The attribute view is a second RENDERING of the same filtered set, not a
+  // second, unfiltered dataset (2026-08-27 fix). Before this, `attributeRows`
+  // came straight off the raw `itemRows`, so dragging a chip in silently
+  // stopped applying the Status facet, the quick search, and every advanced
+  // condition — with no chip row left on screen to say so, because the whole
+  // FacetFilterBar was inside the `combo.length === 0` branch. Same class of
+  // bug the Store dropdown in ReplenishmentFacetedContent.tsx already fixes
+  // for that tab; this extends the reasoning to the remaining facets.
+  //
+  // `filtered` is style-color grain and `itemRows` is item_code grain, and
+  // several filterable fields (status, the mix percentages) exist only on the
+  // rolled-up row — so rather than re-deriving the predicates at item grain,
+  // keep the style-colors that survived the filter and take their items. That
+  // is exact: every item rolls up into exactly one style-color.
+  const filteredItemRows = useMemo(() => {
+    if (filtered.length === rows.length) return itemRows;
+    const keep = new Set(filtered.map((r) => `${r.styleNo}\u0000${r.color}`));
+    return itemRows.filter((r) => keep.has(`${r.styleNo}\u0000${r.color}`));
+  }, [filtered, rows, itemRows]);
+
+  // totalSales/totalStock stay the SCOPE totals, deliberately un-narrowed:
+  // Sale/Stock Mix % is defined as a share of the whole store-or-network
+  // scope (see page.tsx's "How this is calculated"), and MixRow's own
+  // saleMixPct in the default grid is computed the same unfiltered way.
+  // Re-basing the denominator on the filtered subset would make the two views
+  // disagree on the same number.
   const attributeRows = useMemo(
-    () => aggregateMixByAttributes(itemRows, combo, totalSales, totalStock, mrpBucketSize),
-    [itemRows, combo, totalSales, totalStock, mrpBucketSize]
+    () => aggregateMixByAttributes(filteredItemRows, combo, totalSales, totalStock, mrpBucketSize),
+    [filteredItemRows, combo, totalSales, totalStock, mrpBucketSize]
   );
 
   const poolAttributes = ATTRIBUTE_KEYS.filter((a) => !combo.includes(a));
@@ -209,17 +235,24 @@ export function SaleStockMixFacetedContent({
         </div>
       </div>
 
+      {/* Mounted in BOTH views — the filters it holds now apply to the
+          attribute grid too, so unmounting it there would hide active state
+          that is still in effect. Group-by is the one control that only means
+          something in the default grid (the attribute view is already grouped
+          by the combo), so its options are withheld while a combo is active
+          rather than offering a no-op. */}
+      <FacetFilterBar
+        pageKey={PAGE_KEY}
+        rows={rows}
+        facets={facets}
+        advFields={advFields}
+        groupByOptions={combo.length === 0 ? groupByOptions : []}
+        state={state}
+        onChange={setState}
+      />
+
       {combo.length === 0 ? (
         <>
-          <FacetFilterBar
-            pageKey={PAGE_KEY}
-            rows={rows}
-            facets={facets}
-            advFields={advFields}
-            groupByOptions={groupByOptions}
-            state={state}
-            onChange={setState}
-          />
           <div className="mb-2 text-[12px] text-ink-3">
             {filtered.length === rows.length ? `${filtered.length} rows` : `${filtered.length} of ${rows.length} rows`}
           </div>
@@ -229,6 +262,7 @@ export function SaleStockMixFacetedContent({
         <>
           <div className="mb-2 text-[12px] text-ink-3">
             {attributeRows.length} {combo.map((a) => ATTRIBUTE_LABELS[a]).join(" + ").toLowerCase()} groups
+            {filtered.length !== rows.length && ` · from ${filtered.length} of ${rows.length} style-colors after filters`}
           </div>
           <AttributeMixGrid rows={attributeRows} attributes={combo} />
         </>
