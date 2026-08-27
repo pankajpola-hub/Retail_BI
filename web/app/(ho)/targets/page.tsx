@@ -17,7 +17,7 @@ import { time, timeAll } from "@/lib/perf/timing";
 
 export const dynamic = "force-dynamic";
 
-type StoreRow = { store_id: string; store_name: string };
+type StoreRow = { store_id: string; store_name: string; is_active: boolean };
 type ImportRow = { id: string; file_name: string; uploaded_at: string; status: string };
 type RemarkRow = { date: string; bucket: "fresh" | "discounted"; remark_text: string | null };
 
@@ -369,12 +369,11 @@ export default async function TargetsPage({
   const { data: stores } = await supabase
     .schema("core")
     .from<StoreRow>("stores")
-    .select("store_id, store_name")
+    .select("store_id, store_name, is_active")
     .order("store_id");
-  // BO-004 (Phoenix Palassio, Lucknow) and BO-002 (Baramati, 0091) are both
-  // discontinued/not-yet-operational — kept visible only on /network for
-  // historical reference, hidden from every other store filter.
-  const storeList = (stores ?? []).filter((s) => s.store_id !== "BO-004" && s.store_id !== "BO-002");
+  // Inactive stores (core.stores.is_active = false) are kept visible only on
+  // /network for historical reference, hidden from every other store filter.
+  const storeList = (stores ?? []).filter((s) => s.is_active);
 
   const storeId =
     searchParams.store && storeList.some((s) => s.store_id === searchParams.store)

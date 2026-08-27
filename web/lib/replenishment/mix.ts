@@ -13,7 +13,7 @@ import { classifyMixGap, MIX_STATUS_META, type MixStatus } from "./mixShared";
 
 export { classifyMixGap, MIX_STATUS_META, type MixStatus };
 
-type StoreRow = { store_id: string; store_name: string; branch_name_erp: string };
+type StoreRow = { store_id: string; store_name: string; branch_name_erp: string; is_active: boolean };
 type StockRow = {
   branch_name: string | null;
   item_code: string;
@@ -109,7 +109,7 @@ export async function computeSaleStockMix(
     supabase
       .schema("core")
       .from<StoreRow>("stores")
-      .select("store_id, store_name, branch_name_erp")
+      .select("store_id, store_name, branch_name_erp, is_active")
       .order("store_id"),
     // .order() is required for .range()-based pagination to be a correct
     // partition of the view across separate REST calls, not decoration —
@@ -144,10 +144,10 @@ export async function computeSaleStockMix(
         .order("bill_type", { ascending: true })
     ),
   ]);
-  // BO-004 (Phoenix Palassio, Lucknow) and BO-002 (Baramati) are both
-  // discontinued/not-yet-operational (0091) — excluded from every per-store
-  // view the same way, this app-wide.
-  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004" && s.store_id !== "BO-002");
+  // Inactive stores (core.stores.is_active = false, e.g. discontinued or
+  // not-yet-operational branches — see 0091_bo002_bo004_stores.sql) are
+  // excluded from every per-store view the same way, this app-wide.
+  const storeList = (storesData ?? []).filter((s) => s.is_active);
   const storeBranchToId = new Map(storeList.map((s) => [s.branch_name_erp, s.store_id]));
 
   // Same style+color grain as Replenishment (lib/replenishment/compute.ts) —

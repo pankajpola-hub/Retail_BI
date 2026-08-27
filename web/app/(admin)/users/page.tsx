@@ -17,7 +17,7 @@ type Profile = {
   status: UserStatus;
   last_active_at: string | null;
 };
-type Store = { store_id: string; store_name: string };
+type Store = { store_id: string; store_name: string; is_active: boolean };
 type Grant = { user_id: string; store_id: string };
 type BusinessUnitGrant = { user_id: string; business_unit: BusinessUnit };
 type OverrideRow = { user_id: string; permission_key: string; allowed: boolean };
@@ -76,7 +76,7 @@ export default async function UsersPage() {
       .from<Profile>("profiles")
       .select("user_id, full_name, role, status, last_active_at")
       .order("full_name"),
-    supabase.schema("core").from<Store>("stores").select("store_id, store_name").order("store_id"),
+    supabase.schema("core").from<Store>("stores").select("store_id, store_name, is_active").order("store_id"),
     supabase.schema("core").from<Grant>("user_store_access").select("user_id, store_id"),
     supabase.schema("core").from<BusinessUnitGrant>("user_business_units").select("user_id, business_unit"),
     supabase
@@ -113,10 +113,11 @@ export default async function UsersPage() {
     // Non-fatal: the table renders without emails rather than failing outright.
   }
 
-  // BO-004 (Phoenix Palassio, Lucknow) and BO-002 (Baramati, 0091) are both
-  // discontinued/not-yet-operational — kept visible only on /network for
-  // historical reference; not offered as a store to grant.
-  const activeStores = (stores ?? []).filter((s) => s.store_id !== "BO-004" && s.store_id !== "BO-002");
+  // Inactive stores (core.stores.is_active = false — e.g. discontinued or
+  // not-yet-operational branches) are kept visible only on /network for
+  // historical reference; not offered as a store to grant. Single source of
+  // truth for this exclusion is core.stores.is_active — see 0091_bo002_bo004_stores.sql.
+  const activeStores = (stores ?? []).filter((s) => s.is_active);
   const storeNames = new Map(activeStores.map((s) => [s.store_id, s.store_name]));
 
   const storesByUser = new Map<string, string[]>();

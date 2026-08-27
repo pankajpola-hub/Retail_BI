@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 type ExistingFootfall = { footfall: number };
 type DayStats = { sale_bills: number; net_sales: number };
 type CompletenessRow = { date: string; has_footfall: boolean; footfall: number | null; remarks: string | null };
-type Store = { store_id: string; store_name: string };
+type Store = { store_id: string; store_name: string; is_active: boolean };
 
 const isoDate = (d: Date) => d.toISOString().slice(0, 10);
 
@@ -72,17 +72,16 @@ export default async function FootfallPage({
       .gte("date", from)
       .lte("date", to)
       .order("date", { ascending: false }),
-    supabase.schema("core").from<Store>("stores").select("store_id, store_name").order("store_id"),
+    supabase.schema("core").from<Store>("stores").select("store_id, store_name, is_active").order("store_id"),
   ]);
 
   const missingCount = (recent ?? []).filter((r) => !r.has_footfall).length;
 
   // core.stores is RLS-filtered to the caller's permitted stores already,
   // so this list can't offer a store they aren't allowed to write to.
-  // BO-004 (Phoenix Palassio, Lucknow) and BO-002 (Baramati, 0091) are both
-  // discontinued/not-yet-operational — kept visible only on /network for
-  // historical reference, hidden here.
-  const selectableStores = (stores ?? []).filter((s) => s.store_id !== "BO-004" && s.store_id !== "BO-002");
+  // Inactive stores (core.stores.is_active = false) are kept visible only on
+  // /network for historical reference, hidden here.
+  const selectableStores = (stores ?? []).filter((s) => s.is_active);
 
   return (
     <main className="py-6">

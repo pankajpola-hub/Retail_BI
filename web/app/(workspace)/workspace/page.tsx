@@ -24,7 +24,7 @@ import { ChartSkeleton } from "@/components/ui/Skeleton";
 
 export const dynamic = "force-dynamic";
 
-type StoreRow = { store_id: string; store_name: string };
+type StoreRow = { store_id: string; store_name: string; is_active: boolean };
 type ComponentDefRow = {
   id: string;
   name: string;
@@ -56,14 +56,16 @@ export default async function WorkspacePage({
   // can't read, falls back to the default exactly as before this feature
   // existed, so nothing changes for anyone who never touches it.
   const [{ data: storesData }, requestedSnapshot, myWorkspaces, sharedWithMe, myScheduledExports] = await Promise.all([
-    supabase.schema("core").from<StoreRow>("stores").select("store_id, store_name").order("store_id"),
+    supabase.schema("core").from<StoreRow>("stores").select("store_id, store_name, is_active").order("store_id"),
     searchParams.workspaceId ? getWorkspaceById(searchParams.workspaceId) : Promise.resolve(null),
     listMyWorkspaces(),
     listSharedWithMe(),
     listMyScheduledExports(),
   ]);
   const snapshot = requestedSnapshot ?? (await getOrCreateDefaultWorkspace());
-  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004" && s.store_id !== "BO-002");
+  // Single source of truth for store exclusion is core.stores.is_active —
+  // see 0091_bo002_bo004_stores.sql.
+  const storeList = (storesData ?? []).filter((s) => s.is_active);
   const storeNames = new Map(storeList.map((s) => [s.store_id, s.store_name]));
 
   const { workspace, components, filters } = snapshot;
