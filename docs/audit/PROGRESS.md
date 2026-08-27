@@ -163,7 +163,8 @@ Reason: these touch nearly every table file in the app, which would conflict wit
 ### Explicitly NOT going to be auto-fixed (need a human/product decision)
 
 - **C-09 — FIXED 2026-08-27** (`server/db/migrations/0097_scope_sale_export_stock_scheme.sql`,
-  merged to master, NOT YET RUN against the live DB — user-run). Traced every real consumer:
+  merged to master, RUN against the live DB 2026-08-27 — verified: both `_scoped` views exist).
+  Traced every real consumer:
   Replenishment/Sale-vs-Stock-Mix genuinely need whole-network rows by design and keep reading
   the original unscoped views (now hardened with `core.fn_user_role() is not null`, closing the
   no-profile-row gap); stock-details and the workspace stock tiles never needed whole-network
@@ -172,7 +173,8 @@ Reason: these touch nearly every table file in the app, which would conflict wit
   fetch whenever 0 or >1 stores were selected) — both moved onto new
   `vw_stock_with_scheme_scoped` / `vw_sale_transactions_export_scoped` views.
 - **C-06 — FIXED 2026-08-27** (`server/db/migrations/0096_sale_upload_skip_sync_owned_dates.sql`,
-  merged to master, NOT YET RUN — user-run). `ops.fn_process_sale_upload` now silently skips
+  merged to master, RUN against the live DB 2026-08-27 — verified: `fn_process_sale_upload`
+  returns jsonb). `ops.fn_process_sale_upload` now silently skips
   Excel rows whose (branch, bill_date) already has a `sale_detail_sync`-sourced row, returns a
   `skipped_sync_owned` count surfaced in the upload UI. Does not retroactively clean the live
   +1 unit/+₹89 drift from the original proof case — that's a separate, not-yet-done cleanup.
@@ -204,13 +206,12 @@ Reason: these touch nearly every table file in the app, which would conflict wit
   `workspace.metric_definitions` (`atv` vs `atv_sale_bills_only`) and
   `web/scripts/verify-metrics.mjs` (which explicitly asserts the current weekly formula as
   correct) consistently with whatever is decided, not just the view/TS code.
-- **C-10** (P2, latent) — store exclusion (`BO-004`/`BO-002`) implemented twice: SQL views via
-  `is_active`, TypeScript via a hardcoded id list in 9 files (also D-18, partially overlapping —
-  D-18 was assigned to the frontend-polish agent as a code-quality note but NOT as a full fix of
-  the dual-mechanism risk; C-10's actual fix (single source of truth) is bigger and deferred).
-- **C-12** (P3) — 35 `TESTBILL_*`/`TESTBRANCH` dummy rows in production `raw_logic.sales_transactions`
-  (harmless — never join `core.stores` so never reach any dashboard number, but pollute the raw
-  export). Simple `DELETE`, needs the user to run it (DB write).
+- **C-10 — FIXED 2026-08-27**, merged to master (`1dab0a3`). All 9 hardcoded
+  `BO-004`/`BO-002` occurrences replaced with `.filter((s) => s.is_active)`, reading a column
+  each site's query now fetches. No DB migration needed — pure TS-side read of data the DB
+  already had. `tsc --noEmit`/`next build` clean.
+- **C-12 — FIXED 2026-08-27** (`server/db/migrations/0095_delete_test_dummy_rows.sql`, run
+  against the live DB — verified: 0 TESTBRANCH rows remain, was 35).
 - **C-14, C-15, C-16, C-17** (P3, schema hygiene) — `bill_date` as text not date, UTC/IST edge
   cases (00:00-05:30 IST window only), master-upload can't clear a field, missing FK indexes.
   Low priority, not started.
