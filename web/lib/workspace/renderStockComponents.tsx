@@ -30,7 +30,7 @@ import {
  */
 export type StockComponentScope = { supabase: DataClient; storeIds: string[]; canEditCapacity: boolean };
 
-type StoreRow = { store_id: string; store_name: string; branch_name_erp: string };
+type StoreRow = { store_id: string; store_name: string; branch_name_erp: string; is_active: boolean };
 
 export type StockComponentData = {
   genderSplit: ReturnType<typeof buildNibmSummary>;
@@ -55,9 +55,11 @@ export async function fetchStockComponentData(scope: StockComponentScope): Promi
   const { data: storesData } = await supabase
     .schema("core")
     .from<StoreRow>("stores")
-    .select("store_id, store_name, branch_name_erp")
+    .select("store_id, store_name, branch_name_erp, is_active")
     .order("store_id");
-  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004" && s.store_id !== "BO-002");
+  // Single source of truth for store exclusion is core.stores.is_active —
+  // see 0091_bo002_bo004_stores.sql.
+  const storeList = (storesData ?? []).filter((s) => s.is_active);
   const storesInScope = storeIds.length > 0 ? storeList.filter((s) => storeIds.includes(s.store_id)) : storeList;
 
   // No date range — current stock is a point-in-time snapshot, same as

@@ -26,7 +26,7 @@ export const dynamic = "force-dynamic";
 
 const GENDERS: Gender[] = ["FEMALE", "MALE"];
 
-type StoreRow = { store_id: string; store_name: string; branch_name_erp: string };
+type StoreRow = { store_id: string; store_name: string; branch_name_erp: string; is_active: boolean };
 
 function fmt(n: number): string {
   return Math.round(n).toLocaleString("en-IN");
@@ -311,12 +311,11 @@ export default async function StockDetailsPage({
   const { data: storesData } = await supabase
     .schema("core")
     .from<StoreRow>("stores")
-    .select("store_id, store_name, branch_name_erp")
+    .select("store_id, store_name, branch_name_erp, is_active")
     .order("store_id");
-  // BO-004 (Phoenix Palassio, Lucknow) and BO-002 (Baramati, 0091) are both
-  // discontinued/not-yet-operational — kept visible only on /network for
-  // historical reference, hidden from every other store filter.
-  const storeList = (storesData ?? []).filter((s) => s.store_id !== "BO-004" && s.store_id !== "BO-002");
+  // Inactive stores (core.stores.is_active = false) are kept visible only on
+  // /network for historical reference, hidden from every other store filter.
+  const storeList = (storesData ?? []).filter((s) => s.is_active);
 
   const storeLabels = Object.fromEntries(storeList.map((s) => [s.store_id, s.store_name]));
   const selectedStoreIds = (searchParams.store ?? "")

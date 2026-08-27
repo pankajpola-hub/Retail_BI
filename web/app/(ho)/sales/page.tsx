@@ -115,7 +115,7 @@ type EboDailyRow = { store_id: string | null; bill_date: string | null; net_sale
 // view but was never selected or typed here, which is why the Ecomm "By
 // channel" table's Cancelled / Cancel % columns rendered a constant 0.
 type EcommDailyRow = { channel: string; order_date: string; total_orders: number; cancelled_orders: number | string; net_selling_value: number | string; gross_mrp_value: number | string; discount_value: number | string; units: number };
-type StoreRow = { store_id: string; store_name: string };
+type StoreRow = { store_id: string; store_name: string; is_active: boolean };
 
 const INR = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
 const isoDate = (d: Date) => d.toISOString().slice(0, 10);
@@ -1172,7 +1172,7 @@ export default async function SalesPage({
   // vw_ecomm_*), so showing it while only ECOM is selected would offer a
   // control that narrows nothing.
   const { data: stores } = showEbo
-    ? await supabase.schema("core").from<StoreRow>("stores").select("store_id, store_name").order("store_id")
+    ? await supabase.schema("core").from<StoreRow>("stores").select("store_id, store_name, is_active").order("store_id")
     : { data: [] as StoreRow[] };
 
   // Channel picker — mirror-opposite of the store picker: only fetched
@@ -1183,7 +1183,9 @@ export default async function SalesPage({
     ? await supabase.schema("sales").from<{ channel: string }>("vw_ecomm_daily").select("channel").order("channel")
     : { data: [] as { channel: string }[] };
   const allChannels = [...new Set((channelRowsRaw ?? []).map((r) => r.channel).filter(Boolean))];
-  const activeStores = (stores ?? []).filter((s) => s.store_id !== "BO-004" && s.store_id !== "BO-002");
+  // Single source of truth for store exclusion is core.stores.is_active —
+  // see 0091_bo002_bo004_stores.sql.
+  const activeStores = (stores ?? []).filter((s) => s.is_active);
   const storeNames = new Map(activeStores.map((s) => [s.store_id, s.store_name]));
 
   // Plain-language restatement of the active scope — "which numbers am I
