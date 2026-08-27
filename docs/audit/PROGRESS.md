@@ -126,7 +126,17 @@ already computed elsewhere in the same file, not invent one.
 **When these report back**: same procedure as Wave 1 — review diff, commit if uncommitted,
 merge to `master` one at a time, `tsc --noEmit` + `next build` after each, delete worktree/branch.
 
-### Wave 3 (Workspace parity, D-05) — NOT STARTED YET
+### Wave 3 (Workspace parity, D-05) — LAUNCHED 2026-08-27, one agent, sequential steps
+
+Single agent (not parallel — every step touches `workspace/page.tsx`/`renderSalesComponents.tsx`,
+parallel agents would conflict), isolated worktree, committing after each of 4 steps in the
+recommended order: 6 (streaming/error boundaries, prerequisite) → 3+4+5 combined (these three
+collapse into one task: swap `WeeklySalesTable` for `PeriodSalesFacetedTable`) → 1 (comparison)
+→ 2 (product-attribute breakdown, may need a `component_definitions` seed migration — user-run
+if so). `tsc --noEmit` + `next build` required clean after each step before proceeding to the
+next. When it reports back: review each step's diff and commit message (especially Step 2's
+documented decision on the click-to-drilldown-vs-full-swap tradeoff), merge to master one step
+at a time like Wave 1/2, verify build after each merge.
 
 Start only after Wave 2 is fully merged and verified — Workspace parity's port plan (see
 `D-frontend.md`'s "Sales → Workspace parity diff" section) directly reuses several Wave-2-fixed
