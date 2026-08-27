@@ -5,7 +5,14 @@ import { useRouter, usePathname, useSearchParams } from "next/navigation";
 
 type Preset = { label: string; days?: number; range?: () => [Date, Date] };
 
-const iso = (d: Date) => d.toISOString().slice(0, 10);
+// LOCAL-date formatter, deliberately NOT toISOString(). The preset helpers
+// below build local-midnight Date objects (new Date(y, m, d)); serializing
+// those through toISOString() converts to UTC, which in any timezone east of
+// UTC (IST = +05:30) lands on the PREVIOUS calendar day — "This month" on
+// 2026-08-27 IST returned 2026-07-31 as `from`. Reading the local fields
+// directly keeps the string equal to what the user sees on their calendar.
+const pad = (n: number) => String(n).padStart(2, "0");
+const iso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const startOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth(), 1);
 const endOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth() + 1, 0);
 const startOfQuarter = (d: Date) => new Date(d.getFullYear(), Math.floor(d.getMonth() / 3) * 3, 1);
@@ -40,6 +47,15 @@ export function DateRangePicker({ from, to }: { from: string; to: string }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+
+  // Re-sync the custom inputs when the URL range changes from elsewhere
+  // (a preset click, browser Back, a hand-edited URL). router.push() is a
+  // soft navigation: this component stays mounted, so the useState
+  // initialisers above run only once and would otherwise show a stale range.
+  useEffect(() => {
+    setCustomFrom(from);
+    setCustomTo(to);
+  }, [from, to]);
 
   useEffect(() => {
     function onClickOutside(e: MouseEvent) {

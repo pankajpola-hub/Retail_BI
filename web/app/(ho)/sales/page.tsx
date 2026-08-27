@@ -110,7 +110,11 @@ export const dynamic = "force-dynamic";
  */
 
 type EboDailyRow = { store_id: string | null; bill_date: string | null; net_sales: number | string; gross_sales: number | string; discount: number | string };
-type EcommDailyRow = { channel: string; order_date: string; total_orders: number; net_selling_value: number | string; gross_mrp_value: number | string; discount_value: number | string; units: number };
+// cancelled_orders comes from sales.vw_ecomm_daily's orders_agg
+// (`count(*) filter (where o.status = 'CANCELLED')`). It was always in the
+// view but was never selected or typed here, which is why the Ecomm "By
+// channel" table's Cancelled / Cancel % columns rendered a constant 0.
+type EcommDailyRow = { channel: string; order_date: string; total_orders: number; cancelled_orders: number | string; net_selling_value: number | string; gross_mrp_value: number | string; discount_value: number | string; units: number };
 type StoreRow = { store_id: string; store_name: string };
 
 const INR = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
@@ -198,27 +202,49 @@ async function SharedCoreSection({
   // active this array is byte-for-byte the two queries it always was; the
   // resolved-empty placeholders cost nothing.
   const comparing = Boolean(compareFrom && compareTo);
-  const [{ data: eboDaily }, { data: ecommDaily }, { data: cmpEboDaily }, { data: cmpEcommDaily }] = await timeAll("sales:shared_core", [
+  // All four go through fetchAllRows(): PostgREST's project-level "Max Rows"
+  // caps every response at 1000 rows regardless of .limit(), so a bare await
+  // silently truncated any window whose daily grain exceeded that (multi-store
+  // EBO reaches it inside a year) — making a WIDER date range report LOWER Net
+  // Sales than a narrower one. The .order() calls are load-bearing, not
+  // cosmetic: .range() paging is only a correct partition if the server-side
+  // ordering is stable across the separate REST calls. Same pattern as the
+  // attribute-lines query below.
+  const eboSelect = "store_id, bill_date, net_sales, gross_sales, discount";
+  const ecommSelect = "channel, order_date, total_orders, cancelled_orders, net_selling_value, gross_mrp_value, discount_value, units";
+  const [eboDaily, ecommDaily, cmpEboDaily, cmpEcommDaily] = await timeAll("sales:shared_core", [
     showEbo
-      ? (applyStore(
-          supabase.schema("sales").from<EboDailyRow>("vw_ebo_sales_daily").select("store_id, bill_date, net_sales, gross_sales, discount").gte("bill_date", from).lte("bill_date", to)
-        ) as unknown as QueryChain<EboDailyRow>)
-      : Promise.resolve({ data: [] as EboDailyRow[] }),
+      ? fetchAllRows<EboDailyRow>(
+          () =>
+            applyStore(
+              supabase.schema("sales").from<EboDailyRow>("vw_ebo_sales_daily").select(eboSelect).gte("bill_date", from).lte("bill_date", to)
+            ).order("bill_date", { ascending: true }).order("store_id", { ascending: true }) as unknown as QueryChain<EboDailyRow>
+        )
+      : Promise.resolve([] as EboDailyRow[]),
     showEcomm
-      ? (applyChannel(
-          supabase.schema("sales").from<EcommDailyRow>("vw_ecomm_daily").select("channel, order_date, net_selling_value, gross_mrp_value, discount_value, units").gte("order_date", from).lte("order_date", to)
-        ) as unknown as QueryChain<EcommDailyRow>)
-      : Promise.resolve({ data: [] as EcommDailyRow[] }),
+      ? fetchAllRows<EcommDailyRow>(
+          () =>
+            applyChannel(
+              supabase.schema("sales").from<EcommDailyRow>("vw_ecomm_daily").select(ecommSelect).gte("order_date", from).lte("order_date", to)
+            ).order("order_date", { ascending: true }).order("channel", { ascending: true }) as unknown as QueryChain<EcommDailyRow>
+        )
+      : Promise.resolve([] as EcommDailyRow[]),
     showEbo && comparing
-      ? (applyStore(
-          supabase.schema("sales").from<EboDailyRow>("vw_ebo_sales_daily").select("store_id, bill_date, net_sales, gross_sales, discount").gte("bill_date", compareFrom as string).lte("bill_date", compareTo as string)
-        ) as unknown as QueryChain<EboDailyRow>)
-      : Promise.resolve({ data: [] as EboDailyRow[] }),
+      ? fetchAllRows<EboDailyRow>(
+          () =>
+            applyStore(
+              supabase.schema("sales").from<EboDailyRow>("vw_ebo_sales_daily").select(eboSelect).gte("bill_date", compareFrom as string).lte("bill_date", compareTo as string)
+            ).order("bill_date", { ascending: true }).order("store_id", { ascending: true }) as unknown as QueryChain<EboDailyRow>
+        )
+      : Promise.resolve([] as EboDailyRow[]),
     showEcomm && comparing
-      ? (applyChannel(
-          supabase.schema("sales").from<EcommDailyRow>("vw_ecomm_daily").select("channel, order_date, net_selling_value, gross_mrp_value, discount_value, units").gte("order_date", compareFrom as string).lte("order_date", compareTo as string)
-        ) as unknown as QueryChain<EcommDailyRow>)
-      : Promise.resolve({ data: [] as EcommDailyRow[] }),
+      ? fetchAllRows<EcommDailyRow>(
+          () =>
+            applyChannel(
+              supabase.schema("sales").from<EcommDailyRow>("vw_ecomm_daily").select(ecommSelect).gte("order_date", compareFrom as string).lte("order_date", compareTo as string)
+            ).order("order_date", { ascending: true }).order("channel", { ascending: true }) as unknown as QueryChain<EcommDailyRow>
+        )
+      : Promise.resolve([] as EcommDailyRow[]),
   ] as const);
 
   const cur = rollUpCore(eboDaily ?? [], ecommDaily ?? []);
@@ -849,24 +875,43 @@ async function EcommDetailSection({
   // applied to all three queries below so the filter narrows everything on
   // this page consistently — the row-click drill-down (`channel`, singular)
   // is a further single-channel zoom ON TOP of that, applied after.
-  let linesQuery = applyChannel(
-    supabase
-      .schema("sales")
-      .from<EcommLineRow>("vw_ecomm_order_lines")
-      .select("channel, item_sku, style, status, selling_price, mrp, discount")
-      .gte("order_date", from)
-      .lte("order_date", to)
-  ) as unknown as QueryChain<EcommLineRow>;
-  if (channel) linesQuery = linesQuery.eq("channel", channel) as unknown as QueryChain<EcommLineRow>;
+  // Every query here goes through fetchAllRows(): PostgREST caps a bare
+  // response at 1000 rows with no error, and ecomm rows are per-order-LINE, so
+  // that cap is reached in days rather than months — "Top styles", the channel
+  // table and the returns breakdown were all reporting an arbitrary 1000-row
+  // subset of the chosen window. fetchAllRows needs a FRESH builder per page
+  // (a query builder is single-use once ranged), hence the factory closures;
+  // and each carries an explicit stable .order() because .range() paging is
+  // only a correct partition if the row order is stable across REST calls —
+  // the line query previously had no .order() at all, so which 1000 rows
+  // survived was not even reproducible between reloads.
+  const buildLinesQuery = () => {
+    let q = applyChannel(
+      supabase
+        .schema("sales")
+        .from<EcommLineRow>("vw_ecomm_order_lines")
+        .select("channel, item_sku, style, status, selling_price, mrp, discount")
+        .gte("order_date", from)
+        .lte("order_date", to)
+    ) as unknown as QueryChain<EcommLineRow>;
+    if (channel) q = q.eq("channel", channel) as unknown as QueryChain<EcommLineRow>;
+    return q.order("order_date", { ascending: true }).order("channel", { ascending: true }).order("item_sku", { ascending: true });
+  };
 
-  const [{ data: dailyRows }, { data: lineRows }, { data: returnRows }] = await timeAll("sales:ecomm_detail", [
-    applyChannel(
-      supabase.schema("sales").from<EcommDailyRow>("vw_ecomm_daily").select("*").gte("order_date", from).lte("order_date", to)
-    ) as unknown as QueryChain<EcommDailyRow>,
-    linesQuery,
-    applyChannel(
-      supabase.schema("sales").from<EcommReturnRow>("vw_ecomm_returns").select("reverse_pickup_code, status, return_date").gte("return_date", from).lte("return_date", to)
-    ) as unknown as QueryChain<EcommReturnRow>,
+  const [dailyRows, lineRows, returnRows] = await timeAll("sales:ecomm_detail", [
+    fetchAllRows<EcommDailyRow>(
+      () =>
+        applyChannel(
+          supabase.schema("sales").from<EcommDailyRow>("vw_ecomm_daily").select("*").gte("order_date", from).lte("order_date", to)
+        ).order("order_date", { ascending: true }).order("channel", { ascending: true }) as unknown as QueryChain<EcommDailyRow>
+    ),
+    fetchAllRows<EcommLineRow>(buildLinesQuery),
+    fetchAllRows<EcommReturnRow>(
+      () =>
+        applyChannel(
+          supabase.schema("sales").from<EcommReturnRow>("vw_ecomm_returns").select("reverse_pickup_code, status, return_date").gte("return_date", from).lte("return_date", to)
+        ).order("return_date", { ascending: true }).order("reverse_pickup_code", { ascending: true }) as unknown as QueryChain<EcommReturnRow>
+    ),
   ] as const);
 
   const daily = dailyRows ?? [];
@@ -877,6 +922,7 @@ async function EcommDetailSection({
   for (const r of daily) {
     const c = byChannel.get(r.channel) ?? { orders: 0, cancelled: 0, units: 0, net: 0, mrp: 0, discount: 0 };
     c.orders += Number(r.total_orders);
+    c.cancelled += Number(r.cancelled_orders ?? 0);
     c.units += Number(r.units);
     c.net += num(r.net_selling_value);
     c.mrp += num(r.gross_mrp_value);
@@ -1084,8 +1130,14 @@ export default async function SalesPage({
     if (searchParams.bu) params.set("bu", searchParams.bu);
     if (searchParams.store) params.set("store", searchParams.store);
     if (searchParams.channels) params.set("channels", searchParams.channels);
-    if (from) params.set("from", from);
-    if (to) params.set("to", to);
+    // searchParams.from/to, NOT the resolved `from`/`to`. The resolved pair
+    // always has a value (it falls back to a rolling last-30-days default), so
+    // writing it here froze that window into the URL: a page opened with no
+    // date params, then drilled into a channel, came back with an absolute
+    // ?from=&to= that stayed put forever once bookmarked or shared. Matches
+    // the three pre-existing-param-only lines above.
+    if (searchParams.from) params.set("from", searchParams.from);
+    if (searchParams.to) params.set("to", searchParams.to);
     if (compareFrom && compareTo) {
       params.set("compareFrom", compareFrom);
       params.set("compareTo", compareTo);
@@ -1144,21 +1196,34 @@ export default async function SalesPage({
           compareTo={compareTo}
           showComparison
           locationSlot={
-            showEbo ? (
-              <MultiSelectFilter
-                paramName="store"
-                options={activeStores.map((s) => s.store_id)}
-                labels={Object.fromEntries(activeStores.map((s) => [s.store_id, s.store_name]))}
-                selected={storeFilters}
-                allLabel="All stores"
-              />
-            ) : showEcomm ? (
-              <MultiSelectFilter
-                paramName="channels"
-                options={allChannels}
-                selected={channelFilters}
-                allLabel="All channels"
-              />
+            // BOTH pickers when both verticals are in scope, not either/or.
+            // This was a ternary with showEbo first, so the common default
+            // (no ?bu= ⇒ every granted vertical active) rendered only the
+            // store picker — while any ?channels= already in the URL kept
+            // narrowing every ECOM query, with no control left in the UI to
+            // clear it. Each picker is still shown only for a vertical that
+            // is actually in scope: store has no meaning for ecomm (see
+            // queryPlanner.ts's null VIEW_STORE_COLUMN for vw_ecomm_*).
+            showEbo || showEcomm ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {showEbo && (
+                  <MultiSelectFilter
+                    paramName="store"
+                    options={activeStores.map((s) => s.store_id)}
+                    labels={Object.fromEntries(activeStores.map((s) => [s.store_id, s.store_name]))}
+                    selected={storeFilters}
+                    allLabel="All stores"
+                  />
+                )}
+                {showEcomm && (
+                  <MultiSelectFilter
+                    paramName="channels"
+                    options={allChannels}
+                    selected={channelFilters}
+                    allLabel="All channels"
+                  />
+                )}
+              </div>
             ) : (
               <span className="text-[12.5px] text-ink-3">— (select a vertical)</span>
             )

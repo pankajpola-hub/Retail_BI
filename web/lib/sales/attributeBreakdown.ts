@@ -19,25 +19,34 @@
  * Metric conventions — matched to sales.vw_ebo_sales_daily (0005), NOT to
  * lib/replenishment/compute.ts
  * ---------------------------------------------------------------------------
- * These two parts of the app genuinely disagree about returns, and the
- * disagreement is deliberate on both sides:
+ * SOURCE ROWS ARE ALREADY SIGNED. Per commit 014b1c5 ("Fix RETURN sign
+ * convention — Sales/Targets were ~8% too high"), raw_logic.sales_transactions
+ * stores amounts and quantities signed: a RETURN row's net_amount/
+ * total_quantity is NEGATIVE. That is canonical — the ERP's own Sale Register
+ * export emits returns negative, and the whole sales.vw_ebo_* chain relies on
+ * it, summing net_amount as stored with no sign logic of its own.
  *
- *   - Replenishment / Sale vs Stock Mix sign-adjust at query time
- *     (`sign = bill_type === "RETURN" ? -1 : 1`), because they are measuring
- *     net demand for a size/color — a returned unit did not sell.
- *   - The EBO sales rollups (sales.vw_ebo_sales_daily and everything built on
- *     it) sum net_amount/gross_amount UNSIGNED across every bill_type and
- *     report `returns_value` as its own separate figure, while restricting
- *     sale_bills / sale_quantity / atv to bill_type = 'SALE'.
+ * This file does the same: it sums net_amount/gross_amount AS STORED, across
+ * every bill_type, and applies no sign rule of its own. Returns therefore net
+ * themselves out of `net`/`gross` automatically, because the values arriving
+ * here are already negative — not because anything here subtracts them.
+ * `sale_bills` / `sale_quantity` / `atv` stay restricted to bill_type = 'SALE',
+ * matching vw_ebo_sales_daily, and `returnsValue` is carried per group so the
+ * returns stay visible as their own figure rather than merely folded in. Note
+ * that `returnsValue` inherits the source sign and so accumulates NEGATIVE;
+ * the "Returns" column in ProductAttributeSalesTable.tsx renders its magnitude.
  *
- * /sales renders the SECOND convention everywhere else on the page, so this
- * breakdown reproduces it exactly. Summing `net` across every group here
- * therefore reconciles with the page's own Net Sales KPI for the same scope,
- * instead of disagreeing with it by twice the returns value. `returnsValue`
- * is carried per group so the returns are visible rather than merely folded
- * in.
+ * (014b1c5 also DELETED the opposing convention that an earlier version of
+ * this header described: lib/replenishment/compute.ts and lib/replenishment/
+ * mix.ts used to apply their own `sign = bill_type === "RETURN" ? -1 : 1` on
+ * top, which double-negated the already-negative rows. Neither file does that
+ * any more, so there is no longer a second convention to disagree with.)
  *
- * Do not "fix" this to sign-adjust without also changing vw_ebo_sales_daily
+ * Summing `net` across every group here reconciles with the page's own Net
+ * Sales KPI for the same scope.
+ *
+ * Do not "fix" this to sign-adjust (i.e. to negate RETURN rows here) without
+ * also changing vw_ebo_sales_daily
  * and re-running web/scripts/verify-metrics.mjs — the formulas in
  * lib/sales/aggregate.ts and this file are the ground truth that harness
  * cross-derives the semantic layer's catalogue against.
@@ -279,8 +288,10 @@ export function aggregateSalesByAttributes(
 
     const net = numOf(line.net_amount);
     const gross = numOf(line.gross_amount);
-    // Unsigned across every bill_type — see this file's header on why /sales
-    // follows vw_ebo_sales_daily here rather than compute.ts's signed rule.
+    // Summed AS STORED across every bill_type. The source rows are already
+    // signed (a RETURN's net_amount is negative, per 014b1c5), so returns net
+    // out here without this file applying any sign rule of its own — exactly
+    // what sales.vw_ebo_sales_daily does. See this file's header.
     bucket.net += net;
     bucket.gross += gross;
 

@@ -37,6 +37,8 @@ const TEXT_OPS = [
   { key: "not_contains", label: "does not contain" },
   { key: "eq", label: "is" },
   { key: "ne", label: "is not" },
+  { key: "blank", label: "is blank" },
+  { key: "not_blank", label: "is not blank" },
 ] as const;
 const NUM_OPS = [
   { key: "eq", label: "=" },
@@ -90,6 +92,12 @@ function rowMatchesConditions(row: unknown, advFields: AdvField<unknown>[], cond
     if (f.numeric) {
       if (c.op === "blank") return raw === null;
       if (c.op === "not_blank") return raw !== null;
+      // A value-less numeric condition is a no-op, not "= 0". Number("") is 0
+      // and Number.isNaN(0) is false, so without this guard "Orders = " — the
+      // state every freshly-added or mid-retype condition passes through —
+      // silently filters the grid down to zero-valued rows. Mirrors the text
+      // branch's own `if (!b) return true;` below.
+      if (c.value === "") return true;
       const a = Number(raw);
       const b = Number(c.value);
       if (raw === null || Number.isNaN(a) || Number.isNaN(b)) return false;
@@ -110,6 +118,9 @@ function rowMatchesConditions(row: unknown, advFields: AdvField<unknown>[], cond
           return true;
       }
     }
+    const isBlank = String(raw ?? "").trim() === "";
+    if (c.op === "blank") return isBlank;
+    if (c.op === "not_blank") return !isBlank;
     const a = String(raw ?? "").toLowerCase();
     const b = String(c.value ?? "").toLowerCase();
     if (!b) return true;
@@ -257,7 +268,7 @@ export function FacetFilterBar<T>({
     });
   }
 
-  const activeChips: { label: string; onRemove: () => void }[] = [];
+  const activeChips: { label: string; onRemove: () => void; incomplete?: boolean }[] = [];
   for (const f of facets) {
     for (const v of state.facets[f.key] ?? []) {
       activeChips.push({ label: `${f.label}: ${v}`, onRemove: () => toggleFacetValue(f.key, v) });
@@ -271,9 +282,15 @@ export function FacetFilterBar<T>({
     const f = advFields.find((x) => x.key === c.field);
     const ops = f?.numeric ? NUM_OPS : TEXT_OPS;
     const op = ops.find((o) => o.key === c.op);
+    // blank/not_blank take no operand; every other operator needs one, and a
+    // value-less condition matches every row (see rowMatchesConditions). Mark
+    // it visibly incomplete rather than letting it read as a real filter — but
+    // still render it, so its × stays available to remove it.
+    const valueless = c.op !== "blank" && c.op !== "not_blank" && String(c.value ?? "").trim() === "";
     activeChips.push({
-      label: `${f?.label ?? c.field} ${op?.label ?? c.op} ${c.value}`.trim(),
+      label: `${f?.label ?? c.field} ${op?.label ?? c.op} ${c.value}`.trim() + (valueless ? " (incomplete)" : ""),
       onRemove: () => removeCondition(i),
+      incomplete: valueless,
     });
   });
 
@@ -461,7 +478,14 @@ export function FacetFilterBar<T>({
       {activeChips.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
           {activeChips.map((chip, i) => (
-            <span key={i} className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[11.5px] text-ink-2">
+            <span
+              key={i}
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11.5px] ${
+                chip.incomplete
+                  ? "border border-dashed border-line bg-transparent italic text-ink-3"
+                  : "bg-surface-2 text-ink-2"
+              }`}
+            >
               {chip.label}
               <button type="button" onClick={chip.onRemove} className="font-bold opacity-60 hover:opacity-100">
                 ×
@@ -568,8 +592,15 @@ function FacetPanel<T>({
         className="mb-2 min-h-[28px] w-full rounded-md border border-line bg-surface px-2 py-1 text-[12px] text-ink-2"
       />
       <div className="mb-1.5 flex items-center justify-between border-b border-line-soft pb-1.5 text-[11px]">
-        <button type="button" onClick={() => onSetAll(values)} className="text-accent hover:underline">
-          Select all
+        <button
+          type="button"
+          // Union, never replace: `values` is already narrowed by the search box
+          // above, so a straight overwrite would silently drop every previously
+          // picked value that the search is currently hiding.
+          onClick={() => onSetAll([...new Set([...selected, ...values])])}
+          className="text-accent hover:underline"
+        >
+          {search.trim() ? "Select all shown" : "Select all"}
         </button>
         <button type="button" onClick={onClear} className="text-accent hover:underline">
           Clear
