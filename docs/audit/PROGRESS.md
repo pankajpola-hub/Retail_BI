@@ -162,17 +162,20 @@ Reason: these touch nearly every table file in the app, which would conflict wit
 
 ### Explicitly NOT going to be auto-fixed (need a human/product decision)
 
-- **C-09** (P2, security) — `vw_sale_transactions_export` / `vw_stock_with_scheme` have no
-  store/role scoping of their own, reachable directly over PostgREST bypassing the route-level
-  role check. NOT fixed in 0094 because Replenishment/Mix read both views for roles broader
-  than ho_admin/super_admin — a blind role-gate at the view level would lock out legitimate
-  users. Needs: a decision on which roles should see whole-network line-level data via which
-  path, then either a role-gate on the view or a narrower-purpose view for the broader-access
-  callers.
-- **C-06** (P2) — Excel upload and nightly sync can double-count the same bill line (different
-  `line_seq` derivation per writer). Small blast radius today (+1 unit, +Rs 89) but unbounded if
-  someone re-uploads Excel for a sync-owned date range. Recommended fix (not yet built): refuse/
-  auto-delete Excel rows for dates the sync owns.
+- **C-09 — FIXED 2026-08-27** (`server/db/migrations/0097_scope_sale_export_stock_scheme.sql`,
+  merged to master, NOT YET RUN against the live DB — user-run). Traced every real consumer:
+  Replenishment/Sale-vs-Stock-Mix genuinely need whole-network rows by design and keep reading
+  the original unscoped views (now hardened with `core.fn_user_role() is not null`, closing the
+  no-profile-row gap); stock-details and the workspace stock tiles never needed whole-network
+  data and had their own latent scoping bugs on top (stock-details' branch dropdown wasn't
+  intersected with the caller's stores; workspace fell through to a fully unfiltered 20k-row
+  fetch whenever 0 or >1 stores were selected) — both moved onto new
+  `vw_stock_with_scheme_scoped` / `vw_sale_transactions_export_scoped` views.
+- **C-06 — FIXED 2026-08-27** (`server/db/migrations/0096_sale_upload_skip_sync_owned_dates.sql`,
+  merged to master, NOT YET RUN — user-run). `ops.fn_process_sale_upload` now silently skips
+  Excel rows whose (branch, bill_date) already has a `sale_detail_sync`-sourced row, returns a
+  `skipped_sync_owned` count surfaced in the upload UI. Does not retroactively clean the live
+  +1 unit/+₹89 drift from the original proof case — that's a separate, not-yet-done cleanup.
 - **C-07 — INVESTIGATED AND REJECTED 2026-08-27, do not re-attempt without re-reading this.**
   The audit's premise was wrong: it treated "weekly/monthly ATV includes returns in the
   numerator while daily's doesn't" as a bug to fix by making weekly/monthly match daily
