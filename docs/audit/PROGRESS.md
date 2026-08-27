@@ -61,28 +61,32 @@ everything fixable, track anything that needs a human decision.
    ```
 5. `1d1871f` — audit reports committed to `docs/audit/`.
 
-### In progress — 5 parallel worktree agents launched, NOT YET MERGED
+### Done and merged — all 5 parallel fix batches (as of `5277ce9`)
 
-Each in its own isolated worktree/branch, fixing a distinct, non-overlapping set of files.
-When each reports back: review its diff, merge to `master`, run `tsc --noEmit` + `next build`
-on the merged result, then move to the next.
+All 5 worktree agents completed, were reviewed, committed, merged one at a time into `master`
+with `tsc --noEmit` + `next build` verified clean after each merge, and their worktrees/branches
+deleted. Full build (`next build`) also verified clean on the final merged state — all 36 routes
+compile.
 
-| Agent | agentId (for SendMessage if resuming) | Scope | Files |
-|---|---|---|---|
-| Security | `a6c1659f213b97fed` | B-03 through B-14 (API routes, RBAC, timeouts, error leaks) | `web/app/api/**`, `web/lib/uniware/client.ts`, `web/lib/alerts/mailer.ts`, new `web/lib/cron/auth.ts` |
-| Sales correctness | `ad39b18cfa563b48b` | A-01, A-02, A-03, A-04, A-05/D-01, A-08, A-09, A-10, A-11, A-12, D-21 | `web/app/(ho)/sales/**`, `FacetFilterBar.tsx`, `DateRangePicker.tsx`, `ComparisonDateRangePicker.tsx`, `lib/sales/attributeBreakdown.ts` |
-| Movement filters | `a2db505ac80b29c6e` | A-06, A-07, A-15, A-16, A-17, A-18 | `web/app/(replenishment)/movement/**`, `FacetFilterBar.tsx` (additive `defaultGroupBy` prop only) |
-| Frontend polish | `a109b117bba398a61` | D-06, D-08, D-09, D-10, D-13, D-15, D-16, D-17, D-20 | `web/app/error.tsx` (new), `web/app/global-error.tsx` (new), campaigns/footfall/targets pages, `FacetFilterBar.tsx` (D-10 useEffect only), `AppShell.tsx`, `package.json` (react-hook-form removal — note: `npm install` needed once after merge) |
-| Dark grids + progress bar | `a912ce8f7fc8d16ed` | D-03, progress-bar gaps 1&2 | `DataGrid.tsx`, new `web/app/loading.tsx`, new `web/components/ui/useProgressTransition.ts`, 6 `useTransition`→`useProgressTransition` call sites incl. `FacetFilterBar.tsx` (that swap only) |
+| Batch | Scope | Fixed |
+|---|---|---|
+| Security | B-03 through B-14 | All 12 — see commit for `web/lib/cron/auth.ts` (fail-closed CRON_SECRET), `web/app/api/_shared/{requireRole,finYear,targetsUploadLimits}.ts` (new shared helpers), role gates on upload-url/sale-detail/bulk-preview/template/targets-upload, `fetchAllRows` on download-merged, Uniware fetch timeouts+retry, SMTP timeouts, bulk-commit max(5000). **Skipped**: B-04's bucket-level `file_size_limit` — no `storage.buckets` migration exists to amend (0018/0022 both explicitly decline to manage buckets at the DB layer); needs a new migration or a Supabase dashboard change. |
+| Sales correctness | A-01,02,03,04,05/D-01,08,09,10,11,12,D-21 | All 12 — IST date-preset bug (`DateRangePicker.tsx`), product-attribute facet retargeting, numeric-condition blank-value guard, `/sales` pagination (`fetchAllRows` on 7 query sites), Ecomm cancelled-orders now populated, channel picker reachable when both EBO+ECOM active, date-picker resync, text `blank`/`not_blank` operators, facet select-all union, `channelHref` date-baking, Returns column sign display + stale header comment. |
+| Movement filters | A-06,07,16,17,18 | A-17 investigated first and found the audit's own A-07 premise partially wrong (5 of 7 `mix_*` params are dead — never read server-side, Mix-tab filtering is local React state not URL state) — fixed based on ground truth (wired only the 2 real params, `mix_store`/`mix_period`, deleted the dead `buildHref` and the 5 dead param declarations) rather than mechanically following the audit's suggested fix. A-06: attribute-combo views now actually apply active facet filters (via a filtered-item-keys join) instead of silently discarding them. A-18: added an additive, backward-compatible `defaultGroupBy` prop to `FacetFilterBar` (not yet used by any Movement caller — no default grouping existed to preserve, noted for future use). A-15 explicitly left for a human decision (low impact, judgment call). |
+| Frontend polish | D-06,08,09,10,13,15,16,17,20 | All 9 — new `app/error.tsx`+`global-error.tsx`, campaigns/footfall/targets empty-states, `FacetFilterBar` saved-views fetch catch+unmount guard, `CategoryTracker` number formatting, dead-code removal (`RowsPerPageSelect.tsx`, `react-hook-form` dependency — **`npm install` still needs one human run** to update `package-lock.json`), mobile nav rebuilt as a single-row `overflow-x-auto` bar (was overlapping page content), `requirePageAccess` added to 2 redirect stubs. |
+| Dark grids + progress bar | D-03, progress-bar gaps 1&2 | `DataGrid.tsx` now switches a light/dark `themeQuartz` composition via a `MutationObserver` on `data-theme` (covers all 9 ag-grid tables) — **visual verification in an actual browser still outstanding**, only reasoned-through, not screenshotted. New `app/loading.tsx` + `(ecomm)/loading.tsx`, new `useProgressTransition` hook wired into the 6 `useTransition` call sites the audit named. |
 
-**Note**: `FacetFilterBar.tsx` is touched by THREE of the five agents, each for a distinct,
-non-overlapping reason (Sales-correctness: A-03/A-10/A-11 numeric-guard + text-blank-op +
-select-all-union; Movement: A-18 additive `defaultGroupBy` prop; Frontend-polish: D-10 the one
-`useEffect` catch/cancel fix; Dark-grids: the `useTransition` import swap at ~line 193). This
-was deliberate — the four changes are in different functions/sections of the file and were each
-given surgical, minimal-diff instructions to avoid conflicts. **When merging, merge these in
-some order and re-run `tsc`+`build` after each — if a real conflict surfaces despite the
-instructions, resolve by hand, don't just take one side.**
+`FacetFilterBar.tsx` was touched by 4 of the 5 batches, each for a distinct, non-overlapping
+reason — all merged cleanly via git's automatic merge (`ort` strategy), verified by grep that
+every batch's markers survived (`useProgressTransition`, `blank`/`not_blank`, the `c.value===""`
+guard, `Select all shown`, `defaultGroupBy`).
+
+**Still needed, human action**:
+1. Run `npm install` in `web/` once (removed `react-hook-form` from `package.json`, lockfile
+   needs regenerating).
+2. Visually verify dark-mode ag-grid theming on a real browser (`/sales`, toggle dark mode).
+3. Run migrations `0093` and `0094` against the live DB (commands above) if not already done.
+4. Deploy (`npx vercel --prod --yes`) and smoke-test.
 
 ### Explicitly deferred to a later wave (do NOT start until the above 5 are merged and verified)
 
