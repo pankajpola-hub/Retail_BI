@@ -1,13 +1,24 @@
 import { NextResponse } from "next/server";
 import { createClient as createAppClient } from "@/lib/data/client";
 import { getSalesSourceClient, fetchAllSalesSourceRows, SalesSourceError, isRealError } from "@/lib/salesSource/client";
+import { roleFailure } from "@/app/api/_shared/requireRole";
+import { currentFinYear } from "@/app/api/_shared/finYear";
 
 /**
  * Wiring-check / diagnostic endpoint for the second Supabase project
  * (sale_detail view) — see lib/salesSource/client.ts's own header. Gated
- * behind THIS app's own session (not the sales-source one) since this
- * queries and exposes real revenue-adjacent figures — a URL-only-knowledge
- * bar is not enough, same posture as api/replenishment/download/route.ts.
+ * behind THIS app's own session (not the sales-source one) AND an
+ * ho_admin/super_admin role check, since this queries and exposes real
+ * revenue-adjacent figures — a URL-only-knowledge bar is not enough, same
+ * posture as api/replenishment/download/route.ts.
+ *
+ * The role check is new (audit B-05). The "same posture as
+ * replenishment/download" this header always claimed was not actually
+ * implemented: until now the only gate was "is signed in", so a
+ * store-scoped ebo_manager or a marketing user — who by design sees only
+ * their own stores — got whole-network revenue from one GET. Every figure
+ * below is network-wide and unscoped by design (the source view has no
+ * store scoping), so the role list IS the entire boundary here.
  *
  * Reports the three things Pankaj flagged as the ones that "will bite":
  * - lineCount: raw row count (one row per sold line) — the number to
@@ -31,6 +42,11 @@ export async function GET() {
   if (!user) {
     return NextResponse.json({ ok: false, error: { code: "unauthorized", message: "Not signed in." } }, { status: 401 });
   }
+
+  const denied = await roleFailure(appSupabase, user.id, "Only HO Admin / Super Admin can read sales-source diagnostics.");
+  if (denied) return denied;
+
+  const finYear = currentFinYear(new Date());
 
   try {
     const sales = await getSalesSourceClient();
@@ -81,13 +97,30 @@ export async function GET() {
     // `mrp` was renamed here to keep it distinct from the product master's
     // own mrp column (per Pankaj, 2026-08-26).
     // signed_net_amount pulled in the same paginated pass rather than a
-    // second fetch — one full scan of the view serves both distinctBills
-    // and revenue.
+    // second fetch — one scan of the view serves both distinctBills and
+    // revenue.
+    //
+    // .gte("fin_year", finYear) bounds that scan to the CURRENT fiscal year
+    // (audit B-05). Previously this paginated the entire view, every fiscal
+    // year present, on every single request — one REST round trip per 1000
+    // rows against the second Supabase project, with no cache and no
+    // bound, which made a diagnostic endpoint into a cost/DoS lever. Same
+    // bound and same helper as app/api/cron/sale-detail-sync, which has
+    // always scanned this way.
+    //
+    // Consequence to read the response with: distinctBills and revenue are
+    // CURRENT-FY figures, whereas lineCount and unmatchedProductRows above
+    // stay whole-view counts (head:true count queries transfer no rows, so
+    // they cost nothing to leave unbounded, and the whole-view line count
+    // is the ~23,919 sanity-check number this endpoint exists for). The
+    // fiscal year in effect is returned alongside them so the response is
+    // self-describing rather than needing this comment to interpret.
     const detailRows = await fetchAllSalesSourceRows<{ fin_year: string; vouch_code: string; signed_net_amount: number | string | null }>(
       (c) =>
         c
           .from("sale_detail")
           .select("fin_year, vouch_code, signed_net_amount")
+          .gte("fin_year", finYear)
           .order("fin_year", { ascending: true })
           .order("vouch_code", { ascending: true })
           .order("barcode", { ascending: true })
@@ -99,7 +132,7 @@ export async function GET() {
 
     return NextResponse.json({
       ok: true,
-      data: { lineCount, distinctBills, unmatchedProductRows, revenue },
+      data: { finYear, lineCount, distinctBills, unmatchedProductRows, revenue },
     });
   } catch (err) {
     // Server-log the full object regardless of shape — a bare `err.message`
@@ -111,18 +144,23 @@ export async function GET() {
     // top of that.
     console.error("[sales-source/sale-detail]", JSON.stringify(err, Object.getOwnPropertyNames(err as object)));
 
-    const isSalesSourceError = err instanceof SalesSourceError;
+    // The RESPONSE carries only a code and a generic message (audit B-10).
+    // It used to forward the upstream PostgREST phase/code/details/hint/
+    // status verbatim from the second Supabase project — and `hint` is
+    // exactly the field that names internal objects and hands out remedies:
+    // raw_logic.sale_detail_sync_runs already holds a real recorded example
+    // ("permission denied for table sale_header_state (hint: Grant the
+    // required privileges ... GRANT SELECT ON public.sale_header_state TO
+    // authenticated;)"), which that shape would have returned to a browser.
+    // Nothing is lost for debugging: the full object, non-enumerable
+    // Error fields included, is already logged server-side just above —
+    // which is where it belongs.
     return NextResponse.json(
       {
         ok: false,
         error: {
           code: "sales_source_query_failed",
-          message: err instanceof Error ? err.message : "Query failed.",
-          phase: isSalesSourceError ? err.phase : undefined,
-          sourceCode: isSalesSourceError ? err.code : undefined,
-          details: isSalesSourceError ? err.details : undefined,
-          hint: isSalesSourceError ? err.hint : undefined,
-          status: isSalesSourceError ? err.status : undefined,
+          message: "Could not query the sales source. Check the server logs for details.",
         },
       },
       { status: 500 }

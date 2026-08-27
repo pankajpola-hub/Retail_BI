@@ -21,7 +21,19 @@ const bodySchema = z.object({
         discountedTarget: z.number().int().min(0),
       })
     )
-    .min(1),
+    .min(1)
+    // Upper bound on the batch (audit B-14: .min(1) with no .max() let a
+    // single request carry an arbitrarily large upsert payload, and there
+    // is no rate limiting anywhere in app/api to fall back on).
+    //
+    // Sizing: a row here is one (store, month) pair. The network is ~30
+    // stores, and parseMonthlyTargetsWorkbook reads one row per store-month
+    // out of the uploaded sheet with no multiplier — so a realistic upload
+    // is tens of rows, and even an unusually wide backfill (100 stores x 36
+    // months = 3,600) stays under this. 5,000 leaves clear headroom above
+    // any legitimate use while capping the payload at something a single
+    // request can sanely upsert.
+    .max(5000),
 });
 
 // Step 3 of validate → preview → commit. Only ever called with rows the

@@ -45,6 +45,51 @@ const xmlParser = new XMLParser({
 
 export class UniwareSoapError extends Error {}
 
+/**
+ * Per-request ceiling on every outbound Uniware call (audit B-08).
+ *
+ * None of the three fetches below had a timeout, an AbortController or a
+ * retry. app/api/cron/uniware-sync makes up to ~7 sequential SearchSaleOrder
+ * pages + 20 GetSaleOrder + 20 GetReturn calls per invocation against an
+ * India-hosted tenant, inside a hard 60s Vercel ceiling — one hung socket
+ * consumed the entire budget and the invocation was killed by the platform
+ * with FUNCTION_INVOCATION_TIMEOUT. That is precisely the failure the batch
+ * sizes were cut for (150 -> 60 -> 20), and the route's per-phase try/catch
+ * cannot catch it, because nothing is thrown: the whole process dies.
+ *
+ * 8s is chosen against that 60s budget rather than against Uniware's
+ * latency: ~47 calls means the timeout has to be small enough that a couple
+ * of stalls still leave room for the rest of the run and the sync_runs log
+ * write at the end. A healthy call returns in well under a second.
+ */
+const UNIWARE_TIMEOUT_MS = 8000;
+
+/**
+ * One retry on a NETWORK-level failure only — a dropped socket, a DNS
+ * blip, or our own AbortSignal.timeout firing. All of those surface as a
+ * thrown fetch error, never as a response.
+ *
+ * Deliberately does NOT retry on an HTTP status: the callers below already
+ * treat a non-2xx (and a SOAP Fault, which Uniware returns with HTTP 200)
+ * as a real, reported error, and every one of these operations is a read,
+ * so a retry is safe but a retry loop on a genuine 4xx would just burn the
+ * invocation budget twice as fast. One retry, not a backoff ladder, for the
+ * same reason — the budget is 60s for the whole run.
+ */
+async function fetchWithTimeout(input: string, init: RequestInit = {}): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetch(input, { ...init, signal: AbortSignal.timeout(UNIWARE_TIMEOUT_MS) });
+    } catch (err) {
+      if (attempt >= 1) throw err;
+      console.error("[uniware] network error, retrying once", {
+        url: input.split("?")[0],
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
 function escapeXml(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
@@ -70,7 +115,7 @@ async function soapCall(
     `<soapenv:Body><ser:${operation}Request>${innerXml}</ser:${operation}Request></soapenv:Body>` +
     "</soapenv:Envelope>";
 
-  const res = await fetch(`${process.env.UNIWARE_BASE_URL}/services/soap/?version=1.9`, {
+  const res = await fetchWithTimeout(`${process.env.UNIWARE_BASE_URL}/services/soap/?version=1.9`, {
     method: "POST",
     headers: { "Content-Type": "text/xml; charset=utf-8" },
     body: envelope,
@@ -322,7 +367,7 @@ async function restToken(): Promise<string | null> {
   url.searchParams.set("username", process.env.UNIWARE_REST_USERNAME!);
   url.searchParams.set("password", process.env.UNIWARE_REST_PASSWORD!);
 
-  const res = await fetch(url.toString(), { method: "POST", cache: "no-store" });
+  const res = await fetchWithTimeout(url.toString(), { method: "POST", cache: "no-store" });
   const text = await res.text();
   if (!res.ok) {
     throw new UniwareRestError(`OAuth2 token request failed (HTTP ${res.status}): ${text.slice(0, 300)}`);
@@ -356,7 +401,7 @@ async function restCall(path: string, payload: Record<string, unknown>): Promise
   // the SOAP side per D:\Py\VMS_Peppermint, harmless to omit if unset).
   if (process.env.UNIWARE_FACILITY_CODE) headers["Facility"] = process.env.UNIWARE_FACILITY_CODE;
 
-  const res = await fetch(`${process.env.UNIWARE_BASE_URL}${path}`, {
+  const res = await fetchWithTimeout(`${process.env.UNIWARE_BASE_URL}${path}`, {
     method: "POST",
     headers,
     body: JSON.stringify(payload),

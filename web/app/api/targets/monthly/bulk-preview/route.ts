@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/data/client";
 import { parseMonthlyTargetsWorkbook } from "@/lib/targets/parseMonthlyTargetsWorkbook";
+import { roleFailure } from "@/app/api/_shared/requireRole";
+import { TARGETS_MAX_BYTES, TARGETS_ALLOWED_TYPES } from "@/app/api/_shared/targetsUploadLimits";
 
 type StoreRow = {
   store_id: string;
@@ -20,6 +22,16 @@ type EboMonthlyTargetRow = {
 // here. The client shows this as a table for the admin to review, including
 // which rows would overwrite an existing target, before /bulk-commit is
 // ever called.
+//
+// Restricted to ho_admin/super_admin (audit B-09) — the same roles
+// ops.ebo_monthly_targets' write policy allows, so this preview step now
+// matches the commit step it feeds. It used to be "signed in" only, which
+// leaked the full core.stores directory (that query has no store scoping of
+// its own, unlike the targets read below, which RLS does bound to the
+// caller's own stores) to roles with no business on the targets-upload
+// flow. It was also the only upload route in the tree with neither a size
+// cap nor a MIME check before file.arrayBuffer() pulled the whole body into
+// memory — both now applied from the shared pair.
 export async function POST(request: Request) {
   const supabase = await createClient();
   const {
@@ -29,11 +41,23 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: { code: "unauthorized", message: "Not signed in." } }, { status: 401 });
   }
 
+  const denied = await roleFailure(supabase, user.id, "Only HO Admin / Super Admin can preview monthly target uploads.");
+  if (denied) return denied;
+
   const formData = await request.formData();
   const file = formData.get("file");
   if (!(file instanceof File)) {
     return NextResponse.json(
       { ok: false, error: { code: "invalid_body", message: "No file uploaded." } },
+      { status: 400 }
+    );
+  }
+  if (file.size > TARGETS_MAX_BYTES) {
+    return NextResponse.json({ ok: false, error: { code: "file_too_large", message: "File must be under 10MB." } }, { status: 400 });
+  }
+  if (!TARGETS_ALLOWED_TYPES.includes(file.type)) {
+    return NextResponse.json(
+      { ok: false, error: { code: "invalid_type", message: "Only .xlsx or .xls files are accepted." } },
       { status: 400 }
     );
   }

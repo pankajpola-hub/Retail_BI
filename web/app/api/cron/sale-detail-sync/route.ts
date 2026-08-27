@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { cronAuthFailure } from "@/lib/cron/auth";
+import { currentFinYear } from "@/app/api/_shared/finYear";
 import { createAdminClient } from "@/lib/data/admin";
 import { fetchAllSalesSourceRows, SalesSourceError } from "@/lib/salesSource/client";
 
@@ -37,15 +39,10 @@ type SaleDetailRow = {
   market_segment: string | null;
 };
 
-// EBO fiscal year: April-March, 8-digit form per sale_detail_reference.md
-// ("eight digits, e.g. 20262027") — matches sales.vw_sale_transactions_export's
-// (0086) own Apr-start financial_year computation, just numeric instead of
-// the view's "FY2026-27" text form.
-function currentFinYear(d: Date): number {
-  const y = d.getUTCFullYear();
-  const m = d.getUTCMonth() + 1; // 1-12
-  return m >= 4 ? y * 10000 + (y + 1) : (y - 1) * 10000 + y;
-}
+// currentFinYear now lives in app/api/_shared/finYear.ts — moved there
+// (unchanged) so app/api/sales-source/sale-detail can bound its own scan to
+// the identical fiscal year rather than growing a second copy of the
+// Apr-March boundary that could drift from this one (audit B-05).
 
 // sale_detail's bill_date comes back "YYYY-MM-DD" over PostgREST (a real
 // `date` column) — raw_logic.sales_transactions stores bill_date as TEXT in
@@ -117,10 +114,9 @@ function toSigned(v: number | string | null): number {
  * assigns the same line_seq every time (0024's own idempotency rule).
  */
 export async function GET(request: Request) {
-  const auth = request.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ ok: false, error: { code: "unauthorized", message: "Not authorized." } }, { status: 401 });
-  }
+  // Fail-closed shared secret check — see lib/cron/auth.ts (audit B-07).
+  const denied = cronAuthFailure(request);
+  if (denied) return denied;
 
   const startedAt = new Date();
   const finYear = currentFinYear(startedAt);

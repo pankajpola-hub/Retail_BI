@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient as createDataClient } from "@/lib/data/client";
 import { createUploadUrl } from "@/lib/storage/supabase";
+import { roleFailure } from "@/app/api/_shared/requireRole";
 
 // 50MB — raised from 20MB (2026-08-25) after a multi-year merged Sale
 // report (all FY sheets combined) hit the old cap. 50MB is the real
@@ -34,10 +35,16 @@ type ReportType = (typeof REPORT_TYPES)[number];
  * File size/type here are the CLIENT's own claims (fileSize/contentType in
  * the request body, not actual bytes we've seen) — a soft check only,
  * since the real bytes go straight to Storage and we never see them here.
- * Acceptable: this whole surface is already ho_admin/super_admin only, not
- * a public upload endpoint, so this isn't a meaningful new attack surface
- * — worst case an admin's own malformed request fails later at the
- * register step or at Storage itself.
+ * Acceptable BECAUSE of the role check below, which is what makes the old
+ * version of this comment's "this whole surface is already
+ * ho_admin/super_admin only" claim actually true: it was inherited from the
+ * /data-upload PAGE's gate and never carried across to this route when the
+ * direct-to-Storage refactor (2026-08-25) moved the entry point here, so
+ * until now any signed-in user of any role could mint an unlimited number
+ * of service-role signed upload URLs into the private erp-reports bucket
+ * (audit B-04). createUploadUrl uses the SERVICE-ROLE client
+ * (lib/storage/supabase.ts:35), which bypasses Storage policies entirely —
+ * so this route's own check is the only gate that exists on that write.
  */
 export async function POST(request: Request) {
   const supabase = await createDataClient();
@@ -48,6 +55,9 @@ export async function POST(request: Request) {
   if (!user) {
     return NextResponse.json({ ok: false, error: { code: "unauthorized", message: "Not signed in." } }, { status: 401 });
   }
+
+  const denied = await roleFailure(supabase, user.id, "Only HO Admin / Super Admin can upload ERP reports.");
+  if (denied) return denied;
 
   const body = await request.json().catch(() => null);
   const reportType = body?.reportType;

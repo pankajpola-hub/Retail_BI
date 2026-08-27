@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import * as XLSX from "xlsx";
-import { createClient as createDataClient } from "@/lib/data/client";
+import { createClient as createDataClient, fetchAllRows } from "@/lib/data/client";
 
 // Merged sale download — a single Excel export of the FULL accumulated
 // raw_logic.sales_transactions history (every Sale-report upload ever
@@ -44,14 +44,6 @@ type ExportRow = {
 };
 
 const ALLOWED_ROLES = ["ho_admin", "super_admin"];
-// No .range()/.offset() on the shared DataClient (lib/data/client.ts's
-// QueryChain deliberately only exposes the methods already used elsewhere —
-// see its header). Single generous .limit() instead, same style as
-// web/app/(stock-details)/stock-details/page.tsx's .limit(20000) for its
-// own full-table export. One fiscal year alone verified at ~21k real rows
-// (migration 0024's header); 200k comfortably covers many years of
-// accumulated history before this needs revisiting.
-const EXPORT_ROW_LIMIT = 200_000;
 
 function ddmmyyyy(isoDate: string): string {
   const [y, m, d] = isoDate.split("-");
@@ -90,27 +82,48 @@ export async function GET(request: Request) {
     );
   }
 
-  let query = supabase
-    .schema("sales")
-    .from<ExportRow>("vw_sale_transactions_export")
-    .select(
-      "branch_name, store_name, bill_date, financial_year, bill_no, bill_type, item_code, total_quantity, gross_amount, net_amount, discount_amount, agent_name, scheme_name, scheme_group_name, bill_time, line_seq"
+  // Paginated with fetchAllRows, NOT a bare .limit(). Supabase's project
+  // "Max Rows" setting caps every PostgREST response at 1000 regardless of
+  // what .limit() asks for — the old .limit(200_000) here silently returned
+  // exactly 1000 rows, no error, so "the FULL accumulated history" was in
+  // fact ~4% of it (audit B-03; the cap was confirmed live 2026-08-25
+  // against this very view, see lib/data/client.ts's own header).
+  //
+  // The whole chain is rebuilt inside the callback because a query builder
+  // is single-use once .range()'d, and the .order() calls are load-bearing
+  // rather than cosmetic: .range() is only a correct partition of the view
+  // across separate REST calls when the sort is a TOTAL order. These five
+  // columns are exactly raw_logic.sales_transactions' natural key from
+  // migration 0024 (branch_name, bill_date, bill_no, item_code, line_seq),
+  // so every row's position is deterministic and page boundaries are
+  // stable — same reasoning as lib/replenishment/compute.ts:205-224.
+  let rows: ExportRow[];
+  try {
+    rows = await fetchAllRows<ExportRow>(() => {
+      let q = supabase
+        .schema("sales")
+        .from<ExportRow>("vw_sale_transactions_export")
+        .select(
+          "branch_name, store_name, bill_date, financial_year, bill_no, bill_type, item_code, total_quantity, gross_amount, net_amount, discount_amount, agent_name, scheme_name, scheme_group_name, bill_time, line_seq"
+        );
+      if (fiscalYears.length > 0) {
+        q = q.in("financial_year", fiscalYears);
+      }
+      return q
+        .order("bill_date")
+        .order("branch_name")
+        .order("bill_no")
+        .order("item_code")
+        .order("line_seq");
+    });
+  } catch (err) {
+    // fetchAllRows throws on a PostgREST error rather than returning it —
+    // mapped back to this route's existing 400 shape so callers see no change.
+    return NextResponse.json(
+      { ok: false, error: { code: "query_failed", message: err instanceof Error ? err.message : "Query failed." } },
+      { status: 400 }
     );
-  if (fiscalYears.length > 0) {
-    query = query.in("financial_year", fiscalYears);
   }
-  const { data, error } = await query
-    .order("bill_date")
-    .order("branch_name")
-    .order("bill_no")
-    .order("item_code")
-    .order("line_seq")
-    .limit(EXPORT_ROW_LIMIT);
-
-  if (error) {
-    return NextResponse.json({ ok: false, error: { code: "query_failed", message: error.message } }, { status: 400 });
-  }
-  const rows = data ?? [];
 
   const header = [
     "Branch Name",

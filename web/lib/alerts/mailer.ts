@@ -29,6 +29,17 @@ function getTransport() {
     secure: false,
     requireTLS: true,
     auth: { user, pass },
+    // Bounded at every stage of the SMTP handshake (audit B-13). Without
+    // these, nodemailer waits indefinitely — and both callers
+    // (app/api/cron/alerts and app/api/cron/scheduled-exports) run under a
+    // maxDuration of 60, so one stalled Gmail connection burnt the entire
+    // invocation and the run died to a platform timeout with nothing
+    // logged. 10s each is generous for smtp.gmail.com on a healthy path
+    // (connect and greeting are sub-second) while still leaving the rest of
+    // the 60s budget for the remaining due subscriptions.
+    connectionTimeout: 10_000, // TCP connect
+    greetingTimeout: 10_000, // waiting for the server's 220 banner
+    socketTimeout: 10_000, // inactivity once the connection is up
   });
 }
 
