@@ -28,6 +28,31 @@ function isGroupHeader(row: GridRow | undefined): row is GroupHeaderRow {
 
 const COL_COUNT = 11;
 
+/** Synthetic all-stores bucket appended by page.tsx's buildRows(). */
+const NETWORK_STORE_ID = "__network__";
+const NETWORK_LABEL = "Network total";
+
+function isNetworkRow(row: GridRow | undefined): boolean {
+  if (!row) return false;
+  return isGroupHeader(row) ? row.label === NETWORK_LABEL : row.storeId === NETWORK_STORE_ID;
+}
+
+/**
+ * buildGroupedRows() sorts group buckets alphabetically, which would drop the
+ * synthetic "Network total" bucket into the middle of the store list. It's a
+ * summary, not a peer store, so its header + rows are hoisted to the bottom.
+ */
+function networkGroupLast(rows: GridRow[]): GridRow[] {
+  const rest: GridRow[] = [];
+  const network: GridRow[] = [];
+  let inNetworkGroup = false;
+  for (const row of rows) {
+    if (isGroupHeader(row)) inNetworkGroup = row.label === NETWORK_LABEL;
+    (inNetworkGroup ? network : rest).push(row);
+  }
+  return network.length > 0 ? [...rest, ...network] : rows;
+}
+
 type Grain = "daily" | "weekly" | "monthly" | "yearly";
 const GRAIN_LABELS: Record<Grain, string> = { daily: "Daily", weekly: "Weekly", monthly: "Monthly", yearly: "Yearly" };
 const GRAINS: Grain[] = ["daily", "weekly", "monthly", "yearly"];
@@ -66,7 +91,10 @@ export function PeriodSalesFacetedTable({
   yearly: PeriodFacetedRow[];
 }) {
   const [grain, setGrain] = useState<Grain>("weekly");
-  const [state, setState] = useState<FacetFilterState>(emptyFilterState);
+  // Grouped by Store by default (2026-08-27): a flat list ran one store's
+  // period rows straight into the next with no visual break. The user can
+  // still drop or add group-by keys from the filter bar.
+  const [state, setState] = useState<FacetFilterState>(() => ({ ...emptyFilterState(), groupBy: ["store"] }));
 
   const rows = grain === "daily" ? daily : grain === "weekly" ? weekly : grain === "monthly" ? monthly : yearly;
 
@@ -95,7 +123,7 @@ export function PeriodSalesFacetedTable({
 
   const filtered = useMemo(() => applyFacetFilter(rows, facets, advFields, state), [rows, facets, advFields, state]);
   const gridRows = useMemo<GridRow[]>(
-    () => buildGroupedRows(filtered, state.groupBy, groupKeyGetters),
+    () => networkGroupLast(buildGroupedRows(filtered, state.groupBy, groupKeyGetters)),
     [filtered, state.groupBy, groupKeyGetters]
   );
 
@@ -110,8 +138,16 @@ export function PeriodSalesFacetedTable({
         cellRenderer: (p: ICellRendererParams<GridRow>) => {
           if (isGroupHeader(p.data)) {
             const g = p.data;
+            // Network total's banner is a summary, not a peer store — heavier
+            // weight + a hard rule above it separate it from the store blocks.
+            const network = g.label === NETWORK_LABEL;
             return (
-              <div className="flex h-full items-center gap-2 bg-surface-2 px-1 text-[12px] font-semibold text-ink-2" style={{ paddingLeft: g.level * 16 }}>
+              <div
+                className={`flex h-full items-center gap-2 bg-surface-2 px-1 text-[12px] ${
+                  network ? "border-t-2 border-line font-bold text-ink" : "font-semibold text-ink-2"
+                }`}
+                style={{ paddingLeft: g.level * 16 }}
+              >
                 <span>{g.label}</span>
                 <span className="font-mono font-normal text-ink-3">({g.count})</span>
               </div>
@@ -189,6 +225,14 @@ export function PeriodSalesFacetedTable({
         rowData={gridRows}
         columnDefs={columnDefs as unknown as ColDef<GridRow>[]}
         heightPx={Math.min(560, Math.max(160, 46 + gridRows.length * 38))}
+        // Network total's data rows read as a summary block, not another store:
+        // tinted + semibold. Inline (not a Tailwind class) because AG Grid's own
+        // .ag-row background/`font` rules otherwise win the cascade.
+        getRowStyle={(p) =>
+          isNetworkRow(p.data) && !isGroupHeader(p.data)
+            ? { background: "var(--surface-2)", fontWeight: 600 }
+            : undefined
+        }
         getRowId={(p) => (isGroupHeader(p.data) ? p.data.id : `${(p.data as PeriodFacetedRow).storeId}|${(p.data as PeriodFacetedRow).periodKey}`)}
         overlayNoRowsTemplate="No periods match these filters."
       />
