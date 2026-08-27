@@ -62,9 +62,14 @@ export async function fetchStockComponentData(scope: StockComponentScope): Promi
 
   // No date range — current stock is a point-in-time snapshot, same as
   // /stock-details itself (0024's full-replace-per-upload model).
+  // C-09 (0095): store-scoped view — filters to the caller's own
+  // core.fn_user_store_ids() at the DB layer. Previously this fell through
+  // to a completely unfiltered fetch (whole network, up to 20k rows)
+  // whenever the saved workspace filter had 0 or >1 stores selected, since
+  // only the storeIds.length === 1 branch below ever added a filter.
   let stockQuery = supabase
     .schema("sales")
-    .from<StockRow>("vw_stock_with_scheme")
+    .from<StockRow>("vw_stock_with_scheme_scoped")
     .select("id, branch_name, season, gender, size_group, item_code, shade_name, size, closing_stock, is_eoss")
     .limit(20000);
   if (storeIds.length === 1) stockQuery = stockQuery.eq("branch_name", storeList.find((s) => s.store_id === storeIds[0])?.branch_name_erp ?? storeIds[0]!);
