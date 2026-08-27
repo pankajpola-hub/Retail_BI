@@ -79,6 +79,23 @@ export function CategoryTracker({
   const latest = rows.at(-1);
   const cumSoFar = latest?.[cumKey] ?? 0;
 
+  // Footer aggregates. Two of the five numeric columns are ALREADY running
+  // totals in the view (migration 0032):
+  //   • `*_cum_qty`   = sum(actual) over (partition by target_id order by date)
+  //   • `*_mtd_target`= monthly target × day_of_month / days_in_month
+  // Re-summing either would double-count, so both show the LAST row's value.
+  // `*_actual_qty` is the only genuinely per-day column, so that one sums (and
+  // by construction equals `cumSoFar` — shown side by side as a sanity check).
+  const totalActual = rows.reduce((s, r) => s + Number(r[actualKey] ?? 0), 0);
+  const mtdTargetSoFar = latest?.[mtdTargetKey] ?? 0;
+  // Ach% recomputed from the summed numerator over the month target — the
+  // identical formula the header line above uses, `pct(cumSoFar, monthlyTarget)`,
+  // and the same one each row uses (`pct(cum, r[targetKey])`, where targetKey is
+  // the constant full-month target, not a per-day slice). Never an average of
+  // the per-row percentages. `pct()` already renders "—" when target <= 0.
+  // MTD deficit, matching the per-row formula (cum - mtdTarget) / monthTarget:
+  const totalDeficitPct = monthlyTarget > 0 ? ((cumSoFar - mtdTargetSoFar) / monthlyTarget) * 100 : null;
+
   return (
     <div className="mt-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -143,6 +160,30 @@ export function CategoryTracker({
               </tr>
             )}
           </tbody>
+          {rows.length > 0 && (
+            // Same tint as the header, plus a heavier top rule + semibold so it
+            // reads as a summary band rather than one more day.
+            <tfoot>
+              <tr className="border-t-2 border-line bg-surface-2 font-mono font-semibold tabular-nums">
+                <td className="px-2 py-1.5 font-sans">Total</td>
+                <td className="px-2 py-1.5 text-right text-ink-3">{QTY(mtdTargetSoFar)}</td>
+                <td className="px-2 py-1.5 text-right">{QTY(totalActual)}</td>
+                <td className="px-2 py-1.5 text-right">{QTY(cumSoFar)}</td>
+                <td className={`px-2 py-1.5 text-right ${cumSoFar >= mtdTargetSoFar ? "text-good" : "text-crit"}`}>
+                  {pct(cumSoFar, monthlyTarget)}
+                </td>
+                <td
+                  className="px-2 py-1.5 text-right"
+                  style={totalDeficitPct === null ? undefined : { backgroundColor: deficitHeat(totalDeficitPct) }}
+                >
+                  {totalDeficitPct === null
+                    ? "—"
+                    : `${totalDeficitPct >= 0 ? "+" : ""}${totalDeficitPct.toFixed(2)}%`}
+                </td>
+                {remarks && <td className="px-2 py-1.5" />}
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
     </div>

@@ -392,6 +392,23 @@ function BreakdownSection({
           const totalUnits = totalFresh + totalEoss;
           const totalFreshPct = totalUnits > 0 ? (totalFresh / totalUnits) * 100 : 0;
           const totalEossPct = totalUnits > 0 ? 100 - totalFreshPct : 0;
+          // Footer subtotal for the visible rows. It is rendered ONLY when the
+          // list is actually truncated by `topN` — when every group is shown,
+          // it would be a byte-for-byte duplicate of the "Total" band already
+          // in the <thead> above, which is noise, not information. When it IS
+          // truncated it answers the question the head row deliberately does
+          // not: how much of the total do these top-N rows account for?
+          // Fresh%/EOSS% are recomputed from the shown rows' own summed
+          // numerator/denominator using the identical formula as the head row
+          // (fresh / units, then EOSS as the complement) — never an average of
+          // the per-row percentages.
+          const isTruncated = shown.length < grouped.length;
+          const shownFresh = shown.reduce((s, g) => s + g.fresh, 0);
+          const shownEoss = shown.reduce((s, g) => s + g.eoss, 0);
+          const shownUnits = shownFresh + shownEoss;
+          const shownFreshPct = shownUnits > 0 ? (shownFresh / shownUnits) * 100 : 0;
+          const shownEossPct = shownUnits > 0 ? 100 - shownFreshPct : 0;
+          const shownSharePct = totalUnits > 0 ? (shownUnits / totalUnits) * 100 : 0;
           return (
             <div key={gender} className="overflow-x-auto border border-line-soft">
               <table className="w-full min-w-[420px] text-[12.5px]">
@@ -440,6 +457,26 @@ function BreakdownSection({
                     ))
                   )}
                 </tbody>
+                {isTruncated && (
+                  <tfoot>
+                    <tr className="border-t-2 border-line bg-surface-2 font-semibold">
+                      <td className="px-2 py-1.5">
+                        Top {shown.length}{" "}
+                        <span className="font-normal text-ink-3">of {grouped.length} · {pct(shownSharePct)} of total</span>
+                      </td>
+                      <td className="px-2 py-1.5 text-right">
+                        {fmt(shownUnits)}{" "}
+                        <span className="font-normal text-ink-3">
+                          ({fmt(shownFresh)} / {fmt(shownEoss)})
+                        </span>
+                      </td>
+                      <td className="px-2 py-1.5 text-right">
+                        {pct(shownFreshPct)} /{" "}
+                        <span className={shownEossPct >= 70 ? "text-crit" : ""}>{pct(shownEossPct)}</span>
+                      </td>
+                    </tr>
+                  </tfoot>
+                )}
               </table>
             </div>
           );
