@@ -29,12 +29,21 @@ export default async function CampaignsPage() {
         vw_campaign_store_impact.
       </p>
       <ul className="mt-4 divide-y divide-line-soft border border-line-soft">
-        {campaigns?.map((c) => (
-          <li key={c.id} className="flex justify-between px-3 py-2 text-sm">
-            <span>{c.campaign_name}</span>
-            <span className="text-ink-3">{c.campaign_status}</span>
-          </li>
-        )) ?? <li className="px-3 py-2 text-sm text-ink-3">No campaigns yet.</li>}
+        {/*
+          Empty check must be on `.length`, not `??`: a successful query with zero
+          rows gives `[]`, which is not nullish, so `?? <li>…</li>` never fired and
+          the list rendered as an empty bordered box.
+        */}
+        {(campaigns ?? []).length === 0 ? (
+          <li className="px-3 py-2 text-sm text-ink-3">No campaigns yet.</li>
+        ) : (
+          campaigns!.map((c) => (
+            <li key={c.id} className="flex justify-between px-3 py-2 text-sm">
+              <span>{c.campaign_name}</span>
+              <span className="text-ink-3">{c.campaign_status}</span>
+            </li>
+          ))
+        )}
       </ul>
     </main>
   );

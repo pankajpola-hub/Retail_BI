@@ -160,6 +160,13 @@ export default async function FootfallPage({
                   <td className="px-3 py-1.5 text-[12px] text-ink-3">{r.remarks ?? ""}</td>
                 </tr>
               ))}
+              {(recent ?? []).length === 0 && (
+                <tr>
+                  <td colSpan={3} className="px-3 py-4 text-center text-sm text-ink-3">
+                    No footfall entries in this range.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

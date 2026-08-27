@@ -1,6 +1,7 @@
 "use client";
 
-import { useRef, useState, useEffect, useMemo, useCallback, useTransition } from "react";
+import { useRef, useState, useEffect, useMemo, useCallback } from "react";
+import { useProgressTransition } from "@/components/ui/useProgressTransition";
 import { GridLayout, type Layout } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
 import { removeComponent, updateComponentLayout, resetWorkspace } from "@/lib/workspace/actions";
@@ -72,7 +73,7 @@ export function WorkspaceGridClient({
   );
   const [pendingLayout, setPendingLayout] = useState<Layout | null>(null);
   const [dirty, setDirty] = useState(false);
-  const [isPending, startTransition] = useTransition();
+  const [isPending, startTransition] = useProgressTransition();
 
   // A fresh `items` prop (add/remove/reload) means the server truth moved
   // on — drop any unsaved drag/resize so the display goes back to being

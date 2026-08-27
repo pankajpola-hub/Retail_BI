@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useProgressTransition } from "@/components/ui/useProgressTransition";
 import {
   FacetFilterBar,
   applyFacetFilter,
@@ -97,7 +98,7 @@ export function UsersAdmin({
   const router = useRouter();
   const [state, setState] = useState<FacetFilterState>(emptyFilterState);
   const [openUserId, setOpenUserId] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
+  const [pending, startTransition] = useProgressTransition();
   const [error, setError] = useState<string | null>(null);
 
   const facets = useMemo<FacetDef<UserRow>[]>(

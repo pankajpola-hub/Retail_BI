@@ -339,13 +339,23 @@ export async function computeReplenishmentRows(
     if (!r.branch_name) continue;
     const storeId = storeBranchToId.get(r.branch_name);
     if (!storeId) continue; // sale rows from warehouse/office channels don't count as store demand
-    const sign = r.bill_type === "RETURN" ? -1 : r.bill_type === "SALE" ? 1 : 0;
-    if (sign === 0) continue;
+    // OTHER bill types (neither SALE nor RETURN) aren't real store demand.
+    if (r.bill_type !== "SALE" && r.bill_type !== "RETURN") continue;
     const { key } = styleColorKeyOf(r.item_code);
     const age = daysAgo(r.bill_date);
     const byStyle = demand.get(storeId) ?? new Map();
     const cur = byStyle.get(key) ?? { ...EMPTY_DEMAND };
-    const qty = sign * Number(r.total_quantity);
+    // No sign multiplication here (removed 2026-08-27). total_quantity /
+    // gross_amount are stored ALREADY SIGNED — a RETURN row is negative in
+    // raw_logic.sales_transactions, matching both the ERP's own Sale Register
+    // export and what the whole sales.vw_ebo_* chain assumes when it sums
+    // net_amount as stored. Applying `sign` here negated an already-negative
+    // return, turning it into POSITIVE demand: returns were inflating
+    // replenishment instead of reducing it, by 2x the returned quantity
+    // (~1,968 units across the Excel-era rows). See the header comment on
+    // toSigned() in app/api/cron/sale-detail-sync/route.ts for the full
+    // convention decision.
+    const qty = Number(r.total_quantity);
     if (age <= 90) cur.d90 += qty;
     if (age <= 60) cur.d60 += qty;
     if (age <= 30) cur.d30 += qty;
@@ -367,7 +377,7 @@ export async function computeReplenishmentRows(
     }
 
     if (age <= 90) {
-      const value = sign * Number(r.gross_amount);
+      const value = Number(r.gross_amount); // already signed — see the qty note above
       const valByStyle = salesValue90d.get(storeId) ?? new Map();
       valByStyle.set(key, (valByStyle.get(key) ?? 0) + value);
       salesValue90d.set(storeId, valByStyle);
