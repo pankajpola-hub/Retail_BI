@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useProgressTransition } from "@/components/ui/useProgressTransition";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
   ACTION_CLASSES,
@@ -58,7 +59,7 @@ export function UserDetailDialog({
 }) {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("permissions");
-  const [pending, startTransition] = useTransition();
+  const [pending, startTransition] = useProgressTransition();
   const [error, setError] = useState<string | null>(null);
 
   // Local edits, applied on Save — a per-key round trip would make bulk work

@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useProgressTransition } from "@/components/ui/useProgressTransition";
 import { createWorkspace, renameWorkspace, forkWorkspace } from "@/lib/workspace/actions";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -34,7 +35,7 @@ export function WorkspaceSwitcher({
   const [open, setOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(current.name);
-  const [isPending, startTransition] = useTransition();
+  const [isPending, startTransition] = useProgressTransition();
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
