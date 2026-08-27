@@ -1,6 +1,7 @@
 import type { AppRole, BusinessUnit, PageKey } from "@/lib/auth/roles";
 import { PAGE_BUSINESS_UNIT } from "@/lib/auth/roles";
 import { SidebarNav, type SidebarLink } from "./SidebarNav";
+import { MobileNav } from "./MobileNav";
 import { SignOutButton } from "./SignOutButton";
 import { ThemeToggle } from "./ThemeToggle";
 import { DeniedNotice } from "./DeniedNotice";
@@ -191,16 +192,13 @@ export async function AppShell({
         </div>
       </aside>
 
-      {/* Mobile: sidebar collapses to a slim link row under the top bar. */}
-      <nav className="fixed inset-x-0 top-14 z-40 flex flex-wrap gap-x-3 gap-y-1 border-b border-line-soft bg-sidebar-bg px-4 py-2 text-[12.5px] text-ink-2 md:hidden">
-        {links.map((l) => (
-          <a key={l.href} href={l.href} className="hover:text-ink">
-            {l.label}
-          </a>
-        ))}
-      </nav>
+      {/* Mobile: sidebar collapses to a single scrollable link row under the
+          top bar. Fixed 40px height (see MobileNav) — the pt-24 below is
+          56px top bar + 40px nav, which only works because that row can no
+          longer wrap to an unpredictable height. */}
+      <MobileNav links={links} />
 
-      <div className="pt-14 md:ml-60">
+      <div className="pt-24 md:pt-14 md:ml-60">
         <div className="mx-auto max-w-[1280px] px-8 pb-24">
           {/* Renders only when requirePageAccess() bounced the user here with
               ?denied=… — see DeniedNotice. Lives in the shell rather than per

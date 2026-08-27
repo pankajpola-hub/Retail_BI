@@ -23,6 +23,14 @@ export type TrackerRow = {
   discounted_mtd_target: number;
 };
 
+// Quantity formatter — same convention as every other numeric table in the
+// app (ReplenishmentGrid.tsx `fmt`, ProductAttributeSalesTable.tsx qty/bills):
+// Indian digit grouping, so 125000 reads as 1,25,000 rather than 125000.
+// Kept local deliberately; the shared-helper consolidation is a separate pass.
+function QTY(n: number): string {
+  return Math.round(Number(n)).toLocaleString("en-IN");
+}
+
 export function pct(actual: number, target: number): string {
   if (target <= 0) return "—";
   return `${Math.round((actual / target) * 100)}%`;
@@ -76,7 +84,7 @@ export function CategoryTracker({
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-2">{title}</span>
         <span className="text-[12px] text-ink-3">
-          Target {monthlyTarget} · MTD {cumSoFar} ({pct(cumSoFar, monthlyTarget)})
+          Target {QTY(monthlyTarget)} · MTD {QTY(cumSoFar)} ({pct(cumSoFar, monthlyTarget)})
         </span>
       </div>
       <div className="mt-2 overflow-x-auto border border-line-soft">
@@ -103,9 +111,9 @@ export function CategoryTracker({
                   <td className="px-2 py-1.5 font-sans">
                     {r.day_of_month} {r.day_name}
                   </td>
-                  <td className="px-2 py-1.5 text-right text-ink-3">{mtdTarget}</td>
-                  <td className="px-2 py-1.5 text-right">{r[actualKey]}</td>
-                  <td className="px-2 py-1.5 text-right">{cum}</td>
+                  <td className="px-2 py-1.5 text-right text-ink-3">{QTY(mtdTarget)}</td>
+                  <td className="px-2 py-1.5 text-right">{QTY(r[actualKey])}</td>
+                  <td className="px-2 py-1.5 text-right">{QTY(cum)}</td>
                   <td className={`px-2 py-1.5 text-right ${cum >= mtdTarget ? "text-good" : "text-crit"}`}>
                     {pct(cum, target)}
                   </td>
@@ -127,6 +135,13 @@ export function CategoryTracker({
                 </tr>
               );
             })}
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={remarks ? 7 : 6} className="px-2 py-4 text-center text-[12.5px] text-ink-3">
+                  No days in this range.
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
