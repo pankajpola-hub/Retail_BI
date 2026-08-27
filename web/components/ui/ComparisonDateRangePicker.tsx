@@ -54,6 +54,15 @@ export function ComparisonDateRangePicker({
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
+  // Re-sync the custom inputs when the URL changes from elsewhere. push() is
+  // a soft navigation so this component stays mounted and the useState
+  // initialisers above run once only; `from`/`to` are in the dep list because
+  // the default (uncompared) derivation is computed from the main range.
+  useEffect(() => {
+    setCustomFrom(compareFrom ?? shiftDays(from, -rangeDays(from, to)));
+    setCustomTo(compareTo ?? shiftDays(from, -1));
+  }, [compareFrom, compareTo, from, to]);
+
   useEffect(() => {
     function onClickOutside(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);

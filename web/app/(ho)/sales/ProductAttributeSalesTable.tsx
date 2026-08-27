@@ -73,16 +73,29 @@ export function ProductAttributeSalesTable({ lines }: { lines: SaleAttributeLine
     [lines, combo, mrpBucketSize]
   );
 
-  // Facet on the LEADING attribute only. Positional keys ("attr0") rather
-  // than the attribute's own name, so a saved view's facet/condition stays
-  // meaningful when the combo changes shape — and FacetFilterBar already
-  // ignores a condition whose field no longer exists, so a saved view built
-  // on a 3-attribute combo degrades quietly on a 1-attribute one instead of
-  // filtering everything away.
+  // Facet on the LEADING attribute only, keyed by the ATTRIBUTE ITSELF
+  // (`attr_season`), not by its position.
+  //
+  // A positional key ("attr0") was the original design, on the theory that
+  // FacetFilterBar ignores a filter whose field no longer exists. That holds
+  // for advanced CONDITIONS (rowMatchesConditions bails on `if (!f) return
+  // true;`) but NOT for facets: "attr0" always exists, so changing the leading
+  // attribute — Season+Year → Gender — re-applied the old attribute's stored
+  // value ("SS2026") against the new one, producing an impossible chip
+  // ("Gender: SS2026") and a silently blank table. Keying by attribute means a
+  // changed combo yields a key with no stored selection, which
+  // rowMatchesFacets skips via `sel.size === 0` — the quiet degradation the
+  // original comment intended.
   const facets = useMemo<FacetDef<SaleAttributeRow>[]>(
     () =>
       combo.length > 0
-        ? [{ key: "attr0", label: SALE_ATTRIBUTE_COLUMN_LABELS[combo[0] as SaleAttributeKey], get: (r) => r.values[0] ?? null }]
+        ? [
+            {
+              key: `attr_${combo[0]}`,
+              label: SALE_ATTRIBUTE_COLUMN_LABELS[combo[0] as SaleAttributeKey],
+              get: (r) => r.values[0] ?? null,
+            },
+          ]
         : [],
     [combo]
   );
@@ -191,7 +204,13 @@ export function ProductAttributeSalesTable({ lines }: { lines: SaleAttributeLine
       { field: "atv", headerName: "ATV", flex: 0.7, ...right, valueFormatter: (p) => (p.value === null ? "—" : INR(p.value)) },
       { field: "upt", headerName: "UPT", flex: 0.6, ...right, valueFormatter: (p) => (p.value === null ? "—" : Number(p.value).toFixed(2)) },
       { field: "discountPct", headerName: "Discount %", flex: 0.7, ...right, valueFormatter: (p) => PCT(p.value) },
-      { field: "returnsValue", headerName: "Returns", flex: 0.7, ...right, valueFormatter: (p) => INR(p.value) },
+      // Math.abs: post-014b1c5 the source net_amount is SIGNED, so a RETURN
+      // row's value is negative and returnsValue accumulates a negative total.
+      // The column is headed plainly "Returns", so it shows the MAGNITUDE —
+      // a bare "₹-1,23,456" under that header reads backwards (more returns
+      // looking like a smaller number). The underlying signed value is what
+      // nets into `net`/`gross`; only the display is absolute here.
+      { field: "returnsValue", headerName: "Returns", flex: 0.7, ...right, valueFormatter: (p) => INR(Math.abs(p.value)) },
     ];
   }, [combo, colCount]);
 
