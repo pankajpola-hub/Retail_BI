@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useProgressTransition } from "@/components/ui/useProgressTransition";
 import { addComponent } from "@/lib/workspace/actions";
 import { Button } from "@/components/ui/button";
 
@@ -118,7 +119,7 @@ export function AddComponentPicker({
   nextY: number;
 }) {
   const [open, setOpen] = useState(false);
-  const [isPending, startTransition] = useTransition();
+  const [isPending, startTransition] = useProgressTransition();
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

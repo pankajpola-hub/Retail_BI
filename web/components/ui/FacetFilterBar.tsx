@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useRef, useState, useTransition, useEffect } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
+import { useProgressTransition } from "@/components/ui/useProgressTransition";
 import { listMySavedViews, createSavedView, deleteSavedView } from "@/lib/savedViews/actions";
 
 /**
@@ -190,7 +191,7 @@ export function FacetFilterBar<T>({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [savedViews, setSavedViews] = useState<{ id: string; name: string; state: unknown }[]>([]);
   const [saveName, setSaveName] = useState("");
-  const [isPending, startTransition] = useTransition();
+  const [isPending, startTransition] = useProgressTransition();
   const containerRef = useRef<HTMLDivElement>(null);
 
   // `alive` guards two real cases: (1) pageKey changes on every grain toggle
