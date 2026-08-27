@@ -135,7 +135,11 @@ async function StockDetailsContent({
   const [{ data: rawRows, error }, { data: capacityData }] = await timeAll("stock-details:content", [
     supabase
       .schema("sales")
-      .from<StockRow>("vw_stock_with_scheme")
+      // C-09 (0095): store-scoped view — filters to the caller's own
+      // core.fn_user_store_ids() at the DB layer, not just via the
+      // branchFilter below (which never intersected against the caller's
+      // own scope, so a store-scoped role's dropdown listed every store).
+      .from<StockRow>("vw_stock_with_scheme_scoped")
       .select("id, branch_name, season, gender, size_group, item_code, shade_name, size, closing_stock, is_eoss")
       .in("branch_name", branchFilter)
       .limit(20000),
