@@ -193,8 +193,24 @@ export function FacetFilterBar<T>({
   const [isPending, startTransition] = useTransition();
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // `alive` guards two real cases: (1) pageKey changes on every grain toggle
+  // (PeriodSalesFacetedTable passes `${PAGE_KEY}_${grain}`), so a slow earlier
+  // response could otherwise land last and show another grain's saved views;
+  // (2) unmount mid-flight. The .catch keeps a failing Server Action (auth
+  // expiry, DB down) from becoming an unhandled rejection — an empty list is
+  // the right degraded state for a saved-views dropdown.
   useEffect(() => {
-    listMySavedViews(pageKey).then((views) => setSavedViews(views.map((v) => ({ id: v.id, name: v.name, state: v.state }))));
+    let alive = true;
+    listMySavedViews(pageKey)
+      .then((views) => {
+        if (alive) setSavedViews(views.map((v) => ({ id: v.id, name: v.name, state: v.state })));
+      })
+      .catch(() => {
+        if (alive) setSavedViews([]);
+      });
+    return () => {
+      alive = false;
+    };
   }, [pageKey]);
 
   useEffect(() => {
