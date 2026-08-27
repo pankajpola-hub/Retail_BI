@@ -929,7 +929,7 @@ async function EcommDetailSection({
             </Link>
           </div>
         )}
-        <EcommChannelFacetedTable rows={ecommChannelRows} activeChannel={channel} channelHref={channelHref} />
+        <EcommChannelFacetedTable rows={ecommChannelRows} activeChannel={channel} />
       </SectionCard>
 
       <SectionCard

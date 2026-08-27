@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import { usePathname, useSearchParams } from "next/navigation";
 import type { ColDef, ICellRendererParams } from "ag-grid-community";
 import { DataGrid } from "@/components/ui/DataGrid";
 import {
@@ -42,13 +43,26 @@ export type EcommChannelRow = {
 export function EcommChannelFacetedTable({
   rows,
   activeChannel,
-  channelHref,
 }: {
   rows: EcommChannelRow[];
   activeChannel: string | null;
-  channelHref: (target: string | null) => string;
 }) {
   const [state, setState] = useState<FacetFilterState>(emptyFilterState);
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  // Built client-side rather than accepted as a function prop — a Server
+  // Component passing a closure to a "use client" component fails at
+  // render time (functions aren't serializable across the RSC boundary).
+  // Same "clone current searchParams, set/delete one key" shape
+  // StoreFilter/MultiSelectFilter already use elsewhere on this page.
+  function channelHref(target: string | null) {
+    const params = new URLSearchParams(searchParams.toString());
+    if (target) params.set("channel", target);
+    else params.delete("channel");
+    const qs = params.toString();
+    return qs ? `${pathname}?${qs}` : pathname;
+  }
 
   const facets = useMemo<FacetDef<EcommChannelRow>[]>(() => [{ key: "channel", label: "Channel", get: (r) => r.channel }], []);
 
