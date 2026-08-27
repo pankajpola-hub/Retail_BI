@@ -119,9 +119,19 @@ export async function POST(request: Request, { params }: { params: { id: string 
         line_seq: r.lineSeq,
       }));
 
+      // fn_process_sale_upload now returns jsonb {committed, skipped_sync_owned}
+      // (0097) instead of a bare integer — see that migration's header for
+      // why: it silently drops rows whose (branch, bill_date) the nightly
+      // sale_detail_sync cron already owns (C-06, cross-source line_seq
+      // collision), and the skipped-for-that-reason count needs to reach
+      // the user, not just committedRows.
       const { data, error } = await supabase
         .schema("ops")
-        .rpc<number>("fn_process_sale_upload", { p_upload_id: params.id, p_rows: payload, p_mark_processed: isLastBatch });
+        .rpc<{ committed: number; skipped_sync_owned: number }>("fn_process_sale_upload", {
+          p_upload_id: params.id,
+          p_rows: payload,
+          p_mark_processed: isLastBatch,
+        });
 
       if (error) {
         await markFailed(error.message);
@@ -132,8 +142,9 @@ export async function POST(request: Request, { params }: { params: { id: string 
         ok: true,
         data: {
           reportType: "sale",
-          committedRows: data,
+          committedRows: data?.committed ?? 0,
           skippedRows: rows.length - valid.length,
+          skippedSyncOwnedRows: data?.skipped_sync_owned ?? 0,
           totalRows: valid.length,
           nextOffset: offset + batchSize,
           done: isLastBatch,
