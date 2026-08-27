@@ -88,6 +88,45 @@ guard, `Select all shown`, `defaultGroupBy`).
 3. Run migrations `0093` and `0094` against the live DB (commands above) if not already done.
 4. Deploy (`npx vercel --prod --yes`) and smoke-test.
 
+### Wave 2 (table subtotals, D-04/D-07/A-13) — 3 parallel worktree agents launched, NOT YET MERGED
+
+User confirmed: proceed with subtotals + Workspace parity, sequenced (subtotals first, since
+Workspace parity's own port plan reuses several of these same shared components — e.g. item 4
+of the parity diff says "replace WeeklySalesTable wholesale with PeriodSalesFacetedTable" — so
+fixing subtotals on the Sales-page-shared components first means Workspace inherits them for
+free instead of needing the work done twice).
+
+`DataGrid.tsx` needed NO base change — `pinnedBottomRowData` is a plain `AgGridReactProps` field
+already spread through; each agent adds it directly per-table.
+
+| Agent | agentId | Scope | Files |
+|---|---|---|---|
+| Sales + Network shared tables | `a3d071f50063e2c01` | `PeriodSalesFacetedTable.tsx` (+ D-07 real pinned grand-total row, + A-13 pageKey-per-grain fix), `ProductAttributeSalesTable.tsx`, `EcommChannelFacetedTable.tsx`, `AgentSalesFacetedTable.tsx`, `StoreDiagnosisFacetedTable.tsx`, `StoreLeagueDrilldown.tsx` (also used by Workspace — fixing here benefits the later parity port), 2 plain tables inline in `sales/page.tsx` |
+| Movement tables | `aacad0de0f99f171c` | `AttributeMixGrid.tsx`, `AttributeReplenishmentGrid.tsx`, `ReplenishmentGrid.tsx`, `SaleStockMixGrid.tsx`, Top-movers table in `movement/page.tsx` |
+| Stock-details / Targets / Footfall tables | `a737998b0f924434c` | `StockVsCapacityGrid.tsx`, stock-details gender/segment table, `CategoryTracker.tsx` (×2 instances), `bulk-upload-form.tsx` preview table, footfall daily log table |
+
+All three given the audit's own per-column aggregate-type spec (D-frontend.md's "Table
+inventory") as their baseline, with the explicit rule: ratio columns (ATV/UPT/Discount%/
+Conversion/Cancel%/Cover/Mix%) must be RECOMPUTED from summed numerator/denominator, never
+averaged row-by-row — each agent told to verify its formula against how the same ratio is
+already computed elsewhere in the same file, not invent one.
+
+**When these report back**: same procedure as Wave 1 — review diff, commit if uncommitted,
+merge to `master` one at a time, `tsc --noEmit` + `next build` after each, delete worktree/branch.
+
+### Wave 3 (Workspace parity, D-05) — NOT STARTED YET
+
+Start only after Wave 2 is fully merged and verified — Workspace parity's port plan (see
+`D-frontend.md`'s "Sales → Workspace parity diff" section) directly reuses several Wave-2-fixed
+components (`PeriodSalesFacetedTable`, `StoreLeagueDrilldown`, `AgentSalesFacetedTable`,
+`StoreDiagnosisFacetedTable`), so doing it before Wave 2 lands would mean either porting
+not-yet-fixed components (redoing work) or racing Wave 2's edits to the same files.
+
+Recommended port order per the audit: **6 → 3 → 4 → 1 → 5 → 2** (streaming/error-boundary
+work first — Workspace currently has ONE blocking `Promise.all` for all six data families and
+zero Suspense boundaries, so adding the other five items' extra queries before fixing that
+makes it strictly worse). Full file-by-file breakdown already in `D-frontend.md`.
+
 ### Explicitly deferred to a later wave (do NOT start until the above 5 are merged and verified)
 
 Reason: these touch nearly every table file in the app, which would conflict with any of the
