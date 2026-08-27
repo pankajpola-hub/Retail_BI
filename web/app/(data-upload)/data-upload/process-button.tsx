@@ -29,7 +29,7 @@ type State =
   | { step: "loading-preview" }
   | { step: "preview"; data: PreviewData }
   | { step: "committing"; data: PreviewData; committedSoFar: number; totalRows: number | null }
-  | { step: "done"; committedRows: number; skippedRows: number }
+  | { step: "done"; committedRows: number; skippedRows: number; skippedSyncOwnedRows: number }
   | { step: "error"; message: string };
 
 async function postJson<T>(url: string, body?: unknown): Promise<T> {
@@ -66,6 +66,10 @@ type BatchedCommitResult = {
   updatedRows?: number;
   duplicatesCollapsed?: number;
   skippedRows: number;
+  // Sale only (0097) — rows this batch dropped because their (branch, date)
+  // is already owned by the nightly sale_detail_sync cron (C-06 fix).
+  // Absent (undefined) for master, which has no such concept.
+  skippedSyncOwnedRows?: number;
   totalRows: number;
   nextOffset: number;
   done: boolean;
@@ -114,7 +118,20 @@ export function ProcessButton({ uploadId }: { uploadId: string }) {
         // Batched — loop of small commit requests, each with its own fresh
         // 60s budget, instead of one request for the whole file. See
         // commit/route.ts's own header for the full story.
+        //
+        // committedRows and skippedSyncOwnedRows are PER-BATCH counts from
+        // the server (each batch only knows its own slice's insert/skip
+        // outcome), so they're summed here across every batch — otherwise
+        // a multi-batch sale/master file would report only its final
+        // batch's counts as if they were the whole file's totals. skippedRows
+        // (row-level PARSE errors) is different: the route re-parses the
+        // WHOLE file on every batch call and returns `rows.length -
+        // valid.length` for the whole file each time, so it's already the
+        // same total on every batch response — summing it would multiply
+        // it by the number of batches, so only the last value is kept.
         let offset = 0;
+        let totalCommitted = 0;
+        let totalSkippedSyncOwned = 0;
         let last: BatchedCommitResult | null = null;
         for (;;) {
           const batch = await postJson<BatchedCommitResult>(`/api/data-upload/process/${uploadId}/commit`, {
@@ -122,16 +139,18 @@ export function ProcessButton({ uploadId }: { uploadId: string }) {
             batchSize: BATCH_SIZE,
           });
           last = batch;
+          totalCommitted += batch.committedRows;
+          totalSkippedSyncOwned += batch.skippedSyncOwnedRows ?? 0;
           offset = batch.nextOffset;
           setState({ step: "committing", data: previewData, committedSoFar: Math.min(offset, batch.totalRows), totalRows: batch.totalRows });
           if (batch.done) break;
         }
-        setState({ step: "done", committedRows: last!.committedRows, skippedRows: last!.skippedRows });
+        setState({ step: "done", committedRows: totalCommitted, skippedRows: last!.skippedRows, skippedSyncOwnedRows: totalSkippedSyncOwned });
       } else {
         const data = await postJson<{ committedRows: number; skippedRows: number }>(
           `/api/data-upload/process/${uploadId}/commit`
         );
-        setState({ step: "done", committedRows: data.committedRows, skippedRows: data.skippedRows });
+        setState({ step: "done", committedRows: data.committedRows, skippedRows: data.skippedRows, skippedSyncOwnedRows: 0 });
       }
       router.refresh();
     } catch (err) {
@@ -176,7 +195,11 @@ export function ProcessButton({ uploadId }: { uploadId: string }) {
     return (
       <span className="text-[11px] text-good">
         Processed — {state.committedRows} rows committed
-        {state.skippedRows > 0 ? `, ${state.skippedRows} skipped (see notes)` : ""}.
+        {state.skippedRows > 0 ? `, ${state.skippedRows} skipped (see notes)` : ""}
+        {state.skippedSyncOwnedRows > 0
+          ? `, ${state.skippedSyncOwnedRows} skipped (already covered by the nightly sync)`
+          : ""}
+        .
       </span>
     );
   }
