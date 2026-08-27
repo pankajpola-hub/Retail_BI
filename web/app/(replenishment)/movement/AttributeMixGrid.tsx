@@ -11,6 +11,67 @@ const fmt = (n: number) => Math.round(n).toLocaleString("en-IN");
 const pct = (n: number) => `${n.toFixed(1)}%`;
 const pts = (n: number) => `${n > 0 ? "+" : ""}${n.toFixed(1)}pp`;
 
+// Pinned grand-total row styling. Same treatment the Sales page's own
+// total rows use (surface-2 tint + weight), plus a hard top border so the
+// footer reads as a rule under the data rather than one more row.
+const TOTAL_ROW_STYLE = {
+  background: "var(--surface-2)",
+  fontWeight: 600,
+  borderTop: "2px solid var(--line)",
+} as const;
+
+/**
+ * Grand total over the CURRENTLY SUPPLIED rows (the caller hands this grid
+ * the already-facet-filtered array, so the footer follows the filters).
+ *
+ * Arithmetic — matched against mixAttributes.ts:128–130, which is where the
+ * per-row values come from:
+ *   saleMixPct  = sales / totalSales * 100        (totalSales is the same
+ *   stockMixPct = max(0, soh) / totalStock * 100   scope-wide denominator
+ *                                                  for every row)
+ * Because every row divides by the SAME denominator, summing the per-row
+ * percentages is itself the recompute-from-summed-numerator rule:
+ *   Σ(salesᵢ / T · 100) = (Σsalesᵢ) / T · 100
+ * It lands on exactly 100% with no filter active, and correctly reads LESS
+ * than 100% when a facet filter hides part of the scope — which is the
+ * honest number ("these rows are 38.4% of the scope's sales"), and strictly
+ * more informative than hard-coding "100%".
+ *
+ * Mix Gap uses the identical per-row formula one level up:
+ *   mixGapPts = saleMixPct − stockMixPct  →  ΣsaleMixPct − ΣstockMixPct
+ * so it is 0.0pp unfiltered, and a real net over/under-stock gap otherwise.
+ */
+function buildTotalRow(rows: AttributeMixRow[], attributeCount: number): AttributeMixRow[] {
+  if (rows.length === 0) return [];
+  let sales = 0;
+  let soh = 0;
+  let warehouseAvailable = 0;
+  let saleMixPct = 0;
+  let stockMixPct = 0;
+  for (const r of rows) {
+    sales += r.sales;
+    soh += r.soh;
+    warehouseAvailable += r.warehouseAvailable;
+    saleMixPct += r.saleMixPct;
+    stockMixPct += r.stockMixPct;
+  }
+  return [
+    {
+      // One entry per combo column so the leading cells render blank
+      // rather than `undefined` (the attribute columns read values[i]).
+      values: Array.from({ length: Math.max(1, attributeCount) }, (_, i) => (i === 0 ? "Total" : "")),
+      sales,
+      saleMixPct,
+      soh,
+      stockMixPct,
+      mixGapPts: saleMixPct - stockMixPct,
+      warehouseAvailable,
+      status: "balanced",
+      negativeStock: false,
+    },
+  ];
+}
+
 /**
  * Sibling to ../sale-stock-mix/SaleStockMixGrid.tsx, for the attribute-wise
  * "View by" combo (drag attribute chips into the bar in
@@ -65,6 +126,9 @@ export function AttributeMixGrid({ rows, attributes }: { rows: AttributeMixRow[]
         cellClass: "text-ink-2 py-1",
         autoHeight: true,
         cellRenderer: (p: ICellRendererParams<AttributeMixRow>) => {
+          // The pinned grand-total row carries a placeholder status; an
+          // "action" for a total is meaningless, so leave the cell empty.
+          if (p.node.rowPinned) return null;
           const r = p.data!;
           const meta = MIX_STATUS_META[r.status as MixStatus];
           const isAllocationCandidate = r.status === "high_priority" || r.status === "opportunity";
@@ -84,6 +148,8 @@ export function AttributeMixGrid({ rows, attributes }: { rows: AttributeMixRow[]
 
   const comboLabel = attributes.map((a) => ATTRIBUTE_COLUMN_LABELS[a]).join(" + ");
 
+  const totalRow = useMemo(() => buildTotalRow(rows, attributes.length), [rows, attributes.length]);
+
   return (
     <DataGrid<AttributeMixRow>
       // Forces a full remount whenever the combo changes column COUNT/order
@@ -101,8 +167,10 @@ export function AttributeMixGrid({ rows, attributes }: { rows: AttributeMixRow[]
       animateRows={false}
       rowData={rows}
       columnDefs={columnDefs}
-      heightPx={Math.min(640, Math.max(160, 46 + rows.length * 40))}
+      heightPx={Math.min(680, Math.max(200, 46 + rows.length * 40 + 40)) /* +40 = the pinned grand-total row, so adding it does not steal a data row's worth of visible space */}
       getRowId={(p) => p.data.values.join("|")}
+      pinnedBottomRowData={totalRow}
+      getRowStyle={(p) => (p.node.rowPinned === "bottom" ? TOTAL_ROW_STYLE : undefined)}
       overlayNoRowsTemplate={`No ${comboLabel.toLowerCase()} groups match this scope.`}
     />
   );

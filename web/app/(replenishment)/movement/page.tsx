@@ -190,6 +190,28 @@ async function ReplenishmentContent({
     computeReplenishmentKpis(rows);
   const { top: top10, salesProtected } = computeTopSupplyMoves(rows, 10);
 
+  // Footer totals for the "Where should we send stock?" table below.
+  // Sales 30D / Velocity (daily demand) / SOH / Recommended are extensive
+  // unit quantities and simply sum. Cover is a RATE and is recomputed from
+  // the summed numerator and denominator using the exact per-row formula in
+  // lib/replenishment/compute.ts:486 —
+  //   coverDays = dailyDemand > 0 ? soh / dailyDemand : soh > 0 ? null : 0
+  // — applied here as Σsoh / ΣdailyDemand, so zero total demand renders the
+  // same "—" the per-row cells use for infinite cover instead of NaN/∞.
+  // Averaging the ten per-row cover values would be wrong: it would weight a
+  // slow-moving style-color the same as a fast one.
+  const top10Totals = top10.reduce(
+    (a, r) => ({
+      sales30d: a.sales30d + r.sales30d,
+      dailyDemand: a.dailyDemand + r.dailyDemand,
+      soh: a.soh + r.soh,
+      recommendedQty: a.recommendedQty + r.recommendedQty,
+    }),
+    { sales30d: 0, dailyDemand: 0, soh: 0, recommendedQty: 0 }
+  );
+  const top10CoverDays =
+    top10Totals.dailyDemand > 0 ? top10Totals.soh / top10Totals.dailyDemand : top10Totals.soh > 0 ? null : 0;
+
   return (
     <>
       <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
@@ -250,6 +272,21 @@ async function ReplenishmentContent({
                   </tr>
                 ))}
               </tbody>
+              <tfoot>
+                <tr className="border-t-2 border-line bg-surface-2 font-semibold">
+                  <td className="px-2 py-1.5 text-[11px] uppercase tracking-wide text-ink-2" colSpan={4}>
+                    Total — these {top10.length} moves
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono">{fmt(top10Totals.sales30d)}</td>
+                  <td className="px-2 py-1.5 text-right font-mono">{fmt1(top10Totals.dailyDemand)}</td>
+                  <td className="px-2 py-1.5 text-right font-mono">{fmt(top10Totals.soh)}</td>
+                  <td className="px-2 py-1.5 text-right font-mono">
+                    {top10CoverDays === null ? "—" : `${fmt1(top10CoverDays)}d`}
+                  </td>
+                  <td className="px-2 py-1.5 text-ink-3">—</td>
+                  <td className="px-2 py-1.5 text-right font-mono">{fmt(top10Totals.recommendedQty)}</td>
+                </tr>
+              </tfoot>
             </table>
           </div>
         </div>

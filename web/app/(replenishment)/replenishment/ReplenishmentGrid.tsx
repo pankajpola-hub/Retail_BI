@@ -37,6 +37,94 @@ function fmt1(n: number): string {
   return n.toFixed(1);
 }
 
+// Pinned grand-total row styling — same treatment as the sibling mix /
+// attribute grids. `cursor: default` explicitly overrides the grid-wide
+// rowStyle pointer, since the total row is not click-to-drilldown.
+const TOTAL_ROW_STYLE = {
+  background: "var(--surface-2)",
+  fontWeight: 600,
+  borderTop: "2px solid var(--line)",
+  cursor: "default",
+} as const;
+
+/**
+ * Grand total over the rows currently supplied (already facet-filtered by
+ * the caller, so the footer follows the filters). Group headers are skipped
+ * — buildGroupedRows emits each real row exactly once, so this is a true
+ * total whether or not group-by is active.
+ *
+ * Per-column arithmetic:
+ *   SOH, Daily demand, Reorder pt, Target, Recommended  → plain sums. All
+ *     five are extensive unit quantities. Recommended is the order quantity
+ *     the whole page exists to produce, so its total is the headline figure.
+ *   Score → MEAN. This is the one deliberate non-sum ratio here: `score` is
+ *     a bounded 0–100 priority index (compute.ts:389–412, a weighted blend
+ *     of sub-scores), not a rate with a natural numerator/denominator to
+ *     re-divide, so the arithmetic mean over the filtered set is the
+ *     meaningful summary. Summing it would be nonsense (it would exceed 100
+ *     after two rows).
+ *   Cover → RECOMPUTED, never averaged. compute.ts:486 defines it per row as
+ *       coverDays = dailyDemand > 0 ? soh / dailyDemand : soh > 0 ? null : 0
+ *     and the footer applies that same expression to the summed inputs:
+ *       Cover = ΣdailyDemand > 0 ? Σsoh / ΣdailyDemand : Σsoh > 0 ? null : 0
+ *     so a zero total demand renders "—" (the column's existing null
+ *     convention for infinite cover) rather than NaN or Infinity.
+ */
+function buildTotalRow(rows: GridRow[]): Row[] {
+  let n = 0;
+  let soh = 0;
+  let dailyDemand = 0;
+  let sales30d = 0;
+  let salesValue30d = 0;
+  let reorderPoint = 0;
+  let targetStock = 0;
+  let recommendedQty = 0;
+  let warehouseAvailable = 0;
+  let scoreSum = 0;
+  for (const row of rows) {
+    if (isGroupHeader(row)) continue;
+    n += 1;
+    soh += row.soh;
+    dailyDemand += row.dailyDemand;
+    sales30d += row.sales30d;
+    salesValue30d += row.salesValue30d;
+    reorderPoint += row.reorderPoint;
+    targetStock += row.targetStock;
+    recommendedQty += row.recommendedQty;
+    warehouseAvailable += row.warehouseAvailable;
+    scoreSum += row.score;
+  }
+  if (n === 0) return [];
+  return [
+    {
+      styleNo: "Total",
+      color: "",
+      storeId: "__total__",
+      storeName: "",
+      soh,
+      dailyDemand,
+      sales30d,
+      salesValue30d,
+      coverDays: dailyDemand > 0 ? soh / dailyDemand : soh > 0 ? null : 0,
+      reorderPoint,
+      targetStock,
+      recommendedQty,
+      warehouseAvailable,
+      gender: "",
+      season: "",
+      mrp: null,
+      trend: null,
+      trendPct: null,
+      score: scoreSum / n, // mean, not sum — see the doc comment above
+      action: "NO ACTION",
+      source: "",
+      priority: "healthy",
+      why: "",
+      sizeBreakdown: [],
+    },
+  ];
+}
+
 const PRIORITY_META: Record<Priority, { label: string; dot: string; className: string }> = {
   critical: { label: "Critical", dot: "🔴", className: "text-crit font-semibold" },
   high: { label: "High", dot: "🟠", className: "text-warn font-semibold" },
@@ -121,6 +209,9 @@ export function ReplenishmentGrid({ rows, preserveOrder }: { rows: GridRow[]; pr
               </div>
             );
           }
+          // The pinned grand-total row carries a placeholder priority; a
+          // priority for a total is meaningless, so label the row instead.
+          if (p.node.rowPinned) return <span>Total</span>;
           const meta = PRIORITY_META[(p.data as Row).priority];
           return <span className={meta.className}>{meta.dot} {meta.label}</span>;
         },
@@ -161,11 +252,16 @@ export function ReplenishmentGrid({ rows, preserveOrder }: { rows: GridRow[]; pr
       { field: "reorderPoint", headerName: "Reorder pt", flex: 0.8, sortable: true, cellClass: "text-right font-mono text-ink-3", headerClass: "text-right", valueFormatter: (p) => fmt(p.value) },
       { field: "targetStock", headerName: "Target", flex: 0.8, sortable: true, cellClass: "text-right font-mono text-ink-3", headerClass: "text-right", valueFormatter: (p) => fmt(p.value) },
       { field: "recommendedQty", headerName: "Recommended", flex: 1, sortable: true, cellClass: "text-right font-mono font-semibold", headerClass: "text-right", valueFormatter: (p) => (p.value > 0 ? fmt(p.value) : "—") },
-      { field: "source", headerName: "Source", flex: 1.3, cellClass: "text-ink-2" },
-      { field: "action", headerName: "Action", flex: 1.3, sortable: true, cellClass: "font-medium text-ink-2" },
+      // Both blank on the pinned total row — the placeholder Action/Source
+      // it carries to satisfy Row's type would otherwise read as a real
+      // instruction ("NO ACTION") against the grand total.
+      { field: "source", headerName: "Source", flex: 1.3, cellClass: "text-ink-2", valueFormatter: (p) => (p.node?.rowPinned ? "" : p.value) },
+      { field: "action", headerName: "Action", flex: 1.3, sortable: true, cellClass: "font-medium text-ink-2", valueFormatter: (p) => (p.node?.rowPinned ? "" : p.value) },
     ],
     [preserveOrder]
   );
+
+  const totalRow = useMemo(() => buildTotalRow(rows), [rows]);
 
   return (
     <>
@@ -177,13 +273,18 @@ export function ReplenishmentGrid({ rows, preserveOrder }: { rows: GridRow[]; pr
       <DataGrid<GridRow>
         rowData={rows}
         columnDefs={columnDefs as unknown as ColDef<GridRow>[]}
-        heightPx={Math.min(640, Math.max(160, 46 + rows.length * 40))}
+        heightPx={Math.min(680, Math.max(200, 46 + rows.length * 40 + 40)) /* +40 = the pinned grand-total row, so adding it does not steal a data row's worth of visible space */}
         getRowId={(p) => (isGroupHeader(p.data) ? p.data.id : `${p.data.styleNo}|${p.data.color}|${p.data.storeId}`)}
         onGridReady={(e) => {
           gridApiRef.current = e.api;
           if (preserveOrder) e.api.applyColumnState({ defaultState: { sort: null } });
         }}
-        onRowClicked={(e) => e.data && !isGroupHeader(e.data) && (setDetailRow(e.data), setOpen(true))}
+        pinnedBottomRowData={totalRow as unknown as GridRow[]}
+        getRowStyle={(p) => (p.node.rowPinned === "bottom" ? TOTAL_ROW_STYLE : undefined)}
+        // `!e.node.rowPinned` keeps the grand-total row out of the
+        // per-style-color drilldown dialog — it has no real why/size
+        // breakdown to show.
+        onRowClicked={(e) => e.data && !e.node.rowPinned && !isGroupHeader(e.data) && (setDetailRow(e.data), setOpen(true))}
         rowStyle={{ cursor: "pointer" }}
         overlayNoRowsTemplate="No style-colors match these filters."
       />

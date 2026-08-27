@@ -24,6 +24,66 @@ const fmt = (n: number) => Math.round(n).toLocaleString("en-IN");
 const pct = (n: number) => `${n.toFixed(1)}%`;
 const pts = (n: number) => `${n > 0 ? "+" : ""}${n.toFixed(1)}pp`;
 
+// Pinned grand-total row styling — identical to
+// ../movement/AttributeMixGrid.tsx's, since the two grids are siblings
+// showing the same measures at different grains.
+const TOTAL_ROW_STYLE = {
+  background: "var(--surface-2)",
+  fontWeight: 600,
+  borderTop: "2px solid var(--line)",
+} as const;
+
+/**
+ * Grand total over the rows currently handed to the grid (already
+ * facet-filtered by the caller, so the footer follows the filters). Group
+ * headers are skipped — buildGroupedRows emits each real row exactly once,
+ * so a flat pass over the non-header entries is a true, non-double-counting
+ * total whether or not group-by is active.
+ *
+ * Arithmetic — matched against mix.ts:278–280 where these per-row values
+ * are produced:
+ *   saleMixPct  = sales / totalSales · 100
+ *   stockMixPct = max(0, soh) / totalStock · 100
+ *   mixGapPts   = saleMixPct − stockMixPct
+ * Every row shares one scope-wide denominator, so Σ of the per-row
+ * percentages IS the summed-numerator-over-summed-denominator recompute:
+ * Σ(salesᵢ/T·100) = (Σsalesᵢ)/T·100. Reads 100.0% unfiltered and the true
+ * sub-100% share of scope when a facet filter is on. Mix Gap follows the
+ * same per-row subtraction one level up.
+ */
+function buildTotalRow(rows: GridRow[]): MixRow[] {
+  let any = false;
+  let sales = 0;
+  let soh = 0;
+  let warehouseAvailable = 0;
+  let saleMixPct = 0;
+  let stockMixPct = 0;
+  for (const row of rows) {
+    if (isGroupHeader(row)) continue;
+    any = true;
+    sales += row.sales;
+    soh += row.soh;
+    warehouseAvailable += row.warehouseAvailable;
+    saleMixPct += row.saleMixPct;
+    stockMixPct += row.stockMixPct;
+  }
+  if (!any) return [];
+  return [
+    {
+      styleNo: "Total",
+      color: "",
+      sales,
+      saleMixPct,
+      soh,
+      stockMixPct,
+      mixGapPts: saleMixPct - stockMixPct,
+      status: "balanced",
+      warehouseAvailable,
+      negativeStock: false,
+    },
+  ];
+}
+
 /**
  * 2026-08-20 — same AG Grid conversion as the Replenishment/Store League/
  * Stock capacity tables: this page's main table can span hundreds of
@@ -100,6 +160,9 @@ export function SaleStockMixGrid({ rows }: { rows: GridRow[] }) {
         cellClass: "text-ink-2 py-1",
         autoHeight: true,
         cellRenderer: (p: ICellRendererParams<MixRow>) => {
+          // The pinned grand-total row carries a placeholder status; an
+          // "action" for a total is meaningless, so leave the cell empty.
+          if (p.node.rowPinned) return null;
           const r = p.data!;
           const meta = MIX_STATUS_META[r.status];
           const isAllocationCandidate = r.status === "high_priority" || r.status === "opportunity";
@@ -118,12 +181,16 @@ export function SaleStockMixGrid({ rows }: { rows: GridRow[] }) {
     []
   );
 
+  const totalRow = useMemo(() => buildTotalRow(rows), [rows]);
+
   return (
     <DataGrid<GridRow>
       rowData={rows}
       columnDefs={columnDefs as unknown as ColDef<GridRow>[]}
-      heightPx={Math.min(640, Math.max(160, 46 + rows.length * 40))}
+      heightPx={Math.min(680, Math.max(200, 46 + rows.length * 40 + 40)) /* +40 = the pinned grand-total row, so adding it does not steal a data row's worth of visible space */}
       getRowId={(p) => (isGroupHeader(p.data) ? p.data.id : `${p.data.styleNo}|${p.data.color}`)}
+      pinnedBottomRowData={totalRow}
+      getRowStyle={(p) => (p.node.rowPinned === "bottom" ? TOTAL_ROW_STYLE : undefined)}
       overlayNoRowsTemplate="No style-colors match these filters."
     />
   );
