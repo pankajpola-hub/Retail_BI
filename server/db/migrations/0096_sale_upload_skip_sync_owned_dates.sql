@@ -1,5 +1,5 @@
 -- =============================================================================
--- 0097 · Excel sale-upload auto-skips rows for (branch, date) the nightly
+-- 0096 · Excel sale-upload auto-skips rows for (branch, date) the nightly
 --        sync already owns — fixes C-06 (docs/audit/C-database.md)
 -- =============================================================================
 -- Problem (proven live, see C-06): raw_logic.sales_transactions' natural key
