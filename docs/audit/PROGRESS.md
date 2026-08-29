@@ -460,6 +460,34 @@ MSYS2_ARG_CONV_EXCL="*" PGPASSWORD='<pw>' "/d/Programs/pgsql/bin/psql.exe" -h aw
 ```
 Then deploy — production is well behind master at this point, see the standing "Deploy" item.
 
+### 2026-08-28 — live bug found right after deploying the Sales access-control fix — DONE, MERGED (`59e393c`)
+
+User deployed `4e56c99` and immediately hit it: "Test Admin" (super_admin) got denied `/sales`
+with "You don't have access to Sales," specifically **when multiple browser tabs were open**.
+Investigated live rather than guessing: DB-side was checked first and was entirely correct
+(`core.role_permissions` has `sales.view` for `super_admin`; `core.user_business_units` has both
+`retail` and `ecomm` for that user) — so the bug wasn't in the rename, it was already-latent code
+the rename newly exposed.
+
+Root cause: `resolveCallerBusinessUnits()` in `lib/auth/roles.ts` destructured only `{ data }`
+from its Supabase RPC call and returned `data ?? []` — a genuine RPC error (plausible under
+concurrent tabs: a Supabase auth-token-refresh race across tabs sharing one session) was silently
+indistinguishable from "confirmed zero business units," producing a hard deny. This bug existed
+before today but had no chance to surface on `/sales`, since that page used `requireRole()` before
+— which never calls `resolveCallerBusinessUnits()` on its success path at all. Today's rename to
+`requirePageAccess("sales")` is what first subjected `/sales` to this check.
+
+Fixed by checking `error` explicitly: a genuine RPC failure now warns and fails OPEN (both
+business units) instead of denying, matching this file's own established posture for this exact
+class of check (`checkPermitGate`'s own header: "Postgres/RLS remains the actual security
+boundary regardless"). `tsc --noEmit` + full `next build` clean. Pushed (`59e393c`).
+
+**Flagged, not fixed**: `resolveCallerStoreIds()` has the IDENTICAL unchecked-`{data}` pattern.
+Deliberately left alone — `storeIds` feeds directly into several pages' own data-scoping queries,
+so "fail open" there needs per-call-site thought (returning "all stores" vs "no stores" on error
+has real data-exposure implications, unlike the business-unit gate which is coarse pre-filtering
+on top of RLS). Worth its own careful pass, not a copy-paste of today's fix.
+
 ## Next steps (in order)
 
 1. Wait for the 5 in-flight agents to report back (background notifications will arrive).
