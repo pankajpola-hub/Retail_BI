@@ -59,8 +59,32 @@ export type SchemeDailyRow = { scheme_group: string | null; quantity: number | s
 export type HourlyRow = { bill_hour: number | null; net_sales: number | string };
 export type AgentDailyRow = { store_id: string | null; agent_name: string | null; bills: number | string; quantity: number | string; net_sales: number | string };
 
+// Pure date-string arithmetic (parse Y/M/D, add in UTC, re-serialize) — never
+// routes through a local-timezone Date read, which is exactly the class of
+// bug DateRangePicker.tsx's iso() had (local midnight, serialized via UTC
+// toISOString(), landing a day early in IST). Constructing entirely in UTC
+// from already-parsed calendar components sidesteps that.
+function addDaysToIsoDate(iso: string, days: number): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(Date.UTC(y as number, (m as number) - 1, (d as number) + days)).toISOString().slice(0, 10);
+}
+
 export function computeSalesTotals(weeks: WeeklyRow[] | null, from: string) {
-  const weekRows = (weeks ?? []).filter((w) => w.week_start && w.week_start >= from);
+  // A week is "in view" if its 7-day span OVERLAPS [from, to] — NOT if its
+  // week_start is on/after `from`. The caller (page.tsx) deliberately
+  // over-fetches one extra week before `from` (weeklyStart = from - 7) so
+  // there's a prior week to diff WoW against; this filter's job is to trim
+  // that extra week back out for display. week_start >= from did that
+  // correctly only when `from` itself lands exactly on a week boundary
+  // (a Monday). Any range starting mid-week — a single day, "last N days",
+  // any custom range — has week_start < from for the CURRENT week even
+  // though that week genuinely overlaps the range, so it was being dropped
+  // entirely: storesInView (derived from weekRows below) went empty, and
+  // with it the period table, store league and agent view all went blank,
+  // while the KPI cards (which query vw_ebo_sales_daily directly, not
+  // through this function) kept showing the correct total. Fixed by keeping
+  // a week whenever its END (week_start + 6 days) is on/after `from`.
+  const weekRows = (weeks ?? []).filter((w) => w.week_start && addDaysToIsoDate(w.week_start, 6) >= from);
   const totalNetSales = weekRows.reduce((s, w) => s + Number(w.net_sales), 0);
   const totalGrossSales = weekRows.reduce((s, w) => s + Number(w.gross_sales), 0);
   const totalDiscount = weekRows.reduce((s, w) => s + Number(w.discount), 0);

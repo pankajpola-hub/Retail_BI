@@ -80,6 +80,17 @@ export function AgentSalesFacetedTable({ rows, storeNames }: { rows: AgentRow[];
 
   return (
     <>
+      {/* This table attributes SALE bills to whoever rang them up — a return
+          isn't necessarily processed by the same agent as the original sale,
+          so netting it off here would misattribute someone else's return
+          against this agent's number. sales.vw_ebo_agent_daily (the view
+          this reads) is built WHERE bill_type = 'SALE' on purpose. That's
+          why this "Net" is smaller-scoped than the page's own "Net Sales"
+          KPI card, which nets returns off the whole network — both numbers
+          are correct, they just answer different questions. */}
+      <p className="mb-2 text-[11.5px] text-ink-3">
+        Sale bills only (not netted against returns) — differs from the page&apos;s Net Sales KPI, which nets returns off the whole network.
+      </p>
       <FacetFilterBar
         pageKey={PAGE_KEY}
         rows={rows}
@@ -97,7 +108,9 @@ export function AgentSalesFacetedTable({ rows, storeNames }: { rows: AgentRow[];
               <th className="px-3 py-2">Store</th>
               <th className="px-3 py-2 text-right">Bills</th>
               <th className="px-3 py-2 text-right">Units</th>
-              <th className="px-3 py-2 text-right">Net</th>
+              <th className="px-3 py-2 text-right" title="Sale bills only, not netted against returns — see the note above.">
+                Net (sale bills)
+              </th>
               <th className="px-3 py-2 text-right">ATV</th>
             </tr>
           </thead>
