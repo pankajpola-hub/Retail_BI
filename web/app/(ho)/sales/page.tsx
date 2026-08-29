@@ -161,7 +161,12 @@ function rollUpCore(ebo: EboDailyRow[], ecomm: EcommDailyRow[]) {
   const byDate = new Map<string, number>();
   for (const r of ebo) if (r.bill_date) byDate.set(r.bill_date, (byDate.get(r.bill_date) ?? 0) + num(r.net_sales));
   for (const r of ecomm) byDate.set(r.order_date, (byDate.get(r.order_date) ?? 0) + num(r.net_selling_value));
-  const trendPoints = [...byDate.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([date, value]) => ({ label: date, value }));
+  // `date` (raw ISO) is what ComparisonTrendChart/TrendChart's time scale
+  // zooms and pans against since the 2026-08-29 lightweight-charts swap;
+  // `label` stays the tooltip's display text. Additive, see computeTrendPoints.
+  const trendPoints = [...byDate.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, value]) => ({ label: date, value, date }));
 
   return {
     eboNet,

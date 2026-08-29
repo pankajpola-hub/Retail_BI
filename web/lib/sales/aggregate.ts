@@ -209,8 +209,16 @@ export function computeAgentRows(agentDaily: AgentDailyRow[] | null) {
 const DAY_LABEL = (iso: string) =>
   new Date(iso + "T00:00:00").toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
 
-/** Daily net-sales trend points for TrendChart, network-wide. */
-export function computeTrendPoints(daily: DailyRow[] | null) {
+/**
+ * Daily net-sales trend points for TrendChart, network-wide.
+ *
+ * Returns the raw ISO `date` alongside the display `label` as of 2026-08-29:
+ * the charts moved from Tremor (whose x axis was just the label string) to
+ * lightweight-charts, whose time scale needs a real chronological value to
+ * zoom and pan against. Additive field — `label` is unchanged and still what
+ * the tooltip shows, so no consumer needed a change.
+ */
+export function computeTrendPoints(daily: DailyRow[] | null): { label: string; value: number; date: string }[] {
   const dailyByDate = new Map<string, number>();
   for (const d of daily ?? []) {
     if (!d.bill_date) continue;
@@ -218,7 +226,7 @@ export function computeTrendPoints(daily: DailyRow[] | null) {
   }
   return [...dailyByDate.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, value]) => ({ label: DAY_LABEL(date), value }));
+    .map(([date, value]) => ({ label: DAY_LABEL(date), value, date }));
 }
 
 export const HOUR_START = 9;
