@@ -15,7 +15,11 @@ const NO_FLASH_THEME = `
 (function () {
   try {
     var t = localStorage.getItem('theme');
-    if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    // Allow-list, not a passthrough: an arbitrary stored string would be
+    // stamped straight onto <html> and could match nothing (silently light)
+    // or a future unrelated attribute selector. 'light' is the default and
+    // needs no attribute.
+    if (t === 'dark' || t === 'electro') document.documentElement.setAttribute('data-theme', t);
   } catch (e) {}
 })();
 `;

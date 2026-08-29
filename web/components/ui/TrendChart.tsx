@@ -48,9 +48,12 @@ function seriesColors(p: ChartPalette) {
     // chart, so colour here is decoration, not meaning. --ink-3 exactly (the
     // real computed token now, no longer Tremor's approximate "zinc"), with a
     // faint fill. Semantic red/green stays on deltas and badges.
-    lineColor: p.ink3,
-    topColor: `${p.ink3}33`,
-    bottomColor: `${p.ink3}05`,
+    // `p.series ||` is inert in light and dark — neither defines
+    // --chart-series, so this is p.ink3 exactly as before. Only the opt-in
+    // electro theme sets it (to its neon accent). See chartBase.tsx.
+    lineColor: p.series || p.ink3,
+    topColor: `${p.series || p.ink3}33`,
+    bottomColor: `${p.series || p.ink3}05`,
     lineWidth: 2 as const,
     priceLineVisible: false,
     lastValueVisible: false,

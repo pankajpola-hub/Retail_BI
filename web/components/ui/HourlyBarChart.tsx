@@ -55,7 +55,9 @@ function seriesColors(p: ChartPalette) {
   return {
     // Single-series, so grey not green — same monochrome reasoning as
     // TrendChart.tsx, now against the real --ink-3 token.
-    color: p.ink3,
+    // Inert in light/dark (--chart-series is unset there); neon under
+    // electro. See chartBase.tsx.
+    color: p.series || p.ink3,
     base: 0,
     priceLineVisible: false,
     lastValueVisible: false,

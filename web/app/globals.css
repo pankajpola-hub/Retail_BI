@@ -112,6 +112,157 @@
   --sidebar-ink-active: #ffffff;
 }
 
+/*
+ * "Electro" — a third, OPT-IN theme (2026-08-29). Trading-terminal aesthetic:
+ * near-black ground, neon-lime accent, soft glow on interactive chrome.
+ *
+ * Purely ADDITIVE. Nothing in :root or :root[data-theme="dark"] above is
+ * touched, so Light and Dark are byte-for-byte what they were. Like Dark, it
+ * is only ever applied by an explicit user choice (ThemeToggle writes
+ * localStorage 'theme' = 'electro', the no-flash script in app/layout.tsx
+ * stamps data-theme before first paint) — never by prefers-color-scheme.
+ *
+ * This block deliberately redefines EVERY colour token the two existing
+ * themes define. Tokens omitted here would inherit the LIGHT values from
+ * :root (this is a plain descendant-of-:root override, not a media query),
+ * which is how you get a white sidebar on a black page.
+ *
+ * WHY THIS BREAKS THE MONOCHROME RULE ON PURPOSE: the 2026-08-23 pass made
+ * the shell achromatic so data was the only coloured thing on screen. Electro
+ * is the explicit exception the user asked for — an opt-in novelty skin. The
+ * rule still holds for the two default themes, which remain the shipped
+ * defaults; nobody lands in Electro without picking it.
+ */
+:root[data-theme="electro"] {
+  /* Near-black, NOT #000 — same reasoning as the dark theme's #0b0b0c, but a
+     step darker and faintly green-shifted (G and B nudged above R) so the
+     ground reads as a moody terminal rather than "dark mode with a green
+     button". Every value here is measured; see the ratios in the comments. */
+  --ground: #050706;
+  --surface: #0b0f0d;
+  --surface-2: #121815;
+  --line: #24302b;
+  --line-soft: #18211d;
+  /* Slightly green-tinted white rather than #f2f2f4. At this saturation the
+     tint is barely nameable in isolation but it stops the shell reading as
+     neutral-grey-plus-accent. 18.0:1 on --ground. */
+  --ink: #e8f5ee;
+  --ink-2: #a7bdb2; /* 9.7:1 on --surface */
+  /* Measured against --surface-2, the same pairing the light/dark --ink-3
+     values were tuned for (neutral Pill, muted captions): 5.91:1, clear of
+     AA. Don't darken without re-measuring that pair. */
+  --ink-3: #7f9a8c;
+  /* THE token. Neon lime — hue ~85°, fully saturated. Yellow-green rather
+     than a mint/emerald green on purpose: it puts maximum hue distance
+     between the decorative accent and --good below, which is the collision
+     risk when the accent itself is green. 15.7:1 on --surface; black on it
+     is 16.4:1. This one line repaints every primary button, active nav pill,
+     selected facet chip and focus ring app-wide. */
+  --accent: #a8ff3e;
+  /* Low-alpha lime OVER the near-black ground, not a light mint tint — a
+     pale tint was correct for a white shell and would be a glaring slab
+     here. rgba (not a hex) so it composites over whatever surface it lands
+     on, which differ (--surface vs --surface-2) across call sites. */
+  --accent-soft: rgba(168, 255, 62, 0.13);
+  --accent-ink: #a8ff3e; /* 14:1 over --accent-soft on a dark surface */
+  --accent-fg: #050706; /* text/icons ON the filled accent */
+  /* Semantic — data only, and here they carry an extra constraint: none may
+     be confusable with the neon accent, or a "sales up" delta badge becomes
+     indistinguishable from decorative chrome. --good is therefore CYAN, not
+     a green: at badge size a second green next to a neon-lime accent is a
+     coin-flip. The app's "a trend glyph must accompany colour, not colour
+     alone" rule means the arrow still carries the meaning; this keeps the
+     colour carrying a *distinct* signal rather than a redundant one.
+     Hues: accent 85° / good 187° / warn 33° / crit 5° — all well separated. */
+  --good: #35d8e8;
+  --good-soft: #0a2124;
+  --warn: #f0a93b;
+  --warn-soft: #241a09;
+  --crit: #ff6b5e;
+  --crit-soft: #26120f;
+
+  --sidebar-bg: #0b0f0d;
+  --sidebar-active-bg: #151d13;
+  --sidebar-ink: #a7bdb2;
+  --sidebar-ink-active: #a8ff3e;
+  /* The top bar is already black in both existing themes; matched to
+     --ground here so it reads as one continuous surface, and its ink picks
+     up the same green-tinted white as --ink. */
+  --topbar-bg: #050706;
+  --topbar-ink: #cfe8d8;
+
+  /* Series stroke for the lightweight-charts components. Read by
+     chartBase.tsx's readChartPalette() and applied ONLY where it is set —
+     light and dark deliberately do not define it, so those two themes keep
+     their existing muted --ink-3 / --ink-2 series with no change at all.
+     A separate token rather than reusing --accent because --accent is
+     near-black in light and near-white in dark; binding the series to it
+     would restyle both shipped themes. The neon line IS the reference
+     screenshot's defining element, so electro opts in. */
+  --chart-series: #a8ff3e;
+
+  /* Reused by the glow rules below so the neon is defined in exactly one
+     place — change --accent and these follow. */
+  --glow-ring: rgba(168, 255, 62, 0.34);
+  --glow-halo: rgba(168, 255, 62, 0.24);
+}
+
+/*
+ * Glow / "pop" on interactive chrome — SCOPED TO ELECTRO ONLY. Light and
+ * dark keep their existing plain hover states, untouched.
+ *
+ * Scope is deliberately narrow: real <button>s, ARIA buttons/menuitems, and
+ * links inside the shell's own chrome (header / nav / aside). Body-copy links
+ * inside page content are left alone — a glowing inline link mid-paragraph is
+ * a gimmick, and the ask was "tasteful, not a gimmick".
+ */
+:root[data-theme="electro"] :is(button, [role="button"], [role="menuitem"]),
+:root[data-theme="electro"] :is(header, nav, aside) :is(a[href], button) {
+  transition:
+    box-shadow 170ms ease,
+    color 170ms ease,
+    background-color 170ms ease;
+}
+
+:root[data-theme="electro"] :is(button, [role="button"], [role="menuitem"]):hover,
+:root[data-theme="electro"] :is(button, [role="button"], [role="menuitem"]):focus-visible,
+:root[data-theme="electro"] :is(header, nav, aside) :is(a[href], button):hover,
+:root[data-theme="electro"] :is(header, nav, aside) :is(a[href], button):focus-visible {
+  box-shadow:
+    0 0 0 1px var(--glow-ring),
+    0 0 12px var(--glow-halo);
+}
+
+/* Disabled controls must not look live. */
+:root[data-theme="electro"] :is(button, [role="button"]):disabled:hover {
+  box-shadow: none;
+}
+
+/*
+ * AG Grid is explicitly EXEMPT. DataGrid.tsx renders dense, scannable tables;
+ * a row or header cell that glows as the pointer sweeps across it actively
+ * hurts reading, which is the exact risk flagged when this theme was scoped.
+ * This rule comes after the ones above so it wins on order (same specificity
+ * would not be enough on its own, hence the extra .ag-root-wrapper compound).
+ */
+:root[data-theme="electro"] .ag-root-wrapper :is(button, [role="button"], [role="menuitem"], a[href]):hover,
+:root[data-theme="electro"] .ag-root-wrapper :is(button, [role="button"], [role="menuitem"], a[href]):focus-visible {
+  box-shadow: none;
+}
+
+/*
+ * Users who ask for reduced motion get the glow as an instant state change
+ * rather than an animated one — the glow itself still carries the hover/focus
+ * affordance (removing it entirely would cost a focus indicator), only the
+ * transition goes. Required by this app's existing motion conventions.
+ */
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme="electro"] :is(button, [role="button"], [role="menuitem"]),
+  :root[data-theme="electro"] :is(header, nav, aside) :is(a[href], button) {
+    transition: none;
+  }
+}
+
 body {
   background: var(--ground);
   color: var(--ink);
