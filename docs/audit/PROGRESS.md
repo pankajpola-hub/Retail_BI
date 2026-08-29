@@ -281,6 +281,59 @@ Fixed by relabeling to "Net (sale bills)" + an explanatory line above the table 
 changed, only disambiguated. **If the business actually wants Agent-wise net-of-returns, that's
 a product decision — flag it, don't silently change it.**
 
+### 2026-08-28 — merged another session's marketplace-reconciliation feature (`feat/marketplace-recon`)
+
+Another session (myntra-91) built a marketplace reconciliation module (new `/reconciliation`
+page, `ops.recon_lines` + summary views, live refresh from `raw_uniware`, REST tax/packet
+enrichment) on a branch off this repo's own master, and asked this session to merge + push +
+run its migrations. Reviewed before merging rather than merging blind (same standard applied to
+every agent's work all session) — found and fixed 5 real issues, all in commit `92c7b61` on top
+of the merge commit:
+
+1. **`ops.recon_lines`'s RLS policy was `using (true)`** — any authenticated user of any role
+   could read the whole network's marketplace pricing/tax exception data directly via PostgREST,
+   bypassing the page's own role gate. Scoped to `('ho_admin','super_admin','marketing')` via
+   `core.fn_user_role()`, matching `0022`'s established pattern and exactly the role set the
+   page/nav already gate on.
+2. **`ops.refresh_recon_from_uniware()` granted EXECUTE to `authenticated`** as well as
+   `service_role` — the function is `SECURITY DEFINER` and does an unconditional delete+rebuild
+   of the whole table; any signed-in user could have triggered it directly via RPC, bypassing the
+   route's `cronAuthFailure()` gate. Dropped the `authenticated` grant.
+3. **`getReconLines()` used a bare `.limit(5000)`** — this app's own PostgREST Max Rows cap
+   (already-known gotcha, see `[[postgrest-max-rows-cap]]` in Claude's memory) silently truncates
+   at 1000 regardless of a higher `.limit()`. The 2,399-row seed (and the live table, which will
+   be bigger) would have quietly shown ~1000 rows with no error. Switched to `fetchAllRows()`.
+4. **`package.json` gained a second, older `ag-grid-community`/`ag-grid-react` entry (`^32.2.0`)**
+   alongside the app's existing `^36.1.0` — duplicate JSON keys, and 32.x predates the Theming
+   API this session's dark-mode fix (`DataGrid.tsx`) depends on. Removed the duplicate.
+5. **`ReconGrid.tsx` built its own bare `<AgGridReact>`** with legacy CSS-file theme imports
+   instead of the shared `<DataGrid>` wrapper every other table uses — no dark-mode support, and
+   a second theming mechanism active alongside the Theming API (AG Grid's own docs warn against
+   mixing the two). Also referenced `border-border-strong` and `var(--bad, ...)` — neither token
+   exists in this app (real names: `border-line`, `--crit`) — both were silently falling back to
+   hardcoded non-theme-aware colors. Switched to `<DataGrid>` + the app's real tokens.
+
+`tsc --noEmit` + full `next build` (all 37 routes incl. `/reconciliation`, `/api/recon/refresh`,
+`/api/recon/enrich-tax`) verified clean after the fixes. Pushed to origin (`92c7b61`).
+
+**Still needed, human action** — none of this has touched the live DB or been deployed yet:
+1. Run migrations **in order**, each ends with its own `NOTIFY pgrst`:
+   ```bash
+   MSYS2_ARG_CONV_EXCL="*" PGPASSWORD='<pw>' "/d/Programs/pgsql/bin/psql.exe" -h aws-0-ap-southeast-1.pooler.supabase.com -p 5432 -U postgres.naukfqwjunorzntnzkok -d postgres -v ON_ERROR_STOP=1 -f "server/db/migrations/0098_marketplace_recon.sql"
+   MSYS2_ARG_CONV_EXCL="*" PGPASSWORD='<pw>' "/d/Programs/pgsql/bin/psql.exe" -h aws-0-ap-southeast-1.pooler.supabase.com -p 5432 -U postgres.naukfqwjunorzntnzkok -d postgres -v ON_ERROR_STOP=1 -f "server/db/migrations/0098_marketplace_recon_seed.sql"
+   MSYS2_ARG_CONV_EXCL="*" PGPASSWORD='<pw>' "/d/Programs/pgsql/bin/psql.exe" -h aws-0-ap-southeast-1.pooler.supabase.com -p 5432 -U postgres.naukfqwjunorzntnzkok -d postgres -v ON_ERROR_STOP=1 -f "server/db/migrations/0099_recon_refresh_from_uniware.sql"
+   ```
+2. Deploy (`npx vercel --prod --yes`) — production is still well behind master (last live deploy
+   predates almost everything in this file), see the standing "Deploy" item below.
+3. Once `raw_uniware` is current, `GET /api/recon/refresh` (with the cron bearer secret) switches
+   `recon_lines` from the CSV seed to live-derived data. Tax exceptions won't populate from the
+   live path until `/api/recon/enrich-tax` is verified — see the caveat below.
+4. **`/api/recon/enrich-tax` is CODE-COMPLETE BUT UNVERIFIED against live Uniware** (per the
+   handoff) — the `display_order_code` → internal-code mapping and REST field names
+   (`totalCentralGst` etc.) are from Unicommerce docs, not a confirmed run. Run it once manually
+   with its default cap (25 orders) and check the result before ever scheduling it as a cron.
+5. Full details in `RECON_HANDOFF.md` at the repo root (from the other session) and this section.
+
 ## Next steps (in order)
 
 1. Wait for the 5 in-flight agents to report back (background notifications will arrive).
