@@ -494,3 +494,43 @@ export async function getReturn(reversePickupCode: string): Promise<UniwareRetur
     raw: data,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Tax + packet enrichment (recon). The SOAP SearchSaleOrder/GetSaleOrder feed
+// the header/item sync uses does NOT carry the GST breakdown or packet id;
+// the REST saleorder/get response does (saleOrderItems[].totalCentralGst etc.,
+// shippingPackages[].code). This helper fetches that per Uniware sale-order
+// CODE (the internal UUID, not displayOrderCode) so recon can fill cgst/sgst/
+// igst and packet_id_present. Requires UNIWARE_REST_USERNAME/PASSWORD
+// (uniwareRestEnabled()). UNVERIFIED against live until first real run.
+// ---------------------------------------------------------------------------
+export type UniwareItemTax = {
+  itemCode: string | null;
+  itemSku: string | null;
+  cgst: number | null;
+  sgst: number | null;
+  igst: number | null;
+  hasPacket: boolean;
+};
+
+export async function getSaleOrderTaxDetail(saleOrderCode: string): Promise<UniwareItemTax[]> {
+  const data = await restCall("/services/rest/v1/oms/saleorder/get", { code: saleOrderCode });
+  if (!data) return [];
+  const dto = (data.saleOrderDTO && typeof data.saleOrderDTO === "object"
+    ? (data.saleOrderDTO as Record<string, unknown>)
+    : {}) as Record<string, unknown>;
+  const items = asArray(dto.saleOrderItems).map((raw) => {
+    const it = raw as Record<string, unknown>;
+    return {
+      itemCode: textOrNull(it.code),
+      itemSku: textOrNull(it.itemSku),
+      cgst: numOr(it.totalCentralGst as string),
+      sgst: numOr(it.totalStateGst as string),
+      igst: numOr(it.totalIntegratedGst as string),
+      hasPacket: Boolean(
+        it.shippingPackageCode && String(it.shippingPackageCode).length > 0
+      ),
+    };
+  });
+  return items;
+}
