@@ -4,6 +4,18 @@ import { createClient } from "@/lib/data/client";
 import { getPermit } from "@/lib/permit/client";
 import { resolveViewScope } from "@/lib/scope/resolveViewScope";
 import { resolveAccess } from "./access";
+import { PAGE_KEYS, PAGE_LABELS, type PageKey } from "./permissions";
+
+// PageKey/PAGE_KEYS/PAGE_LABELS live in ./permissions (a pure, no-server-only
+// module both this file and client admin components can import) — this file
+// used to re-declare its own copy, which is exactly the drift permissions.ts's
+// own header describes: this copy said `replenishment: "Replenishment"` while
+// permissions.ts said "Movement" (the route was renamed, this label wasn't),
+// and both listed "network" months after /network became a redirect stub
+// superseded by /sales. Re-exported here so every existing `import {PageKey}
+// from "@/lib/auth/roles"` elsewhere in the app keeps compiling unchanged.
+export type { PageKey };
+export { PAGE_KEYS, PAGE_LABELS };
 
 export type AppRole =
   | "super_admin"
@@ -174,51 +186,6 @@ export async function requireRole(...allowed: AppRole[]): Promise<CurrentUser> {
   };
 }
 
-// Every nav-visible top-level page that requirePageAccess() below knows how
-// to gate. Kept as a closed union (not derived from NAV_LINKS in TopNav.tsx,
-// which is a client-facing display concern) so a typo in a page_key string
-// anywhere in the admin UI or a requirePageAccess() call is a compile error.
-export type PageKey =
-  | "network"
-  | "stock-details"
-  | "replenishment"
-  | "footfall"
-  | "targets"
-  | "users"
-  | "integrations"
-  | "data-upload"
-  | "workspace"
-  | "configurations"
-  | "ecomm";
-
-export const PAGE_KEYS: PageKey[] = [
-  "network",
-  "stock-details",
-  "replenishment",
-  "footfall",
-  "targets",
-  "users",
-  "integrations",
-  "data-upload",
-  "workspace",
-  "configurations",
-  "ecomm",
-];
-
-export const PAGE_LABELS: Record<PageKey, string> = {
-  network: "Network",
-  "stock-details": "Stock Details",
-  replenishment: "Replenishment",
-  footfall: "Footfall",
-  targets: "Targets",
-  users: "Users",
-  integrations: "Integrations",
-  "data-upload": "Data Upload",
-  workspace: "Workspace",
-  configurations: "Configurations",
-  ecomm: "Ecomm",
-};
-
 // Role defaults mirrored from each route group's requireRole() call /
 // TopNav's NAV_LINKS.roles — the "would this role normally see this page"
 // answer requirePageAccess() needs BEFORE it knows whether a per-user
@@ -228,7 +195,7 @@ export const PAGE_LABELS: Record<PageKey, string> = {
 // for this today; see the report from the agent that built this feature for
 // why threading one wasn't attempted for every page.
 export const PAGE_ROLE_DEFAULTS: Record<PageKey, AppRole[]> = {
-  network: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"],
+  sales: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"],
   "stock-details": ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"],
   // Same role list as stock-details — a store manager (ebo_manager) deciding
   // whether to expect a warehouse replenishment needs to see this same as
@@ -280,14 +247,25 @@ export const PAGE_ROLE_DEFAULTS: Record<PageKey, AppRole[]> = {
   ecomm: ["ho_admin", "super_admin", "marketing"],
 };
 
-// Which business unit each page belongs to — checked in requirePageAccess()
+// Which business unit(s) each page belongs to — checked in requirePageAccess()
 // alongside (not instead of) PAGE_ROLE_DEFAULTS: role decides WHAT within a
 // business a caller can see, this decides WHICH business they're in at all.
-// "ecomm" below is the first page this map actually does anything for —
-// every user must hold an explicit 'ecomm' grant (core.user_business_units,
-// 0061) to reach it, on top of the role check above.
-export const PAGE_BUSINESS_UNIT: Record<PageKey, BusinessUnit> = {
-  network: "retail",
+// "ecomm" below was the first page this map did anything for — every user
+// must hold an explicit 'ecomm' grant (core.user_business_units, 0061) to
+// reach it, on top of the role check above.
+//
+// Most pages hold exactly one BusinessUnit — a plain string is fine, checked
+// with .includes() below. `sales` is the one real exception: /sales replaced
+// /network specifically to fix the bug where an ecomm-only user (holding
+// 'ecomm' but not 'retail') was denied the one page that shows their own
+// vertical's rollup. Pinning `sales: "retail"` here would silently
+// reintroduce that exact bug, so it takes an ARRAY meaning "any one of
+// these" — the caller needs 'retail' OR 'ecomm', not both. Every other
+// section-level gate inside /sales (which verticals render) stays exactly
+// as resolveViewScope.ts already decides it; this is only the outer "can you
+// enter the page at all" gate.
+export const PAGE_BUSINESS_UNIT: Record<PageKey, BusinessUnit | BusinessUnit[]> = {
+  sales: ["retail", "ecomm"],
   "stock-details": "retail",
   replenishment: "retail",
   footfall: "retail",
@@ -299,6 +277,13 @@ export const PAGE_BUSINESS_UNIT: Record<PageKey, BusinessUnit> = {
   configurations: "retail",
   ecomm: "ecomm",
 };
+
+/** Shared by requirePageAccess() below and AppShell's nav-link filter — a
+ *  page's business-unit requirement can be one BusinessUnit or an array
+ *  meaning "any one of these" (see PAGE_BUSINESS_UNIT's own comment). */
+export function isBusinessUnitAllowed(callerUnits: BusinessUnit[], required: BusinessUnit | BusinessUnit[]): boolean {
+  return Array.isArray(required) ? required.some((bu) => callerUnits.includes(bu)) : callerUnits.includes(required);
+}
 
 /**
  * Layer 2, override-aware (migration 0035, core.user_page_overrides): same
@@ -315,7 +300,7 @@ export const PAGE_BUSINESS_UNIT: Record<PageKey, BusinessUnit> = {
  * database's own RLS + core.fn_user_store_ids() still gate what data any
  * query returns, independent of this.
  *
- * Wired up for: (ho)/network, (ho)/targets, (ebo)/footfall,
+ * Wired up for: (ho)/sales, (ho)/targets, (ebo)/footfall,
  * (stock-details)/stock-details (via its layout, since that route group has
  * exactly one page), (data-upload)/data-upload (ditto), (admin)/users,
  * (admin)/integrations, (ecomm)/ecomm. Every other page.tsx in the app (my-store,
@@ -395,7 +380,7 @@ export async function requirePageAccess(pageKey: PageKey): Promise<CurrentUser> 
   const permitAllowed = await checkPermitGate(userId, pageKey, roleAllowed);
 
   const businessUnits = await resolveCallerBusinessUnits();
-  const businessUnitAllowed = businessUnits.includes(PAGE_BUSINESS_UNIT[pageKey]);
+  const businessUnitAllowed = isBusinessUnitAllowed(businessUnits, PAGE_BUSINESS_UNIT[pageKey]);
 
   const allowed = roleAllowed && permitAllowed && businessUnitAllowed;
 

@@ -1,5 +1,5 @@
 import type { AppRole, BusinessUnit, PageKey } from "@/lib/auth/roles";
-import { PAGE_BUSINESS_UNIT } from "@/lib/auth/roles";
+import { PAGE_BUSINESS_UNIT, isBusinessUnitAllowed } from "@/lib/auth/roles";
 import { SidebarNav, type SidebarLink } from "./SidebarNav";
 import { MobileNav } from "./MobileNav";
 import { SignOutButton } from "./SignOutButton";
@@ -36,13 +36,17 @@ const HREF_PAGE_KEY: Record<string, PageKey> = {
   "/data-upload": "data-upload",
   "/workspace": "workspace",
   "/configurations": "configurations",
-  // /sales deliberately has NO entry here — it merges what "network" and
-  // "ecomm" used to gate separately, and each of those page_keys carries a
-  // single PAGE_BUSINESS_UNIT (retail vs ecomm) that would incorrectly
-  // exclude an ecomm-only or ebo-only user from the merged page. /sales
-  // does its own per-vertical narrowing internally (resolveViewScope), so
-  // it falls through to the plain role check below — same precedent
-  // /sale-stock-mix already established for a page with no page_key.
+  // /sales (2026-08-28): now HAS an entry, unlike its predecessor /network.
+  // The reason it used to be deliberately excluded no longer applies —
+  // PAGE_BUSINESS_UNIT.sales is ["retail","ecomm"] (an array meaning "any
+  // one of these"), not a single business unit, specifically so it can't
+  // exclude an ecomm-only or ebo-only user. Adding this entry also fixes a
+  // real bug this file's own header warns about: without it, the nav link's
+  // visibility (plain role check, below) could disagree with the page's own
+  // gate (requirePageAccess("sales"), which DOES respect a per-user
+  // override) — an admin denying one user's "Sales" access would previously
+  // still show them the nav link, which then bounced them on click.
+  "/sales": "sales",
 };
 
 type NavLink = { href: string; labelKey: keyof Dict; icon: SidebarLink["icon"]; roles: AppRole[]; group: string };
@@ -55,9 +59,12 @@ type NavLink = { href: string; labelKey: keyof Dict; icon: SidebarLink["icon"]; 
 const NAV_LINKS: NavLink[] = [
   // Replaces the old separate /network and /ecomm links (Phase 2 of the
   // unified Sales explore) — one entry, role list is the UNION of both
-  // pages' old role lists, since /sales does its own per-vertical
-  // narrowing internally rather than relying on this nav filter or a
-  // single PAGE_BUSINESS_UNIT the way each separate page used to.
+  // pages' old role lists. This role list is only the fallback for when
+  // `access` (per-user overrides) is unavailable — see HREF_PAGE_KEY above,
+  // which now maps "/sales" -> "sales" so access.can("sales.view") is the
+  // real check in the normal case. WHICH vertical(s) render inside the page
+  // once someone's in is still resolveViewScope's job entirely, untouched
+  // by any of this.
   { href: "/sales", labelKey: "navNetwork", icon: "network", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Overview" },
   { href: "/stock-details", labelKey: "navStockDetails", icon: "stock", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Stock" },
   { href: "/movement", labelKey: "navMovement", icon: "replenishment", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Movement" },
@@ -124,7 +131,7 @@ export async function AppShell({
     // lib/auth/roles.ts. /sale-stock-mix has no PAGE_KEY entry (pre-existing
     // gap, not introduced here) so it skips this check same as it already
     // skipped the access check below.
-    if (pageKey && !businessUnits.includes(PAGE_BUSINESS_UNIT[pageKey])) return false;
+    if (pageKey && !isBusinessUnitAllowed(businessUnits, PAGE_BUSINESS_UNIT[pageKey])) return false;
     if (pageKey && access) return access.can(`${pageKey}.view`);
     return l.roles.includes(role);
   });

@@ -19,7 +19,7 @@ export default async function NetworkPage({
 }: {
   searchParams: { from?: string; to?: string; store?: string; bu?: string };
 }) {
-  await requirePageAccess("network");
+  await requirePageAccess("sales");
   const params = new URLSearchParams();
   if (searchParams.bu) params.set("bu", searchParams.bu);
   if (searchParams.store) params.set("store", searchParams.store);

@@ -3,35 +3,14 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { updateUserPageOverrides } from "./actions";
+import { PAGE_KEYS, PAGE_LABELS, type PageKey } from "@/lib/auth/permissions";
 
-type PageKey =
-  | "network"
-  | "stock-details"
-  | "footfall"
-  | "targets"
-  | "users"
-  | "integrations"
-  | "data-upload";
-
-const PAGE_KEYS: PageKey[] = [
-  "network",
-  "stock-details",
-  "footfall",
-  "targets",
-  "users",
-  "integrations",
-  "data-upload",
-];
-
-const PAGE_LABELS: Record<PageKey, string> = {
-  network: "Network",
-  "stock-details": "Stock Details",
-  footfall: "Footfall",
-  targets: "Targets",
-  users: "Users",
-  integrations: "Integrations",
-  "data-upload": "Data Upload",
-};
+// PageKey/PAGE_KEYS/PAGE_LABELS used to be hand-rolled here — a 7-page union
+// that silently drifted from the 11 pages requirePageAccess() actually
+// gates, so Movement, Workspace, Configurations and Ecomm had no admin
+// control at all. Now imported from lib/auth/permissions.ts, the one shared,
+// no-server-only module this and lib/auth/roles.ts both read, so the two
+// can't diverge again (see that file's own header for the full story).
 
 // null = "no override, use the role default"; true/false = explicit grant/revoke.
 type OverrideValue = boolean | null;
@@ -46,10 +25,10 @@ type State =
 // the role-based nav/page defaults, written to core.user_page_overrides
 // (migration 0035). "Default" here means "defer to this user's role" — see
 // PAGE_ROLE_DEFAULTS in lib/auth/roles.ts for what that resolves to per
-// role. Only the 7 pages wired up to requirePageAccess()/TopNav's per-user
-// filtering are shown — see that file's requirePageAccess doc comment for
-// which pages still only respect role defaults (my-store, campaigns, and
-// any other page.tsx not listed there).
+// role. All 11 pages wired up to requirePageAccess() are shown (imported
+// from lib/auth/permissions.ts, see above) — a page.tsx not on that list
+// (my-store, campaigns, and anything without a nav entry) still only
+// respects role defaults and has no per-user override here.
 export function PageAccessButton({
   userId,
   userName,

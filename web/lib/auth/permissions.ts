@@ -43,9 +43,17 @@ export type UserStatus = "active" | "disabled";
  * The 11 top-level pages `requirePageAccess()` gates. Note `replenishment` is
  * the key for the /movement route — the route was renamed, the page_key was
  * deliberately not (see HREF_PAGE_KEY in components/ui/AppShell.tsx).
+ *
+ * `sales` (2026-08-28, was `network`): /network is now just a redirect stub
+ * superseded by /sales, and the nav link has pointed straight at /sales for
+ * a while — renamed to match what's actually being gated, and to give
+ * /sales itself a real per-user override control (it previously only used
+ * requireRole(), bypassing overrides entirely). See migration
+ * 0100_rename_network_permission_to_sales.sql for the matching DB-side
+ * rename of core.role_permissions/core.feature_keys.
  */
 export type PageKey =
-  | "network"
+  | "sales"
   | "stock-details"
   | "replenishment"
   | "footfall"
@@ -58,7 +66,7 @@ export type PageKey =
   | "ecomm";
 
 export const PAGE_KEYS: PageKey[] = [
-  "network",
+  "sales",
   "stock-details",
   "replenishment",
   "footfall",
@@ -72,7 +80,7 @@ export const PAGE_KEYS: PageKey[] = [
 ];
 
 export const PAGE_LABELS: Record<PageKey, string> = {
-  network: "Network",
+  sales: "Sales",
   "stock-details": "Stock Details",
   replenishment: "Movement",
   footfall: "Footfall",

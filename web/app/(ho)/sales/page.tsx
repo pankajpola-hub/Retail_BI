@@ -3,7 +3,7 @@ import Link from "next/link";
 import { CalendarRange, Clock, Trophy, Users, Tag, ShoppingBag, TrendingUp, TrendingDown, Shirt } from "lucide-react";
 import { createClient, fetchAllRows } from "@/lib/data/client";
 import type { QueryChain } from "@/lib/data/client";
-import { requireRole } from "@/lib/auth/roles";
+import { requirePageAccess } from "@/lib/auth/roles";
 import { resolveViewScope, type VerticalKey } from "@/lib/scope/resolveViewScope";
 import { ScopeBar } from "@/components/ui/ScopeBar";
 import { KpiCard } from "@/components/ui/KpiCard";
@@ -1095,10 +1095,15 @@ export default async function SalesPage({
 }: {
   searchParams: { from?: string; to?: string; compareFrom?: string; compareTo?: string; store?: string; bu?: string; channel?: string; channels?: string };
 }) {
-  // Role-only gate for this first cut — see the file header for why the real
-  // narrowing is per-vertical (resolveViewScope.granted) rather than one
-  // page-level business_unit the way /network and /ecomm each hard-code.
-  const user = await requireRole("ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing");
+  // requirePageAccess (not the plain requireRole this used before
+  // 2026-08-28) so a per-user override on the "sales" page key actually
+  // applies — requireRole only ever checked the hardcoded role list, so an
+  // admin granting/denying "Sales" access for one user in the Users page had
+  // no effect here. PAGE_BUSINESS_UNIT.sales is ["retail","ecomm"] (an
+  // array, not a single value) specifically so this outer gate can't lock
+  // out an ecomm-only user — the real per-vertical narrowing stays exactly
+  // where it already was, in resolveViewScope.granted below, not here.
+  const user = await requirePageAccess("sales");
   const { verticals } = resolveViewScope(user);
 
   const selectedVerticals = (searchParams.bu ?? "").split(",").filter(Boolean) as VerticalKey[];
