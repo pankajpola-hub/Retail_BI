@@ -529,6 +529,36 @@ scripted) update — nothing in the codebase does this automatically today, whic
 a follow-up: either write a real sync script for this, or note in `lib/permit/client.ts` that
 resource/role renames need a manual Permit.io-side update alongside the Postgres migration.
 
+### 2026-08-29 — Movement: WH SOH column added — DONE, MERGED (`5118d93`)
+
+Small, fast fix: `Row.warehouseAvailable` was already computed in `lib/replenishment/compute.ts`
+but never rendered in the "Where should we send stock?" table — added the column, flagged red
+when warehouse stock < recommended quantity (can't actually fulfill the move). No backend
+change needed, the data already existed. `tsc`/`next build` clean, pushed.
+
+### 2026-08-29 — Strict single-branch data isolation audit — LAUNCHED, not yet merged
+
+User: "if I allocate the branch to user then at every page every table or everywhere he should
+be able to see that branch only not other branch STRICTLY." Confirmed one architectural decision
+before launching: Movement/Replenishment's allocation engine (`lib/replenishment/compute.ts`)
+deliberately reads whole-network stock/sales data by design (C-09, already investigated this
+session — needed to compute cross-store transfer recommendations) — user chose to KEEP that
+network-wide computation but FILTER the rendered rows down to the caller's own store(s) before
+display, rather than hide the whole page from single-store users.
+
+Agent `a6563f2e0eb81edf0`, isolated worktree, given that exact resolved pattern plus a full
+page-by-page sweep brief: every `sales.vw_ebo_*` RLS scoping re-verified (not assumed from a
+prior pass), every store-filter control re-checked, every rollup/KPI checked for "all stores"
+secretly meaning ALL COMPANY stores instead of "all stores this caller has," every CSV/export
+route checked (classic place a UI filter gets forgotten), Workspace's dynamic rendering path
+checked, and every `service_role`/admin-client call site (bypasses RLS entirely) checked for its
+own app-level store filter. Evidence-based only — file:line or SQL proof required, no DB writes
+(migration file instead, if a DB-level scoping gap is found).
+
+**When it reports back**: review the diff and the page-by-page inventory carefully — this is a
+data-isolation/trust finding, false positives AND missed leaks both matter — merge to `master`,
+`tsc --noEmit` + `next build`, delete worktree/branch, then deploy.
+
 ## Next steps (in order)
 
 1. Wait for the 5 in-flight agents to report back (background notifications will arrive).
