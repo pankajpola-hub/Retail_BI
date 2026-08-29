@@ -1,44 +1,161 @@
 "use client";
 
-import { AreaChart } from "@tremor/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  AreaSeries,
+  createChart,
+  type IChartApi,
+  type ISeriesApi,
+  type MouseEventParams,
+  type Time,
+} from "lightweight-charts";
+import {
+  ChartSrSummary,
+  ChartTooltip,
+  INR_PRICE_FORMAT,
+  ResetZoomButton,
+  chartBaseOptions,
+  inr,
+  readChartPalette,
+  timeAxisFor,
+  useThemeVersion,
+  type ChartPalette,
+} from "./chartBase";
 
 /**
- * Real chart library (Tremor/Recharts under the hood) as of 2026-08-15,
- * replacing a hand-rolled SVG sparkline — same reasoning as
- * HourlyBarChart.tsx. Deliberately kept to the EXACT same external
- * contract (`points: {label,value}[]`, `ariaLabel`) as the hand-rolled
- * version it replaces, so every caller across the app (Network's
- * SalesSection, the Workspace's SalesTrendChart component, the Phase 8
- * store drilldown panel) needed zero changes — this is a pure presentation
- * swap, no data or business logic touched.
+ * Single-series daily net-sales trend.
+ *
+ * 2026-08-15: hand-rolled SVG sparkline -> Tremor/Recharts AreaChart.
+ * 2026-08-29: Tremor -> TradingView's lightweight-charts, for real zoom/pan
+ * on both axes (Tremor has none — see chartBase.tsx for the full rationale).
+ *
+ * The external contract is unchanged apart from ONE additive, optional field
+ * on Point (`date`, the real ISO day), so every caller still works untouched:
+ * the Sales page's "Net sales by day", Network's SalesSection, the
+ * Workspace's SalesTrendChart, and the Phase 8 store/week drilldown panels.
+ * `date` is optional precisely so a caller that doesn't supply it degrades to
+ * evenly-spaced synthetic days rather than breaking (see timeAxisFor).
+ *
+ * Interaction: wheel over the plot zooms the date axis, drag inside the plot
+ * pans, dragging the bottom time axis zooms X alone, dragging the right price
+ * axis zooms Y alone, and the reset button returns to the full range.
  */
-type Point = { label: string; value: number };
+export type Point = { label: string; value: number; date?: string };
 
-const inr = (v: number) => `₹${Math.round(v).toLocaleString("en-IN")}`;
+function seriesColors(p: ChartPalette) {
+  return {
+    // 2026-08-23 monochrome pass, carried over: this is a SINGLE-series
+    // chart, so colour here is decoration, not meaning. --ink-3 exactly (the
+    // real computed token now, no longer Tremor's approximate "zinc"), with a
+    // faint fill. Semantic red/green stays on deltas and badges.
+    lineColor: p.ink3,
+    topColor: `${p.ink3}33`,
+    bottomColor: `${p.ink3}05`,
+    lineWidth: 2 as const,
+    priceLineVisible: false,
+    lastValueVisible: false,
+    priceFormat: INR_PRICE_FORMAT,
+  };
+}
 
 export function TrendChart({ points, ariaLabel }: { points: Point[]; ariaLabel: string }) {
-  const data = points.map((p) => ({ date: p.label, "Net sales": p.value }));
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const seriesRef = useRef<ISeriesApi<"Area"> | null>(null);
+  const labelsRef = useRef<Map<string, string>>(new Map());
+  const fittedRef = useRef<string | null>(null);
+  const themeVersion = useThemeVersion();
+  const [tip, setTip] = useState<{ x: number; y: number; title: string; value: number } | null>(null);
+
+  const times = useMemo(() => timeAxisFor(points), [points]);
+  const data = useMemo(
+    () => points.map((p, i) => ({ time: times[i] as Time, value: p.value })),
+    [points, times]
+  );
+  // Tooltip titles keep the caller's own display label (e.g. "15 Aug"), which
+  // is why the label field survives alongside the new date field.
+  labelsRef.current = new Map(times.map((t, i) => [t, points[i]?.label ?? t]));
+
+  const domainKey = times.length ? `${times[0]}|${times[times.length - 1]}|${times.length}` : "";
+
+  // Create once. Never re-created on data or theme change — recreating would
+  // throw away the user's current zoom/pan, which is the entire feature.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const palette = readChartPalette();
+    const chart = createChart(el, chartBaseOptions(palette));
+    const series = chart.addSeries(AreaSeries, seriesColors(palette));
+    chartRef.current = chart;
+    seriesRef.current = series;
+
+    const onMove = (param: MouseEventParams) => {
+      if (!param.time || !param.point || param.point.x < 0 || param.point.y < 0) {
+        setTip(null);
+        return;
+      }
+      const d = param.seriesData.get(series) as { value?: number } | undefined;
+      if (!d || typeof d.value !== "number") {
+        setTip(null);
+        return;
+      }
+      const key = String(param.time);
+      setTip({ x: param.point.x, y: param.point.y, title: labelsRef.current.get(key) ?? key, value: d.value });
+    };
+    chart.subscribeCrosshairMove(onMove);
+
+    return () => {
+      chart.unsubscribeCrosshairMove(onMove);
+      chart.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+      fittedRef.current = null;
+    };
+  }, []);
+
+  // Data updates patch the existing series. fitContent only when the date
+  // domain itself changed (grain toggle, new filter/date range) — a refresh
+  // that only moves the values leaves the user's zoom exactly where it was.
+  useEffect(() => {
+    const chart = chartRef.current;
+    const series = seriesRef.current;
+    if (!chart || !series) return;
+    series.setData(data);
+    if (fittedRef.current !== domainKey) {
+      fittedRef.current = domainKey;
+      chart.timeScale().fitContent();
+    }
+  }, [data, domainKey]);
+
+  // Theme toggle: re-read the live CSS custom properties and patch options.
+  useEffect(() => {
+    const chart = chartRef.current;
+    const series = seriesRef.current;
+    if (!chart || !series) return;
+    const palette = readChartPalette();
+    chart.applyOptions(chartBaseOptions(palette));
+    series.applyOptions(seriesColors(palette));
+  }, [themeVersion]);
+
+  const reset = () => {
+    chartRef.current?.timeScale().fitContent();
+    chartRef.current?.priceScale("right").applyOptions({ autoScale: true });
+  };
 
   return (
-    <div role="img" aria-label={ariaLabel}>
-      <AreaChart
-        className="h-40"
-        data={data}
-        index="date"
-        categories={["Net sales"]}
-        // 2026-08-23 monochrome pass: was "emerald". This is a SINGLE-series
-        // chart, so its colour was arbitrary decoration, not semantic — grey
-        // is correct on an achromatic shell. Tremor's own palette names are
-        // the only thing accepted here (see tailwind.config.ts's safelist);
-        // "zinc" is the closest match to this app's --ink-3 (#76767d vs
-        // zinc-500 #71717a). Semantic red/green stays on deltas and badges.
-        colors={["zinc"]}
-        valueFormatter={inr}
-        showLegend={false}
-        showAnimation
-        curveType="monotone"
-        yAxisWidth={56}
-      />
+    <div role="group" aria-label={ariaLabel} className="relative">
+      <ChartSrSummary ariaLabel={ariaLabel} rows={points.map((p) => `${p.label}: ${inr(p.value)}`)} />
+      <ResetZoomButton onClick={reset} />
+      <div ref={containerRef} className="h-40 w-full" aria-hidden />
+      {tip && (
+        <ChartTooltip
+          x={tip.x}
+          y={tip.y}
+          width={containerRef.current?.clientWidth ?? 0}
+          title={tip.title}
+          rows={[{ value: tip.value }]}
+        />
+      )}
     </div>
   );
 }
