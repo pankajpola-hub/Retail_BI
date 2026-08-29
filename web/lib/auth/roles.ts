@@ -119,9 +119,26 @@ const resolveCallerStoreIds = cache(async (): Promise<string[]> => {
 
 // Same pattern as resolveCallerStoreIds, for core.fn_user_business_units()
 // (0061_business_unit.sql).
+//
+// error is checked explicitly and NOT folded into `data ?? []` (2026-08-28
+// fix) — the original code treated an RPC failure identically to "confirmed
+// zero grants," which is a real bug once ANY page's business-unit gate is an
+// array requiring "at least one of several" (see PAGE_BUSINESS_UNIT.sales):
+// a transient failure (reported live as "denied Sales access when multiple
+// tabs are open" — a plausible symptom of a Supabase auth-token-refresh race
+// across tabs sharing the same session) silently produced a hard deny for a
+// user who actually holds every business unit. Failing OPEN on a genuine
+// error (not on legitimately-empty data) matches this file's own established
+// posture for exactly this class of check — see checkPermitGate's header:
+// this gate is UX convenience layered on top of RLS + core.fn_user_store_ids(),
+// which remains the real security boundary and is unaffected either way.
 const resolveCallerBusinessUnits = cache(async (): Promise<BusinessUnit[]> => {
   const supabase = await createClient();
-  const { data } = await supabase.schema("core").rpc<BusinessUnit[]>("fn_user_business_units");
+  const { data, error } = await supabase.schema("core").rpc<BusinessUnit[]>("fn_user_business_units");
+  if (error) {
+    console.warn("[auth] fn_user_business_units RPC failed — failing open (all business units) rather than silently denying", error);
+    return ["retail", "ecomm"];
+  }
   return data ?? [];
 });
 
