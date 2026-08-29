@@ -70,7 +70,35 @@ later enhancement. Until then the CSV seed (0098_seed) is the source for tax exc
    `recon_lines` to live-derived data.
 3. `npm install` in `web/`, review, merge, deploy.
 
-## Not done here (intentionally)
+## Tax + packet enrichment (added)
 
-- Did not run any migration against the live DB or deploy (your call).
-- REST-feed enrichment for GST/packet in the live path is left as a follow-up.
+Fills the GST breakdown + packet-id that the SOAP feed can't, via REST saleorder/get.
+
+- `web/lib/uniware/client.ts` — `getSaleOrderTaxDetail(code)` (additive export, reuses restCall).
+- `web/app/api/recon/enrich-tax/route.ts` — cron-auth-gated, capped-per-run; maps recon
+  order_codes → Uniware internal code, fetches tax, updates recon_lines, upgrades clean
+  cancelled lines to CANCELLED_WITH_TAX.
+- **UNVERIFIED against live Uniware** — the display→internal-code mapping and REST field
+  names are from Unicommerce docs, not a confirmed run. Run once with the default cap (25)
+  and eyeball the result before scheduling it.
+
+## Go-live (your steps — needs prod DB + deploy access I don't have)
+
+1. **PR:** open it at
+   https://github.com/pankajpola-hub/Retail_BI/pull/new/feat/marketplace-recon
+   (branch is pushed). Review the diff.
+2. **Migrations** against the live Postgres, in order:
+   `0098_marketplace_recon.sql` → `0098_marketplace_recon_seed.sql` → `0099_recon_refresh_from_uniware.sql`
+   (each seed/refresh file ends with `NOTIFY pgrst, 'reload schema';`).
+3. **Merge** the PR to master → Vercel deploys (GitHub integration), or `vercel --prod`.
+4. **Live data:** once raw_uniware is current, GET `/api/recon/refresh` (with the cron auth
+   header) to switch recon_lines to live-derived; then GET `/api/recon/enrich-tax` a few
+   times to backfill GST/packet.
+
+## Not done here (deliberately — production safety)
+
+- Did **not** run migrations against the live DB (no credentials; irreversible on live
+  financial data — your action).
+- Did **not** merge to master or deploy (10 concurrent worktrees on master → this belongs
+  in a reviewed PR, not a unilateral push to master).
+- The enrichment path is code-complete but untested against live Uniware.
