@@ -377,6 +377,33 @@ with `role="group"` + an sr-only per-point text summary — a deliberate, reason
 (a zoomable/pannable canvas isn't an image, and `role="img"` never exposed the numbers either).
 Pushed, worktree/branch deleted.
 
+### 2026-08-28 — "Electro" theme (opt-in, black + neon green, all pages) — LAUNCHED, not yet merged
+
+User showed a fintech-dashboard reference screenshot (near-black background, neon/lime green
+line chart, glow accents) and asked for it as a third, OPT-IN theme (Light stays default) across
+the whole app, with subtle hover "pop"/glow animations. Scoped after a suggestion pass: agreed
+to keep it opt-in (not default) and to NOT apply glow effects inside data-dense areas (AG Grid
+rows) — chrome/buttons/nav only, to protect table readability.
+
+Agent `aabddb78924e89f0f`, isolated worktree, single agent (not parallel — this is one cohesive
+design decision, splitting risks two agents picking incoherent colors). Extends the existing
+light/dark token system in `globals.css` (`:root[data-theme="electro"]`), widens `ThemeToggle.tsx`
+from a binary toggle to a 3-way picker (Light/Dark/Electro — a single-click cycle would be bad UX
+for a novelty option most users won't want), adds a third `electroGridTheme` to `DataGrid.tsx`
+(AG Grid needs hand-pinned hex per theme, can't read CSS vars), and glow-on-hover CSS scoped only
+to `[data-theme="electro"]`, respecting `prefers-reduced-motion`. `chartBase.tsx` (the new
+lightweight-charts plumbing) reads its palette live off CSS vars already, so it should pick up
+Electro for free — agent told to verify this rather than assume it.
+
+Told explicitly: semantic `--good`/`--warn`/`--crit` must stay visually distinct from the new
+green ACCENT color (a real correctness concern — a "good" delta badge can't look identical to
+decorative chrome), and to actually load the app in a browser and screenshot/describe what it
+looks like rather than claim visual verification from code alone.
+
+**When it reports back**: review the diff (especially confirm light/dark are byte-identical to
+before via `git diff` on the existing `:root`/`:root[data-theme="dark"]` blocks — this must be
+purely additive), merge to `master`, `tsc --noEmit` + `next build`, delete worktree/branch.
+
 ## Next steps (in order)
 
 1. Wait for the 5 in-flight agents to report back (background notifications will arrive).
