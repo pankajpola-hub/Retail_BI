@@ -47,8 +47,30 @@ order line (search + filter + "only exceptions").
   Myntra, ~0% elsewhere); cancelled-with-tax is the dominant exception (₹16.9k);
   HSN missing on 41% of lines; TCS column entirely empty.
 
+## Live sync (added)
+
+`recon_lines` can now be rebuilt from the **already-synced** `raw_uniware.*` tables
+(the uniware-sync cron keeps those current) — no second Uniware call.
+
+- `server/db/migrations/0099_recon_refresh_from_uniware.sql` — `ops.refresh_recon_from_uniware()`
+  re-derives `recon_lines` from `raw_uniware.sale_order_items` ⋈ `sale_orders` in one SQL pass.
+- `web/app/api/recon/refresh/route.ts` — cron-auth-gated GET that calls the function
+  (schedule it right after uniware-sync, or hit it manually).
+
+**Honest limitation:** `raw_uniware` carries mrp/selling/total/discount/hsn/status but
+**not** GST or packet id (the SOAP feed omits them). So the live refresh computes the
+arithmetic exceptions (price mismatch, selling>MRP) + hsn completeness, but not the
+tax-based ones. Those need the REST `saleorder/get` feed (`totalCentralGst` …) — a
+later enhancement. Until then the CSV seed (0098_seed) is the source for tax exceptions.
+
+## Sequence to go live
+
+1. Run migrations `0098` → `0098_seed` → `0099` (seed gives an immediate snapshot).
+2. Once `raw_uniware` has data, hit `/api/recon/refresh` (or schedule it) to switch
+   `recon_lines` to live-derived data.
+3. `npm install` in `web/`, review, merge, deploy.
+
 ## Not done here (intentionally)
 
-- Did not commit/push — working tree is ready for your review.
-- Did not run the migration against the live DB or deploy (your call).
-- Did not wire live Uniware sync into the recon table yet (seed is the current source).
+- Did not run any migration against the live DB or deploy (your call).
+- REST-feed enrichment for GST/packet in the live path is left as a follow-up.
