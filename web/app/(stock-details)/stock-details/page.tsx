@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/data/client";
 import type { DataClient } from "@/lib/data/client";
 import { requirePageAccess } from "@/lib/auth/roles";
+import { ownStores } from "@/lib/scope/ownStores";
 import { MultiSelectFilter } from "@/components/ui/StoreFilter";
 import { CapacityEditorCard } from "./capacity-editor";
 import { resolveAccess } from "@/lib/auth/access";
@@ -319,7 +320,17 @@ export default async function StockDetailsPage({
     .order("store_id");
   // Inactive stores (core.stores.is_active = false) are kept visible only on
   // /network for historical reference, hidden from every other store filter.
-  const storeList = (storesData ?? []).filter((s) => s.is_active);
+  //
+  // ownStores(): core.stores has no RLS (lib/scope/ownStores.ts). The stock
+  // FIGURES here were already scoped — this page reads
+  // sales.vw_stock_with_scheme_SCOPED (the variant carrying the
+  // store_id = any(core.fn_user_store_ids()) predicate, not the unscoped
+  // vw_stock_with_scheme the Movement allocator needs) — but storeList also
+  // drives the MultiSelectFilter below AND `storesInView`, which is
+  // `storeList` itself when no filter is picked. So every section's
+  // per-store iteration ran over the whole company roster, rendering empty
+  // rows for other people's branches by name.
+  const storeList = ownStores(storesData, user.storeIds).filter((s) => s.is_active);
 
   const storeLabels = Object.fromEntries(storeList.map((s) => [s.store_id, s.store_name]));
   const selectedStoreIds = (searchParams.store ?? "")

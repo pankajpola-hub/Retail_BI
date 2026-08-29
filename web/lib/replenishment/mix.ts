@@ -2,6 +2,7 @@ import "server-only";
 import { fetchAllRows } from "@/lib/data/client";
 import type { DataClient } from "@/lib/data/client";
 import { classifyMixGap, MIX_STATUS_META, type MixStatus } from "./mixShared";
+import { resolveCallerStoreScope } from "@/lib/scope/callerStoreScope";
 
 // Sale Mix vs Stock Mix — Style No. + Color level. Answers: "is the way
 // stock is currently distributed aligned with how customers are actually
@@ -105,7 +106,11 @@ export async function computeSaleStockMix(
   // stores/stock/sale are independent — stores is only used AFTER all three
   // resolve (grouping), never as an input filter here. Genuinely parallel;
   // stock and sale each page internally via fetchAllRows above.
-  const [{ data: storesData }, stockRows, saleRows] = await Promise.all([
+  // callerStoreScope joins as a fourth independent query — it is not an
+  // input filter to the stock/sale reads (those stay network-wide by
+  // design, see ./scope.ts), only to which stores may contribute to the
+  // rollup below.
+  const [{ data: storesData }, stockRows, saleRows, callerStoreScope] = await Promise.all([
     supabase
       .schema("core")
       .from<StoreRow>("stores")
@@ -143,12 +148,33 @@ export async function computeSaleStockMix(
         .order("bill_date", { ascending: true })
         .order("bill_type", { ascending: true })
     ),
+    resolveCallerStoreScope(supabase),
   ]);
   // Inactive stores (core.stores.is_active = false, e.g. discontinued or
   // not-yet-operational branches — see 0091_bo002_bo004_stores.sql) are
   // excluded from every per-store view the same way, this app-wide.
   const storeList = (storesData ?? []).filter((s) => s.is_active);
   const storeBranchToId = new Map(storeList.map((s) => [s.branch_name_erp, s.store_id]));
+
+  // --- Store-scope boundary, applied to the two aggregation loops below
+  // rather than to a returned row array (unlike compute.ts, whose rows carry
+  // a storeId; MixRow/MixItemRow are already a store-agnostic ROLLUP, so by
+  // the time rows exist the store attribution is gone and there is nothing
+  // left to filter). Narrowing which stores may contribute to the rollup is
+  // the same boundary, imposed one step earlier.
+  //
+  // `storeId` is the user-supplied ?mix_store= param. It is now intersected
+  // with the caller's grants instead of trusted: an ungranted store id
+  // yields an empty scope (no contributing stores, so zero rows) rather than
+  // that store's real mix. Empty `storeId` means "All stores", which now
+  // means all of the CALLER'S stores — for a single-store user that is
+  // numerically identical to picking their own store, which is the point.
+  //
+  // Warehouse stock (the `!rowStoreId` branch below) stays network-wide: it
+  // is one shared pool, attributed to no store, and feeds the section-8
+  // availability check rather than the mix percentages.
+  const callerStores = storeList.map((s) => s.store_id).filter((id) => callerStoreScope.has(id));
+  const scopeStoreIds = new Set(storeId ? callerStores.filter((id) => id === storeId) : callerStores);
 
   // Same style+color grain as Replenishment (lib/replenishment/compute.ts) —
   // never combine colors of the same style (section 1 of the spec). Also
@@ -227,7 +253,7 @@ export async function computeSaleStockMix(
       warehouseByItem.set(r.item_code, (warehouseByItem.get(r.item_code) ?? 0) + Number(r.closing_stock));
       continue;
     }
-    if (storeId && rowStoreId !== storeId) continue;
+    if (!scopeStoreIds.has(rowStoreId)) continue;
     const cur = stockByKey.get(key) ?? { styleNo, color, qty: 0 };
     cur.qty += Number(r.closing_stock);
     stockByKey.set(key, cur);
@@ -244,7 +270,7 @@ export async function computeSaleStockMix(
     if (!r.branch_name) continue;
     const rowStoreId = storeBranchToId.get(r.branch_name);
     if (!rowStoreId) continue; // warehouse/office channel rows aren't store demand
-    if (storeId && rowStoreId !== storeId) continue;
+    if (!scopeStoreIds.has(rowStoreId)) continue;
     // OTHER bill types (neither SALE nor RETURN) aren't store demand.
     if (r.bill_type !== "SALE" && r.bill_type !== "RETURN") continue;
     const { key, styleNo, color } = styleColorKeyOf(r.item_code);
@@ -322,5 +348,16 @@ export async function computeSaleStockMix(
     });
   }
 
-  return { storeList, rows, itemRows, totalSales, totalStock };
+  // storeList is what the tab's Store <select> renders. Narrowed to the
+  // caller's own grants so the control cannot offer a store whose data the
+  // scope boundary above would then refuse to show — same reason
+  // compute.ts filters its own storeList. totalSales/totalStock need no
+  // filtering: they are sums of the already-scoped maps above.
+  return {
+    storeList: storeList.filter((s) => callerStoreScope.has(s.store_id)),
+    rows,
+    itemRows,
+    totalSales,
+    totalStock,
+  };
 }

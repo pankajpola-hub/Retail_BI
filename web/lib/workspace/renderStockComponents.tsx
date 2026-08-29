@@ -1,4 +1,5 @@
 import type { DataClient } from "@/lib/data/client";
+import { resolveCallerStoreScope } from "@/lib/scope/callerStoreScope";
 import { CapacityEditorCard } from "@/app/(stock-details)/stock-details/capacity-editor";
 import { StockVsCapacityGrid } from "@/app/(stock-details)/stock-details/StockVsCapacityGrid";
 import {
@@ -59,7 +60,25 @@ export async function fetchStockComponentData(scope: StockComponentScope): Promi
     .order("store_id");
   // Single source of truth for store exclusion is core.stores.is_active —
   // see 0091_bo002_bo004_stores.sql.
-  const storeList = (storesData ?? []).filter((s) => s.is_active);
+  //
+  // Two DIFFERENT store filters, and conflating them was a leak:
+  //   - `storeIds` is the saved WORKSPACE FILTER's selection (what the
+  //     viewer chose to look at). It is legitimately empty for "no filter".
+  //   - `callerStoreScope` is the viewer's GRANTS (core.fn_user_store_ids()).
+  //     Never empty-means-everything.
+  // core.stores has no RLS (see lib/scope/ownStores.ts), so `storeList` is
+  // the whole company roster; with 0 or >1 stores in the workspace filter,
+  // `storesInScope` fell back to that entire roster. The stock numbers were
+  // safe (vw_stock_with_scheme_SCOPED returns nothing for other branches),
+  // but buildCapacityGridRows below renders one row per store in scope from
+  // ops.stock_display_capacity — whose RLS policy is a bare `true`, i.e.
+  // every store's configured display capacity is readable by anyone. So the
+  // capacity grid listed other branches BY NAME with their real base
+  // capacity / buffer / fresh-% settings next to a zeroed stock matrix.
+  // Intersecting the roster with the caller's grants first closes that; the
+  // workspace filter then narrows within it, as it always did.
+  const callerStoreScope = await resolveCallerStoreScope(supabase);
+  const storeList = (storesData ?? []).filter((s) => s.is_active && callerStoreScope.has(s.store_id));
   const storesInScope = storeIds.length > 0 ? storeList.filter((s) => storeIds.includes(s.store_id)) : storeList;
 
   // No date range — current stock is a point-in-time snapshot, same as

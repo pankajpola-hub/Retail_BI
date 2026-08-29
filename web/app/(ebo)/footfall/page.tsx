@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/data/client";
 import { requirePageAccess } from "@/lib/auth/roles";
+import { ownStores } from "@/lib/scope/ownStores";
 import { getDict } from "@/lib/i18n/server";
 import { StoreFilter } from "@/components/ui/StoreFilter";
 import { DateRangePicker } from "@/components/ui/DateRangePicker";
@@ -89,11 +90,19 @@ export default async function FootfallPage({
   const footfallTotal = enteredDays.reduce((s, r) => s + Number(r.footfall ?? 0), 0);
   const footfallAvg = enteredDays.length > 0 ? Math.round(footfallTotal / enteredDays.length) : null;
 
-  // core.stores is RLS-filtered to the caller's permitted stores already,
-  // so this list can't offer a store they aren't allowed to write to.
+  // CORRECTION (verified live 2026-08-29): this comment used to claim
+  // "core.stores is RLS-filtered to the caller's permitted stores already,
+  // so this list can't offer a store they aren't allowed to write to." That
+  // is false — core.stores has relrowsecurity=false and zero policies, and
+  // SELECT on it is granted to `authenticated`. The list DID offer every
+  // branch in the company. ownStores() imposes the boundary the comment
+  // assumed; see lib/scope/ownStores.ts. (No write was ever possible to
+  // another store — storeId above is validated against user.storeIds, and
+  // ops.ebo_footfall_daily's own RLS is the real backstop — but the picker
+  // disclosed the roster and any selection silently snapped back.)
   // Inactive stores (core.stores.is_active = false) are kept visible only on
   // /network for historical reference, hidden here.
-  const selectableStores = (stores ?? []).filter((s) => s.is_active);
+  const selectableStores = ownStores(stores, user.storeIds).filter((s) => s.is_active);
 
   return (
     <main className="py-6">

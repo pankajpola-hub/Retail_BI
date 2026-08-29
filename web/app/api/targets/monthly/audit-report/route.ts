@@ -117,8 +117,27 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  // Membership check against the caller's OWN grants, not merely "is this a
+  // real store id". ALLOWED_ROLES above includes regional_manager, which
+  // (unlike ho_admin/super_admin) gets only its explicit
+  // core.user_store_access rows from core.fn_user_store_ids() — and
+  // core.stores itself has no RLS (lib/scope/ownStores.ts), so `stores`
+  // above is the whole company roster and this lookup alone accepted any
+  // store id in the business.
+  //
+  // No FIGURES leaked without this: the report body reads
+  // ops.vw_monthly_fresh_disc_audit_lines, which is security_invoker and
+  // built on sales.vw_ebo_sales_lines, so its
+  // store_id = any(core.fn_user_store_ids()) predicate already returned
+  // zero rows for an ungranted store. What leaked was the store NAME (this
+  // route writes it into the sheet's header and the filename) plus a
+  // plausible-looking all-zeros report attributed to another branch.
+  // Refusing outright is both safer and more truthful than exporting that.
+  // Matches the check web/app/api/footfall/download/route.ts:71 already
+  // does for the same class of param.
+  const { data: allowedStoreIds } = await supabase.schema("core").rpc<string[]>("fn_user_store_ids");
   const store = stores?.find((s) => s.store_id === storeId);
-  if (!store) {
+  if (!store || !(allowedStoreIds ?? []).includes(storeId)) {
     return NextResponse.json({ ok: false, error: { code: "unknown_store", message: "Unknown store." } }, { status: 400 });
   }
 

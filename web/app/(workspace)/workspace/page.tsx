@@ -1,4 +1,5 @@
 import { requirePageAccess, PAGE_ROLE_DEFAULTS } from "@/lib/auth/roles";
+import { ownStores } from "@/lib/scope/ownStores";
 import { createClient } from "@/lib/data/client";
 import {
   getOrCreateDefaultWorkspace,
@@ -65,7 +66,12 @@ export default async function WorkspacePage({
   const snapshot = requestedSnapshot ?? (await getOrCreateDefaultWorkspace());
   // Single source of truth for store exclusion is core.stores.is_active —
   // see 0091_bo002_bo004_stores.sql.
-  const storeList = (storesData ?? []).filter((s) => s.is_active);
+  //
+  // ownStores(): core.stores has no RLS (lib/scope/ownStores.ts). storeList
+  // populates the workspace's own `store` dimension filter — the control a
+  // saved workspace uses to pin components to a store — so leaving it at
+  // the full roster offered dimension values outside the viewer's grants.
+  const storeList = ownStores(storesData, user.storeIds).filter((s) => s.is_active);
   const storeNames = new Map(storeList.map((s) => [s.store_id, s.store_name]));
 
   const { workspace, components, filters } = snapshot;

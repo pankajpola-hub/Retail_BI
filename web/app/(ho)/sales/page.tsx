@@ -5,6 +5,7 @@ import { createClient, fetchAllRows } from "@/lib/data/client";
 import type { QueryChain } from "@/lib/data/client";
 import { requirePageAccess } from "@/lib/auth/roles";
 import { resolveViewScope, type VerticalKey } from "@/lib/scope/resolveViewScope";
+import { ownStores } from "@/lib/scope/ownStores";
 import { ScopeBar } from "@/components/ui/ScopeBar";
 import { KpiCard } from "@/components/ui/KpiCard";
 import { TrendChart } from "@/components/ui/TrendChart";
@@ -1195,7 +1196,16 @@ export default async function SalesPage({
   const allChannels = [...new Set((channelRowsRaw ?? []).map((r) => r.channel).filter(Boolean))];
   // Single source of truth for store exclusion is core.stores.is_active —
   // see 0091_bo002_bo004_stores.sql.
-  const activeStores = (stores ?? []).filter((s) => s.is_active);
+  //
+  // ownStores(): core.stores has no RLS (lib/scope/ownStores.ts), so this
+  // fed the store picker below the company's entire branch roster. The
+  // FIGURES on this page were never affected — every query above reads the
+  // sales.vw_ebo_*/ops.vw_ebo_* chain, whose scoping predicate
+  // (store_id = any(core.fn_user_store_ids()), rooted in
+  // sales.vw_ebo_sales_lines) applyStore() can only narrow further, never
+  // widen. This narrows the CONTROL to match the data, so "all stores" in
+  // the scope summary means "all stores you hold" in the picker too.
+  const activeStores = ownStores(stores, user.storeIds).filter((s) => s.is_active);
   const storeNames = new Map(activeStores.map((s) => [s.store_id, s.store_name]));
 
   // Plain-language restatement of the active scope — "which numbers am I
