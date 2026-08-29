@@ -205,9 +205,10 @@ async function ReplenishmentContent({
       sales30d: a.sales30d + r.sales30d,
       dailyDemand: a.dailyDemand + r.dailyDemand,
       soh: a.soh + r.soh,
+      whSoh: a.whSoh + r.warehouseAvailable,
       recommendedQty: a.recommendedQty + r.recommendedQty,
     }),
-    { sales30d: 0, dailyDemand: 0, soh: 0, recommendedQty: 0 }
+    { sales30d: 0, dailyDemand: 0, soh: 0, whSoh: 0, recommendedQty: 0 }
   );
   const top10CoverDays =
     top10Totals.dailyDemand > 0 ? top10Totals.soh / top10Totals.dailyDemand : top10Totals.soh > 0 ? null : 0;
@@ -249,6 +250,9 @@ async function ReplenishmentContent({
                   <th className="px-2 py-1.5 text-right">Sales 30D</th>
                   <th className="px-2 py-1.5 text-right">Velocity</th>
                   <th className="px-2 py-1.5 text-right">SOH</th>
+                  <th className="px-2 py-1.5 text-right" title="Network warehouse stock available for this style-color — whether the recommended move can actually be fulfilled.">
+                    WH SOH
+                  </th>
                   <th className="px-2 py-1.5 text-right">Cover</th>
                   <th className="px-2 py-1.5">Trend</th>
                   <th className="px-2 py-1.5 text-right">Recommended</th>
@@ -264,6 +268,18 @@ async function ReplenishmentContent({
                     <td className="px-2 py-1.5 text-right font-mono">{fmt(r.sales30d)}</td>
                     <td className="px-2 py-1.5 text-right font-mono">{fmt1(r.dailyDemand)}</td>
                     <td className="px-2 py-1.5 text-right font-mono">{fmt(r.soh)}</td>
+                    <td
+                      className={`px-2 py-1.5 text-right font-mono ${
+                        r.warehouseAvailable < r.recommendedQty ? "font-semibold text-crit" : ""
+                      }`}
+                      title={
+                        r.warehouseAvailable < r.recommendedQty
+                          ? `Only ${fmt(r.warehouseAvailable)} in warehouse — not enough to cover the recommended ${fmt(r.recommendedQty)} units`
+                          : undefined
+                      }
+                    >
+                      {fmt(r.warehouseAvailable)}
+                    </td>
                     <td className="px-2 py-1.5 text-right font-mono">{r.coverDays === null ? "—" : `${fmt1(r.coverDays)}d`}</td>
                     <td className={`px-2 py-1.5 ${r.trend ? TREND_META[r.trend].className : ""}`}>
                       {r.trend ? TREND_META[r.trend].label : "—"}
@@ -280,6 +296,7 @@ async function ReplenishmentContent({
                   <td className="px-2 py-1.5 text-right font-mono">{fmt(top10Totals.sales30d)}</td>
                   <td className="px-2 py-1.5 text-right font-mono">{fmt1(top10Totals.dailyDemand)}</td>
                   <td className="px-2 py-1.5 text-right font-mono">{fmt(top10Totals.soh)}</td>
+                  <td className="px-2 py-1.5 text-right font-mono">{fmt(top10Totals.whSoh)}</td>
                   <td className="px-2 py-1.5 text-right font-mono">
                     {top10CoverDays === null ? "—" : `${fmt1(top10CoverDays)}d`}
                   </td>
