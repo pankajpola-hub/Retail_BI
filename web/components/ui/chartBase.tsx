@@ -36,6 +36,20 @@ export type ChartPalette = {
   line: string;
   lineSoft: string;
   surface: string;
+  /**
+   * Optional override for the SERIES stroke only (not axes, grid or text).
+   * EMPTY STRING in light and dark — neither theme defines --chart-series, so
+   * every caller falls back to the muted ink it already used and those two
+   * themes render pixel-identically to before this token existed.
+   *
+   * The opt-in electro theme sets it to its neon accent, because a monochrome
+   * grey trend line is the one thing that made that theme read as "dark mode
+   * with a green button" rather than the trading-terminal reference it's
+   * modelled on. Deliberately a SEPARATE token rather than reusing --accent:
+   * --accent is near-black in light and near-white in dark, so binding the
+   * series to it would silently restyle the charts in both shipped themes.
+   */
+  series: string;
 };
 
 /**
@@ -53,6 +67,7 @@ const FALLBACK: ChartPalette = {
   line: "#d2d2d5",
   lineSoft: "#e6e6e8",
   surface: "#ffffff",
+  series: "",
 };
 
 export function readChartPalette(): ChartPalette {
@@ -66,6 +81,9 @@ export function readChartPalette(): ChartPalette {
     line: pick("--line", FALLBACK.line),
     lineSoft: pick("--line-soft", FALLBACK.lineSoft),
     surface: pick("--surface", FALLBACK.surface),
+    // No fallback hex on purpose — an unset custom property must stay empty
+    // so callers can do `p.series || p.ink3` and keep their old colour.
+    series: cs.getPropertyValue("--chart-series").trim(),
   };
 }
 

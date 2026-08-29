@@ -60,7 +60,10 @@ function currentColors(p: ChartPalette) {
   // Monochrome shell: the two series are told apart by the dash pattern and
   // the legend, not by hue.
   return {
-    color: p.ink2,
+    // Only the CURRENT series takes the electro neon; the comparison series
+    // below deliberately stays muted, so the two are still told apart by
+    // hue-weight as well as by the dash pattern. Inert in light/dark.
+    color: p.series || p.ink2,
     lineWidth: 2 as const,
     lineStyle: LineStyle.Solid,
     priceLineVisible: false,
