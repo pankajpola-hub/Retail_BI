@@ -334,7 +334,7 @@ of the merge commit:
    with its default cap (25 orders) and check the result before ever scheduling it as a cron.
 5. Full details in `RECON_HANDOFF.md` at the repo root (from the other session) and this section.
 
-### 2026-08-28 — professional zoomable charts (TradingView Lightweight Charts) — LAUNCHED, not yet merged
+### 2026-08-28 — professional zoomable charts (TradingView Lightweight Charts) — DONE, MERGED (`e0a790b`)
 
 User asked to make the Sales page's trend charts interactive like a stock-trading website (zoom on
 both X/date and Y/value axes), explicitly "no raw work, very professional." Researched options
@@ -365,11 +365,17 @@ if resuming, or just check its report when it lands):
   state on every filter change) — only `setData()` the existing series unless the axis shape
   itself changes.
 
-**When it reports back**: review the diff (especially confirm every caller of the 3 components
-still compiles, and that dark mode / INR formatting / the Comparison chart's dashed line and
-legend all look right), merge to `master`, `tsc --noEmit` + `next build`, delete worktree/branch.
-`lightweight-charts` needs adding to `package.json` (real new dependency, not already installed)
-— confirm `npm install` was run appropriately and note whatever node_modules state the agent left.
+**Result**: agent verified live in a real browser (not just tsc/build) — wheel zoom, drag-to-pan,
+independent X/Y drag-zoom via the time/price axes, reset button, dark-mode repaint, and a
+data-refresh-preserves-zoom test all confirmed working before it reported back. Merged cleanly
+(one new file `chartBase.tsx` shared by all three, `Point.date` widened as OPTIONAL so it degrades
+sanely for any future caller that doesn't supply it). `npm install` run in the main checkout after
+merge (lightweight-charts@5.2.1 + 1 transitive package added, `tsc --noEmit` + full `next build`
+both clean — `/sales`'s First Load JS actually DROPPED, 586kB → 525kB, since lightweight-charts'
+canvas approach is lighter than Tremor/Recharts for these three charts). `role="img"` replaced
+with `role="group"` + an sr-only per-point text summary — a deliberate, reasoned a11y improvement
+(a zoomable/pannable canvas isn't an image, and `role="img"` never exposed the numbers either).
+Pushed, worktree/branch deleted.
 
 ## Next steps (in order)
 
