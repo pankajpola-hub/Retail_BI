@@ -70,11 +70,18 @@ group by exception_code
 order by sum(exception_amount) desc;
 
 -- Match the grant pattern used by ops.erp_report_uploads (0022): read-only for
--- the app role, RLS on. The app reads server-side via the self-hosted client.
+-- the app role, RLS on, scoped by role rather than `using (true)`. Network-
+-- wide financial/exception data isn't store-scoped (there's no per-store
+-- concept in a marketplace order), so the boundary here is the same set of
+-- roles AppShell's nav gates /reconciliation behind (ho_admin, super_admin,
+-- marketing) — matching 0022's own core.fn_user_role() pattern rather than
+-- `using (true)`, which would let ANY authenticated user (including a
+-- single-store ebo_manager) read every channel's pricing/tax exceptions
+-- directly via PostgREST, bypassing the page's own role gate entirely.
 alter table ops.recon_lines enable row level security;
 
 create policy recon_lines_read on ops.recon_lines for select
-  using (true);
+  using (core.fn_user_role() in ('ho_admin', 'super_admin', 'marketing'));
 
 grant select on ops.recon_lines               to authenticated;
 grant select on ops.recon_channel_summary     to authenticated;

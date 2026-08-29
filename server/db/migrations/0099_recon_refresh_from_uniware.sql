@@ -73,7 +73,14 @@ begin
 end;
 $$;
 
-grant execute on function ops.refresh_recon_from_uniware() to authenticated, service_role;
+-- service_role only — api/recon/refresh's route (the only intended caller)
+-- already goes through createAdminClient(), and this SECURITY DEFINER
+-- function does an unconditional `delete from ops.recon_lines` + full
+-- rebuild with no row filter of its own. Granting to `authenticated` would
+-- let any signed-in user (any role, any store) trigger that network-wide
+-- rebuild directly via a PostgREST RPC call, bypassing the route's own
+-- cronAuthFailure() gate entirely.
+grant execute on function ops.refresh_recon_from_uniware() to service_role;
 
 -- Make the new function visible to PostgREST immediately.
 notify pgrst, 'reload schema';

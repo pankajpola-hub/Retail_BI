@@ -1,9 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
-import { AgGridReact } from "ag-grid-react";
 import type { ColDef } from "ag-grid-community";
-import "ag-grid-community/styles/ag-grid.css";
-import "ag-grid-community/styles/ag-theme-quartz.css";
+import { DataGrid } from "@/components/ui/DataGrid";
 import type { ReconLine } from "@/lib/recon/queries";
 
 const inr = (v: number | null) =>
@@ -34,10 +32,13 @@ export default function ReconGrid({ rows }: { rows: ReconLine[] }) {
         headerName: "Exception",
         filter: true,
         width: 190,
+        // App tokens (globals.css), theme-aware — not the CSS-file
+        // fallback colors ("--bad" doesn't exist in this app; the good/crit
+        // pair does and already flips for dark mode).
         cellStyle: (p) =>
           p.value === "CLEAN"
-            ? { color: "var(--good, #2f7d5d)", fontWeight: 400 }
-            : { color: "var(--bad, #a8402f)", fontWeight: 600 },
+            ? { color: "var(--good)", fontWeight: 400 }
+            : { color: "var(--crit)", fontWeight: 600 },
       },
       { field: "exception_severity", headerName: "Sev", filter: true, width: 100 },
       {
@@ -63,7 +64,7 @@ export default function ReconGrid({ rows }: { rows: ReconLine[] }) {
           placeholder="Search all columns…"
           value={quick}
           onChange={(e) => setQuick(e.target.value)}
-          className="min-w-[240px] rounded-md border border-border-strong bg-surface px-3 py-2 text-[13.5px] text-ink"
+          className="min-h-[36px] min-w-[240px] border border-line bg-surface px-3 py-1.5 text-[13px] text-ink"
         />
         <label className="flex items-center gap-2 text-[13px] text-ink-2">
           <input type="checkbox" checked={onlyExceptions} onChange={(e) => setOnlyExceptions(e.target.checked)} />
@@ -73,17 +74,17 @@ export default function ReconGrid({ rows }: { rows: ReconLine[] }) {
           {data.length.toLocaleString("en-IN")} rows
         </span>
       </div>
-      <div className="ag-theme-quartz" style={{ height: 620, width: "100%" }}>
-        <AgGridReact<ReconLine>
-          rowData={data}
-          columnDefs={columnDefs}
-          defaultColDef={defaultColDef}
-          quickFilterText={quick}
-          pagination
-          paginationPageSize={100}
-          animateRows
-        />
-      </div>
+      <DataGrid<ReconLine>
+        rowData={data}
+        columnDefs={columnDefs}
+        defaultColDef={defaultColDef}
+        quickFilterText={quick}
+        pagination
+        paginationPageSize={100}
+        animateRows
+        heightPx={620}
+        overlayNoRowsTemplate="No reconciliation lines match these filters."
+      />
     </div>
   );
 }
