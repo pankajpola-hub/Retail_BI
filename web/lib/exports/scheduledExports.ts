@@ -96,13 +96,34 @@ function bufferToXlsxFile(buffer: Buffer, filename: string): File {
 
 // ---------------------------------------------------------------------------
 // replenishment — same rows/columns as app/api/replenishment/download,
-// default assumptions (parseAssumptions() with no query params), unfiltered
-// (whole network, matching the "send me the whole report" default).
+// default assumptions (parseAssumptions() with no query params), scoped to
+// the stores the subscription's OWNER can see.
+//
+// This used to say "unfiltered (whole network, matching the 'send me the
+// whole report' default)" and took no ownerId at all — a real leak, found
+// 2026-08-29. It is not covered by the store-scope boundary
+// computeReplenishmentRows() now applies at its own return, and that is not
+// an oversight there but a property of this call site: that boundary reads
+// core.fn_user_store_ids(), whose FIRST branch returns *every* store in
+// core.stores when the caller's JWT role is `service_role` — which is
+// exactly what `admin` is here (an unattended cron has no end-user session;
+// see this file's header). So the one function that scopes every other
+// replenishment consumer is, by design, a no-op for this one.
+//
+// Fixed the same way buildFootfallCompletenessReport already did it:
+// resolveOwnerStoreIds() re-evaluates the same role/user_store_access rules
+// in TypeScript against an explicit owner_id. The computation stays
+// network-wide (the allocation engine still needs every store's stock to
+// decide transfers); only the rows written into the workbook are narrowed.
 // ---------------------------------------------------------------------------
-async function buildReplenishmentReport(admin: DataClient): Promise<{ buffer: Buffer; filename: string }> {
+async function buildReplenishmentReport(admin: DataClient, ownerId: string): Promise<{ buffer: Buffer; filename: string }> {
   const assumptions = parseAssumptions(new URLSearchParams());
-  const { rows } = await computeReplenishmentRows(admin, assumptions);
-  const sorted = [...rows].sort(
+  const [{ rows }, ownerStoreIds] = await Promise.all([
+    computeReplenishmentRows(admin, assumptions),
+    resolveOwnerStoreIds(admin, ownerId),
+  ]);
+  const ownerStores = new Set(ownerStoreIds);
+  const sorted = [...rows].filter((r) => ownerStores.has(r.storeId)).sort(
     (a, b) => PRIORITY_ORDER.indexOf(a.priority) - PRIORITY_ORDER.indexOf(b.priority) || b.score - a.score
   );
 
@@ -359,7 +380,7 @@ async function buildTargetsAuditReport(admin: DataClient, ownerId: string): Prom
 async function buildReport(admin: DataClient, row: ScheduledExportRow): Promise<{ buffer: Buffer; filename: string }> {
   switch (row.export_type) {
     case "replenishment":
-      return buildReplenishmentReport(admin);
+      return buildReplenishmentReport(admin, row.owner_id);
     case "footfall_completeness":
       return buildFootfallCompletenessReport(admin, row.owner_id);
     case "targets_audit":

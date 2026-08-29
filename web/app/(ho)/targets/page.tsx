@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/data/client";
 import type { DataClient } from "@/lib/data/client";
 import { requirePageAccess } from "@/lib/auth/roles";
+import { ownStores } from "@/lib/scope/ownStores";
 import { StoreFilter, MultiSelectFilter } from "@/components/ui/StoreFilter";
 import { MonthlyTargetForm } from "./monthly-target-form";
 import { BulkUploadForm } from "./bulk-upload-form";
@@ -373,7 +374,16 @@ export default async function TargetsPage({
     .order("store_id");
   // Inactive stores (core.stores.is_active = false) are kept visible only on
   // /network for historical reference, hidden from every other store filter.
-  const storeList = (stores ?? []).filter((s) => s.is_active);
+  //
+  // ownStores(): core.stores has no RLS (see lib/scope/ownStores.ts), so
+  // this list was previously every branch in the company. That mattered
+  // twice here — the Store picker below offered stores whose targets/tracker
+  // rows RLS then refused to return, AND `storeList[0]` below is this page's
+  // DEFAULT store, so a single-store user whose store isn't first in
+  // store_id order landed on someone else's store and saw an empty page.
+  // No change for ho_admin/super_admin: fn_user_store_ids() returns every
+  // store for them.
+  const storeList = ownStores(stores, user.storeIds).filter((s) => s.is_active);
 
   const storeId =
     searchParams.store && storeList.some((s) => s.store_id === searchParams.store)

@@ -1,6 +1,7 @@
 import "server-only";
 import { fetchAllRows } from "@/lib/data/client";
 import type { DataClient } from "@/lib/data/client";
+import { resolveCallerStoreScope } from "@/lib/scope/callerStoreScope";
 
 // `??` only replaces null/undefined, not "" — this app's ERP-sourced text
 // columns have, in the past, carried genuine empty strings rather than NULL
@@ -190,7 +191,14 @@ export async function computeReplenishmentRows(
   // Every branch (store AND warehouse) — warehouse rows are whatever branch
   // isn't a known store, not a hardcoded name, so a renamed or additional
   // warehouse branch doesn't silently disappear from this page.
-  const [{ data: storesData }, stockRows, saleRows] = await Promise.all([
+  //
+  // callerStoreScope joins this batch as a fourth independent query. It is
+  // NOT an input to any of the three below — the allocation engine still
+  // reads every store's stock and demand, exactly as before, because
+  // "should Store B send you 5 units" is unanswerable otherwise. It is
+  // applied once, at this function's `return`, to narrow the OUTPUT. See
+  // ./scope.ts for the full reasoning and for why it fails closed.
+  const [{ data: storesData }, stockRows, saleRows, callerStoreScope] = await Promise.all([
     supabase
       .schema("core")
       .from<StoreRow>("stores")
@@ -223,6 +231,7 @@ export async function computeReplenishmentRows(
         .order("bill_date", { ascending: true })
         .order("bill_type", { ascending: true })
     ),
+    resolveCallerStoreScope(supabase),
   ]);
   // Inactive stores (core.stores.is_active = false, e.g. discontinued or
   // not-yet-operational branches — see 0091_bo002_bo004_stores.sql) are
@@ -716,7 +725,35 @@ export async function computeReplenishmentRows(
     }
   }
 
-  return { storeList, rows, itemRows, totalWarehouseUnits };
+  // --- Store-scope boundary. Everything above this line is network-wide and
+  // must stay that way: the allocation loop reads every store's stock to
+  // decide who can donate to whom, and the transfer candidates it built are
+  // only correct because it could see all of them. Everything below is what
+  // a caller — and therefore a user — actually receives.
+  //
+  // A row is the caller's to see when the row's OWN store (the DESTINATION
+  // of the recommendation — Row/ReplItemRow are Style+Color+Store grain, one
+  // row per store that needs something) is a store they hold. A "transfer
+  // 5 units from Store B" recommendation whose subject store is theirs is
+  // exactly the actionable output this page exists to produce, so it stays,
+  // source store named and all; a row whose subject store is Store B's own
+  // shortfall is not theirs and is dropped entirely.
+  //
+  // totalWarehouseUnits is deliberately NOT filtered: it is the single
+  // shared warehouse pool every store draws from, attributed to no store by
+  // name, and is the same number for every viewer. Narrowing it would make
+  // the "Warehouse available" KPI wrong rather than more private.
+  //
+  // storeList IS filtered — it populates store pickers/facets, and offering
+  // a store a user cannot see is both a leak of the store roster's
+  // relevance and a control that produces an empty page when used.
+  const visible = (storeId: string) => callerStoreScope.has(storeId);
+  return {
+    storeList: storeList.filter((s) => visible(s.store_id)),
+    rows: rows.filter((r) => visible(r.storeId)),
+    itemRows: itemRows.filter((r) => visible(r.storeId)),
+    totalWarehouseUnits,
+  };
 }
 
 /** Same searchParams-parsing rules the page uses for the what-if assumption inputs — shared so the download route parses identically. */
