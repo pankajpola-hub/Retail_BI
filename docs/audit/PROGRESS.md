@@ -413,6 +413,53 @@ temporary `/sh-test` harness (built, checked, then deleted — confirmed gone fr
 combining DataGrid + TrendChart + buttons/pills together, plus an explicit Light/Dark regression
 pass. `tsc --noEmit` + full `next build` clean after merge. Pushed, worktree/branch deleted.
 
+### 2026-08-28 — Users page access control: "Network" toggle was dead, /sales had none — DONE, MERGED (`4e56c99`)
+
+User noticed the admin Users page's "Page rights" panel still showed "Network." Investigated
+directly (no agent, security-sensitive core auth code) rather than assuming a cosmetic fix:
+`/network` is a redirect stub since `/sales` replaced it, and the nav link bypasses it entirely
+(points straight at `/sales`) — so denying "Network" never actually restricted anything real.
+Worse: `/sales` itself used a plain `requireRole()` call, which ignores per-user overrides
+entirely — there was no way to deny one specific user Sales access at all.
+
+Confirmed by user: do the full fix, not just relabel. Renamed the permission/page key
+`"network"` → `"sales"` everywhere (TS + DB):
+- `lib/auth/permissions.ts` (canonical, no-server-only) updated.
+- `lib/auth/roles.ts` was re-declaring its OWN copy of `PageKey`/`PAGE_KEYS`/`PAGE_LABELS` —
+  already drifted (it said `replenishment: "Replenishment"`, permissions.ts said the current
+  correct "Movement") — now imports from `permissions.ts` instead of duplicating.
+- `page-access-button.tsx` was ALSO re-declaring its own union, stuck at 7 of the real 11 pages
+  (Movement/Workspace/Configurations/Ecomm had zero admin control) — same fix, now imports from
+  `permissions.ts` too. All three files can no longer independently drift from each other.
+- `sales/page.tsx`: `requireRole(...)` → `requirePageAccess("sales")`.
+- `network/page.tsx`: its own `requirePageAccess("network")` → `("sales")`.
+
+**The one real design decision**: `PAGE_BUSINESS_UNIT` used to be one `BusinessUnit` per page.
+Pinning `sales: "retail"` would have reintroduced the exact bug `/sales` was built to fix (an
+ecomm-only user denied the page showing their own vertical). Widened the type to accept an
+ARRAY ("any one of these"), `sales: ["retail","ecomm"]`, new shared `isBusinessUnitAllowed()`
+helper used by both `requirePageAccess()` and `AppShell`'s nav filter so they can't disagree.
+Every per-vertical narrowing INSIDE `/sales` (which of EBO/ECOM renders) is untouched —
+`resolveViewScope` still owns that.
+
+Also: `AppShell.tsx`'s `HREF_PAGE_KEY` used to deliberately exclude `/sales` for the
+single-business-unit reason above (no longer true) — added the entry, closing a real
+nav-vs-route-gate disagreement the file's own header already warned about. Deleted
+`components/ui/TopNav.tsx` — confirmed zero imports anywhere, fully superseded by `AppShell.tsx`.
+
+Migration `0100_rename_network_permission_to_sales.sql` renames the DB-side rows: 55 seeded
+`core.role_permissions` rows + 11 `core.feature_keys` registry rows. Checked
+`core.user_permission_overrides`/`core.user_page_overrides` first — zero live rows reference
+"network", nothing to lose; migration updates them defensively anyway. Idempotent.
+
+`tsc --noEmit` + full `next build` clean. Pushed (`4e56c99`).
+
+**Still needed, human action**: run migration 0100:
+```bash
+MSYS2_ARG_CONV_EXCL="*" PGPASSWORD='<pw>' "/d/Programs/pgsql/bin/psql.exe" -h aws-0-ap-southeast-1.pooler.supabase.com -p 5432 -U postgres.naukfqwjunorzntnzkok -d postgres -v ON_ERROR_STOP=1 -f "server/db/migrations/0100_rename_network_permission_to_sales.sql"
+```
+Then deploy — production is well behind master at this point, see the standing "Deploy" item.
+
 ## Next steps (in order)
 
 1. Wait for the 5 in-flight agents to report back (background notifications will arrive).
