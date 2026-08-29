@@ -334,6 +334,43 @@ of the merge commit:
    with its default cap (25 orders) and check the result before ever scheduling it as a cron.
 5. Full details in `RECON_HANDOFF.md` at the repo root (from the other session) and this section.
 
+### 2026-08-28 — professional zoomable charts (TradingView Lightweight Charts) — LAUNCHED, not yet merged
+
+User asked to make the Sales page's trend charts interactive like a stock-trading website (zoom on
+both X/date and Y/value axes), explicitly "no raw work, very professional." Researched options
+(WebSearch) — Tremor's `AreaChart`/`BarChart`/`LineChart` have NO zoom/pan support at all
+(confirmed via its `BaseChartProps` type). Picked **TradingView's own `lightweight-charts`**
+(npm, v5, open source, ~35KB, canvas, built-in zoom/pan/crosshair) over Apache ECharts — user
+confirmed.
+
+Agent `a9b85568de76e140a`, isolated worktree, converting 3 shared chart components from
+`@tremor/react` to `lightweight-charts` while preserving every existing prop contract (so
+`/sales`, `/network`, Workspace's SalesTrendChart, and a store-drilldown panel all keep working
+with zero caller changes): `TrendChart.tsx`, `HourlyBarChart.tsx`, `ComparisonTrendChart.tsx`.
+
+Non-obvious pieces the brief called out explicitly (read the brief in the agent's own transcript
+if resuming, or just check its report when it lands):
+- The real ISO date was being thrown away in `computeTrendPoints()` (`aggregate.ts`) — only a
+  display label ("15 Aug") was kept. lightweight-charts' time-scale needs a real chronological
+  value to zoom meaningfully, so the `Point` type needs an additive `date` field, sourced back
+  through `aggregate.ts` and wherever `ComparisonTrendChart`'s points are built in `sales/page.tsx`.
+- `HourlyBarChart`'s x-axis is hour-of-day (9am-11pm), not a calendar timeline — told to use a
+  synthetic UTC timestamp on an arbitrary reference day + a custom tick formatter, so zoom still
+  means something (e.g. zoom into just the afternoon peak) without lying about what the data is.
+- Dark mode: told to reuse `DataGrid.tsx`'s exact `MutationObserver`-on-`data-theme` pattern
+  rather than invent a new mechanism (lightweight-charts isn't theme-reactive on its own).
+- Told to WebFetch the current v5 docs rather than rely on remembered API shape — this library's
+  API changed meaningfully v4→v5 (`chart.addLineSeries()` → `chart.addSeries(LineSeries, opts)`).
+- Told NOT to recreate the whole chart on every data refresh (would reset the user's zoom/pan
+  state on every filter change) — only `setData()` the existing series unless the axis shape
+  itself changes.
+
+**When it reports back**: review the diff (especially confirm every caller of the 3 components
+still compiles, and that dark mode / INR formatting / the Comparison chart's dashed line and
+legend all look right), merge to `master`, `tsc --noEmit` + `next build`, delete worktree/branch.
+`lightweight-charts` needs adding to `package.json` (real new dependency, not already installed)
+— confirm `npm install` was run appropriately and note whatever node_modules state the agent left.
+
 ## Next steps (in order)
 
 1. Wait for the 5 in-flight agents to report back (background notifications will arrive).
