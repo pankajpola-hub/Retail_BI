@@ -42,6 +42,7 @@ export type Dict = {
   appName: string;
   navNetwork: string;
   navFootfall: string;
+  navReconciliation: string;
   navTargets: string;
   navUsers: string;
   navIntegrations: string;
@@ -147,6 +148,7 @@ const en: Dict = {
   appName: "EBO Sales Intelligence",
   navNetwork: "Sales",
   navFootfall: "Footfall",
+  navReconciliation: "Reconciliation",
   navTargets: "Targets",
   navUsers: "Users",
   navIntegrations: "Integrations",
@@ -250,6 +252,7 @@ const hi: Dict = {
   appName: "EBO Sales Intelligence",
   navNetwork: "Sales",
   navFootfall: "Footfall",
+  navReconciliation: "Reconciliation",
   navTargets: "Targets",
   navUsers: "Users",
   navIntegrations: "Integrations",
@@ -352,6 +355,7 @@ const mr: Dict = {
   appName: "EBO Sales Intelligence",
   navNetwork: "Sales",
   navFootfall: "Footfall",
+  navReconciliation: "Reconciliation",
   navTargets: "Targets",
   navUsers: "Users",
   navIntegrations: "Integrations",

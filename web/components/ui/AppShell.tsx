@@ -62,6 +62,8 @@ const NAV_LINKS: NavLink[] = [
   { href: "/stock-details", labelKey: "navStockDetails", icon: "stock", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Stock" },
   { href: "/movement", labelKey: "navMovement", icon: "replenishment", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Movement" },
   { href: "/footfall", labelKey: "navFootfall", icon: "footfall", roles: ["ebo_manager", "ho_admin", "super_admin"], group: "Overview" },
+  // Marketplace reconciliation (ecomm vertical) — gated like the ecomm pages.
+  { href: "/reconciliation", labelKey: "navReconciliation", icon: "ecomm", roles: ["ho_admin", "super_admin", "marketing"], group: "Overview" },
   { href: "/targets", labelKey: "navTargets", icon: "targets", roles: ["ho_admin", "super_admin"], group: "Overview" },
   { href: "/workspace", labelKey: "navWorkspace", icon: "workspace", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Workspace" },
   { href: "/users", labelKey: "navUsers", icon: "users", roles: ["super_admin"], group: "Admin" },
