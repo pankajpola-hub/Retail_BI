@@ -377,7 +377,7 @@ with `role="group"` + an sr-only per-point text summary — a deliberate, reason
 (a zoomable/pannable canvas isn't an image, and `role="img"` never exposed the numbers either).
 Pushed, worktree/branch deleted.
 
-### 2026-08-28 — "Electro" theme (opt-in, black + neon green, all pages) — LAUNCHED, not yet merged
+### 2026-08-28 — "Electro" theme (opt-in, black + neon green, all pages) — DONE, MERGED (`d9903ea`)
 
 User showed a fintech-dashboard reference screenshot (near-black background, neon/lime green
 line chart, glow accents) and asked for it as a third, OPT-IN theme (Light stays default) across
@@ -400,9 +400,18 @@ green ACCENT color (a real correctness concern — a "good" delta badge can't lo
 decorative chrome), and to actually load the app in a browser and screenshot/describe what it
 looks like rather than claim visual verification from code alone.
 
-**When it reports back**: review the diff (especially confirm light/dark are byte-identical to
-before via `git diff` on the existing `:root`/`:root[data-theme="dark"]` blocks — this must be
-purely additive), merge to `master`, `tsc --noEmit` + `next build`, delete worktree/branch.
+**Result**: accent `#a8ff3e` neon lime (hue ~85°), ground `#050706`. `--good` deliberately moved
+to cyan `#35d8e8` (hue ~187°) — the real correctness call, so a "good" delta badge can't visually
+collide with the now-green decorative accent; warn/crit pushed to 33°/5° for the same reason, all
+pairs ≥6.3:1 contrast. `ThemeToggle.tsx` rewritten as a 3-way Radix dropdown (new
+`dropdown-menu.tsx` wrapper — the dependency existed, unused); picking Light removes `data-theme`
+entirely rather than stamping "light" so every reader (no-flash script, DataGrid, chartBase) agrees
+on one representation. New `--chart-series` token (electro-only) fixes the trend-line color, which
+`chartBase.tsx` didn't pick up automatically. `git diff` confirmed **zero deletions** to
+`globals.css` — Light/Dark are provably byte-identical to before. Verified in a real browser via a
+temporary `/sh-test` harness (built, checked, then deleted — confirmed gone from `git status`)
+combining DataGrid + TrendChart + buttons/pills together, plus an explicit Light/Dark regression
+pass. `tsc --noEmit` + full `next build` clean after merge. Pushed, worktree/branch deleted.
 
 ## Next steps (in order)
 
