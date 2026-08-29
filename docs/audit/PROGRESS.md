@@ -245,6 +245,42 @@ Reason: these touch nearly every table file in the app, which would conflict wit
   review the 7 existing blind `eslint-disable` comments. Not attempted — needs an interactive
   session.
 
+### 2026-08-28 — user-reported bug: KPI correct but Period table + Store League empty on a mid-week range
+
+User uploaded a fresh single-day ERP export (28 Aug 2026, a Friday) and screenshotted `/sales`:
+KPI "Net Sales" card correctly showed ₹55,198 (verified byte-exact against the ERP file via
+direct SQL — see raw_logic.sales_transactions / vw_ebo_sales_daily both matching), but the
+"Sales value & quantity by period" table showed "0 rows / No periods match these filters" and
+Store League showed "No stores with sales in this window" — both completely empty for the same
+date.
+
+**Root cause found and fixed** (commit `3a6014b`): `computeSalesTotals()` in
+`web/lib/sales/aggregate.ts` filtered `weekRows` with `w.week_start >= from`. Retail weeks start
+Monday; 28 Aug's week starts Monday the 24th, so `'2026-08-24' >= '2026-08-28'` is false — the
+CURRENT week got dropped even though it overlaps the requested range. `storesInView` (which
+gates the period table, store league, AND agent-wise rows — all built via `page.tsx`'s
+`buildRows()`, which loops `storesInView.flatMap(...)`) is derived entirely from `weekRows`, so
+it went empty too. This breaks for ANY range not starting on a Monday — a single day, "last N
+days", most custom ranges — which is most everyday usage, not just this one date. Fixed by
+testing week-END (`week_start + 6 days`) against `from` instead — an overlap test, not a
+start-date test.
+
+**This is a DIFFERENT bug from the RETURN sign-convention fix** (`014b1c5`) — that one produced
+a wrong NUMBER; this one made rows vanish entirely. Both are now fixed. Not yet deployed to
+production — see "Still needed" below.
+
+Also fixed in the same commit: `AgentSalesFacetedTable.tsx`'s "Net" column (network page,
+reused by `/sales`) showed ₹60,447 against the KPI's ₹55,198 — off by exactly the returns value
+(₹5,249). Root cause: `sales.vw_ebo_agent_daily` is `WHERE bill_type = 'SALE'` BY DESIGN (a
+return isn't necessarily processed by the same agent as the original sale, so netting it there
+would misattribute it) — a legitimate, deliberate business choice, NOT a bug to silently
+"fix" by changing the number (same category of decision as the C-07 precedent below: don't
+mechanically force two different, both-correct definitions to agree). What WAS wrong: both
+numbers were labeled identically "Net"/"NET" with no indication they measure different things.
+Fixed by relabeling to "Net (sale bills)" + an explanatory line above the table — no numbers
+changed, only disambiguated. **If the business actually wants Agent-wise net-of-returns, that's
+a product decision — flag it, don't silently change it.**
+
 ## Next steps (in order)
 
 1. Wait for the 5 in-flight agents to report back (background notifications will arrive).
