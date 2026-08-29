@@ -555,9 +555,33 @@ checked, and every `service_role`/admin-client call site (bypasses RLS entirely)
 own app-level store filter. Evidence-based only — file:line or SQL proof required, no DB writes
 (migration file instead, if a DB-level scoping gap is found).
 
-**When it reports back**: review the diff and the page-by-page inventory carefully — this is a
-data-isolation/trust finding, false positives AND missed leaks both matter — merge to `master`,
-`tsc --noEmit` + `next build`, delete worktree/branch, then deploy.
+**Result — DONE, MERGED (`2f937b7`)**: real, live leak confirmed and fixed. Proved against the
+live DB using an actual single-store user's own JWT (ebo_manager, granted only BO-001 Undri):
+`sales.vw_ebo_sales_daily` (RLS-scoped) correctly returned 0 rows for BO-003, but Movement/Mix's
+two source views (`vw_stock_with_scheme`, `vw_sale_transactions_export` — the app's only two
+views with no `core.fn_user_store_ids()` predicate, by design, for the allocation engine's
+cross-store math) returned Sinhgad Road's real ₹1,37,98,521 revenue and 2,835 stock rows, fully
+attributable by store name.
+
+Fixed at the compute boundary (`lib/replenishment/compute.ts`/`mix.ts` return), not per-page —
+computation stays network-wide, output rows narrowed to the caller's own stores. New
+`lib/scope/callerStoreScope.ts` (FAILS CLOSED — throws rather than guessing, since there's no
+RLS underneath this one) and `lib/scope/ownStores.ts`. Four more leaks found and fixed along the
+way: the scheduled Replenishment export ran on a service-role client (which `fn_user_store_ids()`
+treats as "all stores" — the compute-boundary fix alone was a no-op for it); `core.stores` has
+RLS disabled entirely, so 5 store pickers listed the whole company roster (and `/targets`
+defaulted a single-store user onto `storeList[0]` — a DIFFERENT store); the Workspace capacity
+grid listed every branch's real settings; `targets/monthly/audit-report` didn't validate `?store=`
+against the caller's grants. `tsc --noEmit` + full `next build` clean. Pushed.
+
+**One residual exposure flagged, not fixed** (deliberately out of scope for "don't touch the
+underlying unscoped queries"): `authenticated` still has a raw SELECT grant on
+`vw_stock_with_scheme`/`vw_sale_transactions_export` themselves, so a user could in principle
+query PostgREST directly with their own token, bypassing this app's UI entirely, and read
+network-wide data. Closing this needs moving Replenishment/Mix's reads onto an admin client and
+revoking the grant — flagged as a follow-up, not folded into this pass.
+
+**Still needed**: deploy — production is well behind master.
 
 ## Next steps (in order)
 
