@@ -48,6 +48,7 @@ export type Dict = {
   navIntegrations: string;
   navDataUpload: string;
   navStockDetails: string;
+  navStockStatus: string;
   navReplenishment: string;
   navSaleStockMix: string;
   navMovement: string;
@@ -154,6 +155,7 @@ const en: Dict = {
   navIntegrations: "Integrations",
   navDataUpload: "Data Upload",
   navStockDetails: "Stock Details",
+  navStockStatus: "Stock Status",
   navReplenishment: "Replenishment",
   navSaleStockMix: "Sale vs Stock Mix",
   navMovement: "Movement",
@@ -258,6 +260,7 @@ const hi: Dict = {
   navIntegrations: "Integrations",
   navDataUpload: "Data Upload",
   navStockDetails: "Stock Details",
+  navStockStatus: "Stock Status",
   navReplenishment: "Replenishment",
   navSaleStockMix: "Sale vs Stock Mix",
   navMovement: "Movement",
@@ -361,6 +364,7 @@ const mr: Dict = {
   navIntegrations: "Integrations",
   navDataUpload: "Data Upload",
   navStockDetails: "Stock Details",
+  navStockStatus: "Stock Status",
   navReplenishment: "Replenishment",
   navSaleStockMix: "Sale vs Stock Mix",
   navMovement: "Movement",

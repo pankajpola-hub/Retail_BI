@@ -27,6 +27,10 @@ import { resolveAccess } from "@/lib/auth/access";
  */
 const HREF_PAGE_KEY: Record<string, PageKey> = {
   "/stock-details": "stock-details",
+  // Sub-page of /sales, not its own page key - same gate as /sales itself
+  // (requirePageAccess("sales") in app/(ho)/sales/stock-status/page.tsx),
+  // so nav visibility and the page's own access check can't disagree.
+  "/sales/stock-status": "sales",
   "/replenishment": "replenishment",
   "/movement": "replenishment",
   "/footfall": "footfall",
@@ -67,6 +71,7 @@ const NAV_LINKS: NavLink[] = [
   // by any of this.
   { href: "/sales", labelKey: "navNetwork", icon: "network", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Overview" },
   { href: "/stock-details", labelKey: "navStockDetails", icon: "stock", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Stock" },
+  { href: "/sales/stock-status", labelKey: "navStockStatus", icon: "stock", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Stock" },
   { href: "/movement", labelKey: "navMovement", icon: "replenishment", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Movement" },
   { href: "/footfall", labelKey: "navFootfall", icon: "footfall", roles: ["ebo_manager", "ho_admin", "super_admin"], group: "Overview" },
   // Marketplace reconciliation (ecomm vertical) — gated like the ecomm pages.

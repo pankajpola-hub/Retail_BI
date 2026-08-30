@@ -43,6 +43,14 @@ export function StockStatusFacetedTable({ rows }: { rows: StockStatusRow[] }) {
       { key: "match", label: "Match", get: (r) => (r.match ? "Match" : "Mismatch") },
       { key: "onShopify", label: "On Shopify", get: (r) => (r.onShopify ? "Yes" : "No") },
       { key: "whHasData", label: "WH Data", get: (r) => (r.whHasData ? "Has WH data" : "No WH data") },
+      // Item-master attributes (raw_logic.item_master, already joined onto
+      // vw_stock_with_scheme) - same attribute set lib/replenishment/mix.ts's
+      // attribute-wise views (Color/Size/Gender/Season/MRP) offer.
+      { key: "season", label: "Season", get: (r) => r.season },
+      { key: "gender", label: "Gender", get: (r) => r.gender },
+      { key: "sizeGroup", label: "Size Group", get: (r) => r.sizeGroup },
+      { key: "subcategory", label: "Subcategory", get: (r) => r.subcategory },
+      { key: "marketSegment", label: "Market Segment", get: (r) => r.marketSegment },
     ],
     []
   );
@@ -55,6 +63,12 @@ export function StockStatusFacetedTable({ rows }: { rows: StockStatusRow[] }) {
       { key: "whStock", label: "WH Stock", get: (r) => r.whStock, numeric: true },
       { key: "shopifySoh", label: "Shopify SOH", get: (r) => r.shopifySoh, numeric: true },
       { key: "diff", label: "Difference (WH - Shopify)", get: (r) => r.diff, numeric: true },
+      { key: "season", label: "Season", get: (r) => r.season },
+      { key: "gender", label: "Gender", get: (r) => r.gender },
+      { key: "sizeGroup", label: "Size Group", get: (r) => r.sizeGroup },
+      { key: "subcategory", label: "Subcategory", get: (r) => r.subcategory },
+      { key: "marketSegment", label: "Market Segment", get: (r) => r.marketSegment },
+      { key: "mrp", label: "MRP", get: (r) => r.mrp, numeric: true },
     ],
     []
   );
@@ -109,6 +123,20 @@ export function StockStatusFacetedTable({ rows }: { rows: StockStatusRow[] }) {
         valueFormatter: (p: ValueFormatterParams<StockStatusRow, boolean>) => (p.value ? "Yes" : "No"),
       },
       { field: "status", headerName: "Shopify Status", flex: 1, sortable: true },
+      { field: "season", headerName: "Season", flex: 0.7, sortable: true },
+      { field: "gender", headerName: "Gender", flex: 0.6, sortable: true },
+      { field: "sizeGroup", headerName: "Size Group", flex: 0.7, sortable: true },
+      { field: "subcategory", headerName: "Subcategory", flex: 0.8, sortable: true },
+      { field: "marketSegment", headerName: "Market Segment", flex: 0.8, sortable: true },
+      {
+        field: "mrp",
+        headerName: "MRP",
+        flex: 0.6,
+        sortable: true,
+        cellClass: "text-right font-mono",
+        headerClass: "text-right",
+        valueFormatter: (p: ValueFormatterParams<StockStatusRow, number | null>) => (p.value == null ? "—" : `₹${p.value}`),
+      },
     ],
     []
   );
