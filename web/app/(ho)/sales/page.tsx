@@ -1222,7 +1222,12 @@ export default async function SalesPage({
 
   return (
     <main className="py-6">
-      <h1 className="font-serif text-2xl">Sales</h1>
+      <div className="flex flex-wrap items-baseline justify-between gap-3">
+        <h1 className="font-serif text-2xl">Sales</h1>
+        <Link href="/sales/stock-status" className="text-[12.5px] text-accent hover:underline">
+          Stock Status (WH vs Shopify) →
+        </Link>
+      </div>
       <p className="mt-1 text-[12.5px] text-ink-3">
         Every vertical you have access to, in one place — choose which to view below.
       </p>
