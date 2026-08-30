@@ -17,12 +17,38 @@ const PAGE_KEY = "sales_stock_status";
 
 const MISMATCH_ROW_STYLE: RowStyle = { background: "var(--crit-soft)" };
 
-function StatCard({ num, label, warn }: { num: number | string; label: string; warn?: boolean }) {
+/**
+ * Big executive-summary tile. Optionally a toggle for the "Go-Live Status"
+ * facet (clicking Live/Can Go Live/Not Live sets that one facet value on or
+ * off) - the numbers ARE the drill-down, so a boss scanning this doesn't
+ * need to separately learn the facet bar underneath to act on what they see.
+ */
+function KpiTile({
+  num,
+  label,
+  tone,
+  active,
+  onClick,
+}: {
+  num: number | string;
+  label: string;
+  tone?: "good" | "warn" | "crit";
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  const toneClass = tone === "good" ? "text-good" : tone === "warn" ? "text-warn" : tone === "crit" ? "text-crit" : "text-ink";
+  const Comp = onClick ? "button" : "div";
   return (
-    <div className="rounded-md border border-line px-4 py-2.5">
-      <div className={`text-lg font-serif ${warn ? "text-crit" : "text-ink"}`}>{num}</div>
-      <div className="text-[11px] uppercase tracking-wide text-ink-3">{label}</div>
-    </div>
+    <Comp
+      type={onClick ? "button" : undefined}
+      onClick={onClick}
+      className={`rounded-lg border px-5 py-3.5 text-left transition-colors ${
+        active ? "border-accent bg-accent-soft" : "border-line bg-surface hover:bg-surface-2"
+      } ${onClick ? "cursor-pointer" : ""}`}
+    >
+      <div className={`text-2xl font-serif ${toneClass}`}>{num}</div>
+      <div className="mt-0.5 text-[11.5px] font-medium uppercase tracking-wide text-ink-3">{label}</div>
+    </Comp>
   );
 }
 
@@ -32,12 +58,18 @@ function StatCard({ num, label, warn }: { num: number | string; label: string; w
  * (D:\Py\Shopify image uploader\server\static\index.html, the "Stock
  * Status (WH vs Shopify)" section), same FacetFilterBar engine this app
  * already shares with every other faceted table here.
+ *
+ * The KPI row up top is the "boss view" - Live / Can Go Live / Not Live /
+ * mismatches, each clickable straight into the filtered detail table below
+ * it, so a five-second glance answers "what's live, what isn't, and what's
+ * sitting in the warehouse ready to go live" without reading the grid.
  */
 export function StockStatusFacetedTable({ rows }: { rows: StockStatusRow[] }) {
   const [state, setState] = useState<FacetFilterState>(emptyFilterState);
 
   const facets = useMemo<FacetDef<StockStatusRow>[]>(
     () => [
+      { key: "goLiveStatus", label: "Go-Live Status", get: (r) => r.goLiveStatus },
       { key: "colour", label: "Colour", get: (r) => r.colour },
       { key: "status", label: "Shopify Status", get: (r) => r.status || "Unknown" },
       { key: "match", label: "Match", get: (r) => (r.match ? "Match" : "Mismatch") },
@@ -75,17 +107,42 @@ export function StockStatusFacetedTable({ rows }: { rows: StockStatusRow[] }) {
 
   const filtered = useMemo(() => applyFacetFilter(rows, facets, advFields, state), [rows, facets, advFields, state]);
 
-  const mismatchCount = useMemo(() => filtered.filter((r) => !r.match).length, [filtered]);
-  const notOnShopifyCount = useMemo(() => filtered.filter((r) => !r.onShopify).length, [filtered]);
-  const noWhDataCount = useMemo(() => filtered.filter((r) => !r.whHasData).length, [filtered]);
-  const totalWh = useMemo(() => filtered.reduce((s, r) => s + (r.whHasData ? r.whStock : 0), 0), [filtered]);
-  const totalShopify = useMemo(() => filtered.reduce((s, r) => s + (r.shopifyHasData ? r.shopifySoh : 0), 0), [filtered]);
+  // Counted over ALL rows (not `filtered`) - the KPI row is the fixed
+  // top-level summary the facet bar drills down FROM, so it shouldn't
+  // shrink just because someone is mid-filter on something else. Each tile
+  // toggles the one facet value it represents, same click-to-filter the
+  // facet panel itself offers.
+  const liveCount = useMemo(() => rows.filter((r) => r.goLiveStatus === "Live").length, [rows]);
+  const canGoLiveCount = useMemo(() => rows.filter((r) => r.goLiveStatus === "Can Go Live").length, [rows]);
+  const notLiveCount = useMemo(() => rows.filter((r) => r.goLiveStatus === "Not Live").length, [rows]);
+  const mismatchCount = useMemo(() => rows.filter((r) => !r.match).length, [rows]);
+  const totalWh = useMemo(() => rows.reduce((s, r) => s + (r.whHasData ? r.whStock : 0), 0), [rows]);
+  const totalShopify = useMemo(() => rows.reduce((s, r) => s + (r.shopifyHasData ? r.shopifySoh : 0), 0), [rows]);
+
+  function toggleGoLiveStatus(value: string) {
+    const cur = new Set(state.facets.goLiveStatus ?? []);
+    if (cur.has(value)) cur.delete(value);
+    else {
+      cur.clear(); // one status at a time from the KPI row - a multi-select is the facet panel's job, not the headline tiles'
+      cur.add(value);
+    }
+    setState({ ...state, facets: { ...state.facets, goLiveStatus: [...cur] } });
+  }
+  const activeGoLive = new Set(state.facets.goLiveStatus ?? []);
 
   const columnDefs = useMemo<ColDef<StockStatusRow>[]>(
     () => [
       { field: "style", headerName: "Style", flex: 0.7, sortable: true, cellClass: "font-semibold" },
       { field: "title", headerName: "Product Title", flex: 1.5, sortable: true },
       { field: "colour", headerName: "Colour", flex: 0.8, sortable: true },
+      {
+        field: "goLiveStatus",
+        headerName: "Go-Live Status",
+        flex: 0.9,
+        sortable: true,
+        cellClass: (p: CellClassParams<StockStatusRow, string>) =>
+          p.value === "Live" ? "text-good font-semibold" : p.value === "Can Go Live" ? "text-warn font-semibold" : "text-ink-3",
+      },
       {
         field: "whStock",
         headerName: "WH Stock",
@@ -143,14 +200,24 @@ export function StockStatusFacetedTable({ rows }: { rows: StockStatusRow[] }) {
 
   return (
     <>
-      <div className="mb-4 flex flex-wrap gap-3">
-        <StatCard num={filtered.length} label="style/colour rows" />
-        <StatCard num={mismatchCount} label="mismatches" warn={mismatchCount > 0} />
-        <StatCard num={totalWh.toLocaleString("en-IN")} label="total WH stock" />
-        <StatCard num={totalShopify.toLocaleString("en-IN")} label="total Shopify SOH" />
-        <StatCard num={notOnShopifyCount} label="not on Shopify" warn={notOnShopifyCount > 0} />
-        <StatCard num={noWhDataCount} label="no WH data" warn={noWhDataCount > 0} />
+      <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <KpiTile num={liveCount} label="Live on Shopify" tone="good" active={activeGoLive.has("Live")} onClick={() => toggleGoLiveStatus("Live")} />
+        <KpiTile
+          num={canGoLiveCount}
+          label="Can go live now"
+          tone="warn"
+          active={activeGoLive.has("Can Go Live")}
+          onClick={() => toggleGoLiveStatus("Can Go Live")}
+        />
+        <KpiTile num={notLiveCount} label="Not live" active={activeGoLive.has("Not Live")} onClick={() => toggleGoLiveStatus("Not Live")} />
+        <KpiTile num={mismatchCount} label="Stock mismatches" tone={mismatchCount > 0 ? "crit" : undefined} />
+        <KpiTile num={totalWh.toLocaleString("en-IN")} label="Total WH stock" />
+        <KpiTile num={totalShopify.toLocaleString("en-IN")} label="Total Shopify SOH" />
       </div>
+      <p className="mb-4 text-[11.5px] text-ink-3">
+        Shopify is the only live channel wired up here today - Myntra/Ajio/other marketplace inventory isn&apos;t
+        fed into this comparison yet (their sales are tracked on the Ecomm page, but not live stock).
+      </p>
 
       <FacetFilterBar pageKey={PAGE_KEY} rows={rows} facets={facets} advFields={advFields} groupByOptions={[]} state={state} onChange={setState} />
       <div className="mb-2 text-[12px] text-ink-3">

@@ -57,6 +57,12 @@ export type StockStatusRow = {
   subcategory: string;
   marketSegment: string;
   mrp: number | null;
+  // "Live" = actually purchasable on Shopify right now (on Shopify AND
+  // stock > 0). "Can Go Live" = WH has stock ready to sell but it isn't
+  // showing on Shopify yet (not listed at all, or listed with 0 SOH) - the
+  // actionable "push this live" list. "Not Live" = neither side has stock,
+  // nothing to action.
+  goLiveStatus: "Live" | "Can Go Live" | "Not Live";
 };
 
 export async function computeStockStatus(
@@ -140,6 +146,8 @@ export async function computeStockStatus(
     const shop = shopify.sohByKey.get(key);
     const onShopify = shopify.titleByStyle.has(style);
     const attrs = attrsByKey.get(key);
+    const isLive = onShopify && shop !== undefined && shop > 0;
+    const canGoLive = !isLive && wh !== undefined && wh > 0;
     rows.push({
       style,
       colour,
@@ -158,6 +166,7 @@ export async function computeStockStatus(
       subcategory: attrs?.subcategory ?? "—",
       marketSegment: attrs?.marketSegment ?? "—",
       mrp: attrs?.mrp ?? null,
+      goLiveStatus: isLive ? "Live" : canGoLive ? "Can Go Live" : "Not Live",
     });
   }
 
