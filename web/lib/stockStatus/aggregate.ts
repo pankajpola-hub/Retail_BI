@@ -26,7 +26,6 @@ type StockRow = {
   market_segment: string | null;
   mrp: number | string | null;
   closing_stock: number;
-  loaded_at: string;
 };
 
 export type StockStatusAlert = {
@@ -90,7 +89,14 @@ export async function computeStockStatus(
   canGoLiveValue: number; // MRP value of WH stock sitting in "Can Go Live" - the opportunity size, not a revenue forecast
   alerts: StockStatusAlert[];
   funnel: { whStock: number; whStockCataloguedStyle: number; whStockCataloguedColour: number; liveShopifySoh: number };
-  whLastSyncedAt: string | null; // max(loaded_at) across the current WH stock snapshot - "how stale is the WH side"
+  // Always null - sales.vw_stock_with_scheme does not expose loaded_at
+  // (confirmed against its 0087 definition; raw_logic.stock_snapshot has
+  // it, but that table has no grant for the authenticated role, only the
+  // view does). WH-side freshness would need a schema change (expose
+  // loaded_at on the view, or a small RPC) to become real - not invented
+  // here. Kept in the type/UI so that follow-up is a small, contained
+  // change rather than a new field to thread through everywhere.
+  whLastSyncedAt: string | null;
   shopifyFetchedAt: string; // this request's own timestamp - Shopify's side is always live, never stale by construction
 }> {
   const [{ data: storesData }, stockRows, shopify] = await Promise.all([
@@ -105,7 +111,7 @@ export async function computeStockStatus(
         .schema("sales")
         .from<StockRow>("vw_stock_with_scheme")
         .select(
-          "branch_name, godown_name, item_code, item_name, shade_name, season, gender, size_group, subcategory, market_segment, mrp, closing_stock, loaded_at"
+          "branch_name, godown_name, item_code, item_name, shade_name, season, gender, size_group, subcategory, market_segment, mrp, closing_stock"
         )
         .order("branch_name", { ascending: true })
         .order("item_code", { ascending: true })
@@ -135,9 +141,7 @@ export async function computeStockStatus(
     string,
     { season: string; gender: string; sizeGroup: string; subcategory: string; marketSegment: string; mrp: number | null }
   >();
-  let whLastSyncedAt: string | null = null;
   for (const r of stockRows ?? []) {
-    if (r.loaded_at && (!whLastSyncedAt || r.loaded_at > whLastSyncedAt)) whLastSyncedAt = r.loaded_at;
     if (!r.branch_name || storeBranches.has(r.branch_name)) continue;
     const godown = orDash(r.godown_name);
     availableGodownsSet.add(godown);
@@ -340,7 +344,7 @@ export async function computeStockStatus(
       whStockCataloguedColour: funnelCataloguedColour,
       liveShopifySoh: funnelLiveSoh,
     },
-    whLastSyncedAt,
+    whLastSyncedAt: null,
     shopifyFetchedAt,
   };
 }

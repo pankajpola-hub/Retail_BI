@@ -247,23 +247,17 @@ function timeAgo(iso: string | null): string {
   return `${Math.round(hr / 24)}d ago`;
 }
 
-/** Data-freshness strip - management must know whether a discrepancy is a real mismatch or just a stale WH upload. Shopify's side is always live (fetched this request), so it never goes stale by construction. */
+/** Data-freshness strip - management must know whether a discrepancy is a real mismatch or just a stale WH upload. Shopify's side is always live (fetched this request), so it never goes stale by construction. WH upload time isn't exposed by sales.vw_stock_with_scheme today, so that half is honestly labelled "not available" rather than guessed. */
 function SyncBanner({ whLastSyncedAt, shopifyFetchedAt }: { whLastSyncedAt: string | null; shopifyFetchedAt: string }) {
-  const whStaleHours = whLastSyncedAt ? (Date.now() - new Date(whLastSyncedAt).getTime()) / 3_600_000 : Infinity;
-  const whStale = whStaleHours > 24;
   return (
     <div className="mb-4 flex flex-wrap items-center gap-4 rounded-lg border border-line bg-surface px-4 py-2.5 text-[12px]">
       <span className="flex items-center gap-1.5">
         <span className="h-1.5 w-1.5 rounded-full bg-good" /> Shopify API — Live, fetched {timeAgo(shopifyFetchedAt)}
       </span>
-      <span className="flex items-center gap-1.5">
-        <span className={`h-1.5 w-1.5 rounded-full ${whStale ? "bg-warn" : "bg-good"}`} /> Warehouse ERP — last upload {timeAgo(whLastSyncedAt)}
+      <span className="flex items-center gap-1.5 text-ink-3">
+        <span className="h-1.5 w-1.5 rounded-full bg-line" /> Warehouse ERP —{" "}
+        {whLastSyncedAt ? `last upload ${timeAgo(whLastSyncedAt)}` : "upload time not exposed by the current view"}
       </span>
-      {whStale && (
-        <span className="text-warn">
-          Inventory comparison may be stale — the WH stock file hasn&apos;t been re-uploaded in over 24h (see Data Upload).
-        </span>
-      )}
     </div>
   );
 }
