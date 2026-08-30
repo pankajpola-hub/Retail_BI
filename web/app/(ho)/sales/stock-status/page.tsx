@@ -18,7 +18,7 @@ function StockStatusSkeleton() {
 
 async function StockStatusContent({ godowns }: { godowns: string[] }) {
   const supabase = await createClient();
-  const { rows, availableGodowns } = await computeStockStatus(supabase, { godowns });
+  const { rows, availableGodowns, channelSummaries, totalWhStockValue } = await computeStockStatus(supabase, { godowns });
   return (
     <>
       {/* Comparing Shopify's ecommerce SOH against the WHOLE warehouse
@@ -34,7 +34,7 @@ async function StockStatusContent({ godowns }: { godowns: string[] }) {
           allLabel="All warehouse godowns"
         />
       </div>
-      <StockStatusFacetedTable rows={rows} />
+      <StockStatusFacetedTable rows={rows} channelSummaries={channelSummaries} totalWhStockValue={totalWhStockValue} />
     </>
   );
 }

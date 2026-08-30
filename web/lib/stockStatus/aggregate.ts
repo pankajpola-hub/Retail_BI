@@ -2,6 +2,7 @@ import "server-only";
 import { fetchAllRows } from "@/lib/data/client";
 import type { DataClient } from "@/lib/data/client";
 import { fetchShopifyInventory } from "@/lib/shopify/client";
+import { CHANNELS, type ChannelSummary } from "@/lib/inventory/model";
 
 // Stock Status - side-by-side comparison of WH (warehouse) stock against
 // Shopify's live SOH, per style/colour. Ported from the Shopify
@@ -68,7 +69,12 @@ export type StockStatusRow = {
 export async function computeStockStatus(
   supabase: DataClient,
   { godowns }: { godowns?: string[] } = {}
-): Promise<{ rows: StockStatusRow[]; availableGodowns: string[] }> {
+): Promise<{
+  rows: StockStatusRow[];
+  availableGodowns: string[];
+  channelSummaries: ChannelSummary[];
+  totalWhStockValue: number; // closing_stock x item_master.mrp, MRP-based - no distinct cost/selling price field exists in the source data
+}> {
   const [{ data: storesData }, stockRows, shopify] = await Promise.all([
     supabase.schema("core").from<StoreRow>("stores").select("branch_name_erp"),
     // sales.vw_stock_with_scheme, same source lib/replenishment/mix.ts reads
@@ -170,8 +176,63 @@ export async function computeStockStatus(
     });
   }
 
+  const totalWhStockValue = rows.reduce((s, r) => s + (r.whHasData && r.mrp ? r.whStock * r.mrp : 0), 0);
+
+  // Channel comparison - one row per registered channel (lib/inventory/model.ts),
+  // not just the ones with real data. Only `active` channels get real
+  // numbers computed from `rows`; the rest carry active:false so the UI can
+  // render an honest "Not connected" instead of a fabricated 0.
+  const channelSummaries: ChannelSummary[] = CHANNELS.map((ch) => {
+    if (!ch.active) {
+      return {
+        channelId: ch.id,
+        channelName: ch.name,
+        active: false,
+        liveSkus: 0,
+        sellableUnits: 0,
+        whEligibleUnits: 0,
+        missingUnits: 0,
+        mismatchUnits: 0,
+        availabilityPct: null,
+      };
+    }
+    // Only "shopify" has a real adapter today - see fetchShopifyInventory.
+    // whEligibleUnits here is WH stock for every style/colour that's at
+    // least a candidate for this channel (i.e. every row with WH data) -
+    // there's no per-channel eligibility RULE in this codebase yet (no
+    // "this style is Shopify-only" flag anywhere), so "eligible" is
+    // currently just "WH has it at all."
+    let liveSkus = 0;
+    let sellableUnits = 0;
+    let whEligibleUnits = 0;
+    let missingUnits = 0;
+    let mismatchUnits = 0;
+    for (const r of rows) {
+      if (r.whHasData) whEligibleUnits += r.whStock;
+      if (r.onShopify && r.shopifySoh > 0) {
+        liveSkus += 1;
+        sellableUnits += r.shopifySoh;
+      }
+      if (r.whHasData && !(r.onShopify && r.shopifySoh > 0)) missingUnits += r.whStock;
+      if (!r.match) mismatchUnits += Math.abs(r.diff);
+    }
+    return {
+      channelId: ch.id,
+      channelName: ch.name,
+      active: true,
+      liveSkus,
+      sellableUnits,
+      whEligibleUnits,
+      missingUnits,
+      mismatchUnits,
+      availabilityPct: whEligibleUnits > 0 ? (sellableUnits / whEligibleUnits) * 100 : null,
+    };
+  });
+
   return {
     rows,
     availableGodowns: [...availableGodownsSet].sort((a, b) => a.localeCompare(b)),
+    channelSummaries,
+    totalWhStockValue,
   };
 }

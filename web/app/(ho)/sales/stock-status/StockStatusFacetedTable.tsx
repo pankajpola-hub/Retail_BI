@@ -12,6 +12,7 @@ import {
   type FacetFilterState,
 } from "@/components/ui/FacetFilterBar";
 import type { StockStatusRow } from "@/lib/stockStatus/aggregate";
+import type { ChannelSummary } from "@/lib/inventory/model";
 
 const PAGE_KEY = "sales_stock_status";
 
@@ -53,6 +54,54 @@ function KpiTile({
 }
 
 /**
+ * One row per registered sales channel (lib/inventory/model.ts's CHANNELS),
+ * not just Shopify - an inactive channel (no working inventory adapter yet,
+ * e.g. Myntra/Ajio/Amazon pending a Uniware inventory integration) renders
+ * as an explicit "Not connected" row rather than a fabricated 0, so nobody
+ * mistakes "we don't measure this yet" for "this channel has zero stock."
+ */
+function ChannelComparisonTable({ summaries }: { summaries: ChannelSummary[] }) {
+  return (
+    <div className="mb-6 overflow-x-auto rounded-lg border border-line">
+      <table className="w-full min-w-[720px] text-[13px]">
+        <thead>
+          <tr className="border-b border-line bg-surface-2 text-left text-[11px] uppercase tracking-wide text-ink-3">
+            <th className="px-4 py-2.5">Channel</th>
+            <th className="px-4 py-2.5 text-right">Live SKUs</th>
+            <th className="px-4 py-2.5 text-right">Sellable Units</th>
+            <th className="px-4 py-2.5 text-right">WH Eligible</th>
+            <th className="px-4 py-2.5 text-right">Missing / Can Go Live</th>
+            <th className="px-4 py-2.5 text-right">Mismatch Units</th>
+            <th className="px-4 py-2.5 text-right">Availability %</th>
+          </tr>
+        </thead>
+        <tbody>
+          {summaries.map((s) => (
+            <tr key={s.channelId} className={`border-b border-line-soft last:border-0 ${s.active ? "" : "opacity-50"}`}>
+              <td className="px-4 py-2.5 font-medium">{s.channelName}</td>
+              {s.active ? (
+                <>
+                  <td className="px-4 py-2.5 text-right font-mono">{s.liveSkus.toLocaleString("en-IN")}</td>
+                  <td className="px-4 py-2.5 text-right font-mono">{s.sellableUnits.toLocaleString("en-IN")}</td>
+                  <td className="px-4 py-2.5 text-right font-mono">{s.whEligibleUnits.toLocaleString("en-IN")}</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-warn">{s.missingUnits.toLocaleString("en-IN")}</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-crit">{s.mismatchUnits.toLocaleString("en-IN")}</td>
+                  <td className="px-4 py-2.5 text-right font-mono">{s.availabilityPct === null ? "—" : `${s.availabilityPct.toFixed(1)}%`}</td>
+                </>
+              ) : (
+                <td colSpan={6} className="px-4 py-2.5 text-ink-3">
+                  Not connected — no live inventory feed for this channel yet
+                </td>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
  * WH stock vs Shopify SOH, per style/colour - ported from the Shopify
  * image-uploader project's Stock Status page
  * (D:\Py\Shopify image uploader\server\static\index.html, the "Stock
@@ -64,7 +113,15 @@ function KpiTile({
  * it, so a five-second glance answers "what's live, what isn't, and what's
  * sitting in the warehouse ready to go live" without reading the grid.
  */
-export function StockStatusFacetedTable({ rows }: { rows: StockStatusRow[] }) {
+export function StockStatusFacetedTable({
+  rows,
+  channelSummaries,
+  totalWhStockValue,
+}: {
+  rows: StockStatusRow[];
+  channelSummaries: ChannelSummary[];
+  totalWhStockValue: number;
+}) {
   const [state, setState] = useState<FacetFilterState>(emptyFilterState);
 
   const facets = useMemo<FacetDef<StockStatusRow>[]>(
@@ -213,11 +270,17 @@ export function StockStatusFacetedTable({ rows }: { rows: StockStatusRow[] }) {
         <KpiTile num={mismatchCount} label="Stock mismatches" tone={mismatchCount > 0 ? "crit" : undefined} />
         <KpiTile num={totalWh.toLocaleString("en-IN")} label="Total WH stock" />
         <KpiTile num={totalShopify.toLocaleString("en-IN")} label="Total Shopify SOH" />
+        <KpiTile num={`₹${Math.round(totalWhStockValue).toLocaleString("en-IN")}`} label="WH stock value (MRP)" />
       </div>
       <p className="mb-4 text-[11.5px] text-ink-3">
         Shopify is the only live channel wired up here today - Myntra/Ajio/other marketplace inventory isn&apos;t
-        fed into this comparison yet (their sales are tracked on the Ecomm page, but not live stock).
+        fed into this comparison yet (their sales are tracked on the Ecomm page, but not live stock). Stock value is
+        MRP-based (no distinct cost/selling price is captured in the warehouse data), so treat it as a ceiling, not
+        an estimate of realizable revenue.
       </p>
+
+      <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-ink-3">Channel-wise Stock Comparison</h3>
+      <ChannelComparisonTable summaries={channelSummaries} />
 
       <FacetFilterBar pageKey={PAGE_KEY} rows={rows} facets={facets} advFields={advFields} groupByOptions={[]} state={state} onChange={setState} />
       <div className="mb-2 text-[12px] text-ink-3">
