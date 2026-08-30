@@ -26,6 +26,19 @@ type StockRow = {
   market_segment: string | null;
   mrp: number | string | null;
   closing_stock: number;
+  loaded_at: string;
+};
+
+export type StockStatusAlert = {
+  id: string;
+  label: string;
+  count: number;
+  severity: "critical" | "attention" | "healthy";
+  // Which goLiveStatus/match value the alert corresponds to, so the UI can
+  // wire it straight into the same facet the KPI tiles use - no separate
+  // drill-down mechanism to build.
+  filterFacet: "goLiveStatus" | "match" | "whHasData" | null;
+  filterValue: string | null;
 };
 
 function orDash(v: string | null | undefined): string {
@@ -74,6 +87,11 @@ export async function computeStockStatus(
   availableGodowns: string[];
   channelSummaries: ChannelSummary[];
   totalWhStockValue: number; // closing_stock x item_master.mrp, MRP-based - no distinct cost/selling price field exists in the source data
+  canGoLiveValue: number; // MRP value of WH stock sitting in "Can Go Live" - the opportunity size, not a revenue forecast
+  alerts: StockStatusAlert[];
+  funnel: { whStock: number; whStockCataloguedStyle: number; whStockCataloguedColour: number; liveShopifySoh: number };
+  whLastSyncedAt: string | null; // max(loaded_at) across the current WH stock snapshot - "how stale is the WH side"
+  shopifyFetchedAt: string; // this request's own timestamp - Shopify's side is always live, never stale by construction
 }> {
   const [{ data: storesData }, stockRows, shopify] = await Promise.all([
     supabase.schema("core").from<StoreRow>("stores").select("branch_name_erp"),
@@ -87,13 +105,14 @@ export async function computeStockStatus(
         .schema("sales")
         .from<StockRow>("vw_stock_with_scheme")
         .select(
-          "branch_name, godown_name, item_code, item_name, shade_name, season, gender, size_group, subcategory, market_segment, mrp, closing_stock"
+          "branch_name, godown_name, item_code, item_name, shade_name, season, gender, size_group, subcategory, market_segment, mrp, closing_stock, loaded_at"
         )
         .order("branch_name", { ascending: true })
         .order("item_code", { ascending: true })
     ),
     fetchShopifyInventory(),
   ]);
+  const shopifyFetchedAt = new Date().toISOString();
 
   const storeBranches = new Set((storesData ?? []).map((s) => s.branch_name_erp));
   const godownFilter = godowns && godowns.length > 0 ? new Set(godowns) : null;
@@ -116,7 +135,9 @@ export async function computeStockStatus(
     string,
     { season: string; gender: string; sizeGroup: string; subcategory: string; marketSegment: string; mrp: number | null }
   >();
+  let whLastSyncedAt: string | null = null;
   for (const r of stockRows ?? []) {
+    if (r.loaded_at && (!whLastSyncedAt || r.loaded_at > whLastSyncedAt)) whLastSyncedAt = r.loaded_at;
     if (!r.branch_name || storeBranches.has(r.branch_name)) continue;
     const godown = orDash(r.godown_name);
     availableGodownsSet.add(godown);
@@ -144,6 +165,11 @@ export async function computeStockStatus(
   // still shows up, rather than an inner join silently dropping it.
   const allKeys = new Set<string>([...whByKey.keys(), ...shopify.sohByKey.keys()]);
   const rows: StockStatusRow[] = [];
+  let funnelWhStock = 0;
+  let funnelCataloguedStyle = 0; // WH stock for styles that exist on Shopify at all (any colour)
+  let funnelCataloguedColour = 0; // WH stock for the exact style+colour Shopify has listed
+  let funnelLiveSoh = 0;
+  let canGoLiveValue = 0;
   for (const key of allKeys) {
     const sep = key.indexOf("::");
     const style = key.slice(0, sep);
@@ -154,6 +180,15 @@ export async function computeStockStatus(
     const attrs = attrsByKey.get(key);
     const isLive = onShopify && shop !== undefined && shop > 0;
     const canGoLive = !isLive && wh !== undefined && wh > 0;
+
+    if (wh !== undefined) {
+      funnelWhStock += wh;
+      if (onShopify) funnelCataloguedStyle += wh;
+      if (shop !== undefined) funnelCataloguedColour += wh;
+      if (canGoLive) canGoLiveValue += wh * (attrs?.mrp ?? 0);
+    }
+    if (isLive) funnelLiveSoh += shop!;
+
     rows.push({
       style,
       colour,
@@ -177,6 +212,69 @@ export async function computeStockStatus(
   }
 
   const totalWhStockValue = rows.reduce((s, r) => s + (r.whHasData && r.mrp ? r.whStock * r.mrp : 0), 0);
+
+  // Alert thresholds - centralized here rather than scattered through the
+  // UI, so they're at least one place to tune rather than a UI settings
+  // screen (out of scope for this phase).
+  const MISMATCH_ATTENTION_THRESHOLD = 1;
+  const MISMATCH_CRITICAL_THRESHOLD = 50;
+
+  const negativeStockCount = rows.filter((r) => r.whStock < 0 || r.shopifySoh < 0).length;
+  const mismatchCount = rows.filter((r) => !r.match).length;
+  const liveWithNoWhBackingCount = rows.filter((r) => r.goLiveStatus === "Live" && !r.whHasData).length;
+  const noWhDataCount = rows.filter((r) => !r.whHasData).length;
+  const inactiveChannelCount = CHANNELS.filter((c) => !c.active).length;
+
+  const alerts: StockStatusAlert[] = [
+    {
+      id: "negative-stock",
+      label: "Oversold / Negative Stock",
+      count: negativeStockCount,
+      severity: negativeStockCount > 0 ? "critical" : "healthy",
+      filterFacet: null,
+      filterValue: null,
+    },
+    {
+      id: "mismatch",
+      label: "Stock Mismatches (WH vs Shopify)",
+      count: mismatchCount,
+      severity: mismatchCount >= MISMATCH_CRITICAL_THRESHOLD ? "critical" : mismatchCount >= MISMATCH_ATTENTION_THRESHOLD ? "attention" : "healthy",
+      filterFacet: "match",
+      filterValue: "Mismatch",
+    },
+    {
+      id: "live-no-wh",
+      label: "Live on Shopify with No WH Backing",
+      count: liveWithNoWhBackingCount,
+      severity: liveWithNoWhBackingCount > 0 ? "critical" : "healthy",
+      filterFacet: null,
+      filterValue: null,
+    },
+    {
+      id: "can-go-live",
+      label: "Can Go Live (WH stock, not live)",
+      count: rows.filter((r) => r.goLiveStatus === "Can Go Live").length,
+      severity: "attention",
+      filterFacet: "goLiveStatus",
+      filterValue: "Can Go Live",
+    },
+    {
+      id: "no-wh-data",
+      label: "On Shopify with No WH Record",
+      count: noWhDataCount,
+      severity: noWhDataCount > 0 ? "attention" : "healthy",
+      filterFacet: "whHasData",
+      filterValue: "No WH data",
+    },
+    {
+      id: "channels-not-connected",
+      label: "Channels Not Connected (no live inventory feed)",
+      count: inactiveChannelCount,
+      severity: inactiveChannelCount > 0 ? "attention" : "healthy",
+      filterFacet: null,
+      filterValue: null,
+    },
+  ];
 
   // Channel comparison - one row per registered channel (lib/inventory/model.ts),
   // not just the ones with real data. Only `active` channels get real
@@ -234,5 +332,15 @@ export async function computeStockStatus(
     availableGodowns: [...availableGodownsSet].sort((a, b) => a.localeCompare(b)),
     channelSummaries,
     totalWhStockValue,
+    canGoLiveValue,
+    alerts,
+    funnel: {
+      whStock: funnelWhStock,
+      whStockCataloguedStyle: funnelCataloguedStyle,
+      whStockCataloguedColour: funnelCataloguedColour,
+      liveShopifySoh: funnelLiveSoh,
+    },
+    whLastSyncedAt,
+    shopifyFetchedAt,
   };
 }

@@ -11,12 +11,14 @@ import {
   type AdvField,
   type FacetFilterState,
 } from "@/components/ui/FacetFilterBar";
-import type { StockStatusRow } from "@/lib/stockStatus/aggregate";
+import type { StockStatusRow, StockStatusAlert } from "@/lib/stockStatus/aggregate";
 import type { ChannelSummary } from "@/lib/inventory/model";
 
 const PAGE_KEY = "sales_stock_status";
 
 const MISMATCH_ROW_STYLE: RowStyle = { background: "var(--crit-soft)" };
+
+const INR = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
 
 /**
  * Big executive-summary tile. Optionally a toggle for the "Go-Live Status"
@@ -102,6 +104,171 @@ function ChannelComparisonTable({ summaries }: { summaries: ChannelSummary[] }) 
 }
 
 /**
+ * WH Stock -> Catalogued (style listed on Shopify) -> Catalogued (exact
+ * colour listed) -> Live (SOH > 0). Deliberately NOT the reference
+ * screenshot's 5-stage "Eligible/Allocated" funnel - this codebase has no
+ * eligibility/allocation RULE anywhere (no "this style is Shopify-only"
+ * flag), so those two stages would be invented. These four stages are each
+ * a real, derivable fact from the WH-vs-Shopify comparison itself.
+ */
+function FunnelChart({
+  stages,
+}: {
+  stages: { label: string; units: number }[];
+}) {
+  const max = Math.max(1, ...stages.map((s) => s.units));
+  return (
+    <div className="flex flex-col gap-2">
+      {stages.map((s, i) => {
+        const pctOfMax = (s.units / max) * 100;
+        const pctOfPrev = i === 0 ? 100 : stages[i - 1]!.units > 0 ? (s.units / stages[i - 1]!.units) * 100 : 0;
+        return (
+          <div key={s.label} className="flex items-center gap-3">
+            <div className="w-40 shrink-0 text-[12px] text-ink-2">{s.label}</div>
+            <div className="h-6 flex-1 rounded bg-surface-2">
+              <div
+                className="h-6 rounded bg-accent transition-all"
+                style={{ width: `${Math.max(pctOfMax, 2)}%` }}
+                title={`${s.units.toLocaleString("en-IN")} units`}
+              />
+            </div>
+            <div className="w-20 shrink-0 text-right font-mono text-[12.5px] text-ink">{s.units.toLocaleString("en-IN")}</div>
+            <div className="w-14 shrink-0 text-right text-[11px] text-ink-3">{i === 0 ? "" : `${pctOfPrev.toFixed(0)}%`}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Simple SVG ring, not a charting library - three real, mutually exclusive
+ * slices of total WH stock: live on Shopify, sitting unallocated (can go
+ * live), and "not live" (neither side has meaningful stock / data quality
+ * gaps). Other channels are named in the legend as unmeasured rather than
+ * folded into any slice, so the ring never implies stock exists somewhere
+ * it hasn't actually been counted.
+ */
+function DistributionRing({ segments }: { segments: { label: string; value: number; color: string }[] }) {
+  const total = segments.reduce((s, seg) => s + seg.value, 0);
+  const R = 60;
+  const CIRC = 2 * Math.PI * R;
+  let offset = 0;
+  return (
+    <div className="flex items-center gap-6">
+      <svg viewBox="0 0 160 160" className="h-40 w-40 shrink-0" role="img" aria-label="WH stock distribution">
+        <g transform="rotate(-90 80 80)">
+          <circle cx="80" cy="80" r={R} fill="none" stroke="var(--surface-2)" strokeWidth="20" />
+          {total > 0 &&
+            segments.map((seg) => {
+              const frac = seg.value / total;
+              const dash = frac * CIRC;
+              const el = (
+                <circle
+                  key={seg.label}
+                  cx="80"
+                  cy="80"
+                  r={R}
+                  fill="none"
+                  stroke={seg.color}
+                  strokeWidth="20"
+                  strokeDasharray={`${dash} ${CIRC - dash}`}
+                  strokeDashoffset={-offset}
+                />
+              );
+              offset += dash;
+              return el;
+            })}
+        </g>
+        <text x="80" y="76" textAnchor="middle" className="fill-ink text-[20px] font-serif">
+          {total.toLocaleString("en-IN")}
+        </text>
+        <text x="80" y="94" textAnchor="middle" className="fill-current text-ink-3 text-[9px] uppercase tracking-wide">
+          Total WH stock
+        </text>
+      </svg>
+      <div className="flex flex-col gap-1.5 text-[12.5px]">
+        {segments.map((seg) => (
+          <div key={seg.label} className="flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full" style={{ background: seg.color }} />
+            <span className="text-ink-2">{seg.label}</span>
+            <span className="ml-auto font-mono text-ink-3">
+              {total > 0 ? `${((seg.value / total) * 100).toFixed(1)}%` : "—"} ({seg.value.toLocaleString("en-IN")})
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const SEVERITY_STYLE: Record<StockStatusAlert["severity"], { dot: string; text: string; label: string }> = {
+  critical: { dot: "bg-crit", text: "text-crit", label: "Critical" },
+  attention: { dot: "bg-warn", text: "text-warn", label: "Attention" },
+  healthy: { dot: "bg-good", text: "text-good", label: "Healthy" },
+};
+
+/** Real, computed alerts (see lib/stockStatus/aggregate.ts) - each one clickable straight into the same facet filter the detail table below uses. */
+function AlertsPanel({ alerts, onDrill }: { alerts: StockStatusAlert[]; onDrill: (a: StockStatusAlert) => void }) {
+  return (
+    <div className="divide-y divide-line-soft rounded-lg border border-line">
+      {alerts.map((a) => {
+        const sev = SEVERITY_STYLE[a.severity];
+        const clickable = a.filterFacet !== null;
+        return (
+          <button
+            key={a.id}
+            type="button"
+            disabled={!clickable}
+            onClick={() => clickable && onDrill(a)}
+            className={`flex w-full items-center gap-3 px-4 py-2.5 text-left text-[12.5px] ${
+              clickable ? "cursor-pointer hover:bg-surface-2" : "cursor-default"
+            }`}
+          >
+            <span className={`h-2 w-2 shrink-0 rounded-full ${sev.dot}`} />
+            <span className="text-ink-2">{a.label}</span>
+            <span className={`ml-auto font-mono font-semibold ${sev.text}`}>{a.count.toLocaleString("en-IN")}</span>
+            <span className={`w-16 text-right text-[10.5px] uppercase tracking-wide ${sev.text}`}>{sev.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function timeAgo(iso: string | null): string {
+  if (!iso) return "never";
+  const ms = Date.now() - new Date(iso).getTime();
+  const min = Math.round(ms / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min} min ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  return `${Math.round(hr / 24)}d ago`;
+}
+
+/** Data-freshness strip - management must know whether a discrepancy is a real mismatch or just a stale WH upload. Shopify's side is always live (fetched this request), so it never goes stale by construction. */
+function SyncBanner({ whLastSyncedAt, shopifyFetchedAt }: { whLastSyncedAt: string | null; shopifyFetchedAt: string }) {
+  const whStaleHours = whLastSyncedAt ? (Date.now() - new Date(whLastSyncedAt).getTime()) / 3_600_000 : Infinity;
+  const whStale = whStaleHours > 24;
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-4 rounded-lg border border-line bg-surface px-4 py-2.5 text-[12px]">
+      <span className="flex items-center gap-1.5">
+        <span className="h-1.5 w-1.5 rounded-full bg-good" /> Shopify API — Live, fetched {timeAgo(shopifyFetchedAt)}
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className={`h-1.5 w-1.5 rounded-full ${whStale ? "bg-warn" : "bg-good"}`} /> Warehouse ERP — last upload {timeAgo(whLastSyncedAt)}
+      </span>
+      {whStale && (
+        <span className="text-warn">
+          Inventory comparison may be stale — the WH stock file hasn&apos;t been re-uploaded in over 24h (see Data Upload).
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
  * WH stock vs Shopify SOH, per style/colour - ported from the Shopify
  * image-uploader project's Stock Status page
  * (D:\Py\Shopify image uploader\server\static\index.html, the "Stock
@@ -117,10 +284,20 @@ export function StockStatusFacetedTable({
   rows,
   channelSummaries,
   totalWhStockValue,
+  canGoLiveValue,
+  alerts,
+  funnel,
+  whLastSyncedAt,
+  shopifyFetchedAt,
 }: {
   rows: StockStatusRow[];
   channelSummaries: ChannelSummary[];
   totalWhStockValue: number;
+  canGoLiveValue: number;
+  alerts: StockStatusAlert[];
+  funnel: { whStock: number; whStockCataloguedStyle: number; whStockCataloguedColour: number; liveShopifySoh: number };
+  whLastSyncedAt: string | null;
+  shopifyFetchedAt: string;
 }) {
   const [state, setState] = useState<FacetFilterState>(emptyFilterState);
 
@@ -176,6 +353,9 @@ export function StockStatusFacetedTable({
   const totalWh = useMemo(() => rows.reduce((s, r) => s + (r.whHasData ? r.whStock : 0), 0), [rows]);
   const totalShopify = useMemo(() => rows.reduce((s, r) => s + (r.shopifyHasData ? r.shopifySoh : 0), 0), [rows]);
 
+  function setSingleFacet(key: string, value: string) {
+    setState({ ...state, facets: { ...state.facets, [key]: [value] } });
+  }
   function toggleGoLiveStatus(value: string) {
     const cur = new Set(state.facets.goLiveStatus ?? []);
     if (cur.has(value)) cur.delete(value);
@@ -255,8 +435,21 @@ export function StockStatusFacetedTable({
     []
   );
 
+  const distributionSegments = useMemo(() => {
+    const live = rows.reduce((s, r) => s + (r.goLiveStatus === "Live" ? r.whStock : 0), 0);
+    const canGoLive = rows.reduce((s, r) => s + (r.goLiveStatus === "Can Go Live" ? r.whStock : 0), 0);
+    const notLive = rows.reduce((s, r) => s + (r.goLiveStatus === "Not Live" && r.whHasData ? r.whStock : 0), 0);
+    return [
+      { label: "Live on Shopify", value: live, color: "var(--good)" },
+      { label: "Can go live (unallocated)", value: canGoLive, color: "var(--warn)" },
+      { label: "Not live", value: notLive, color: "var(--line)" },
+    ];
+  }, [rows]);
+
   return (
     <>
+      <SyncBanner whLastSyncedAt={whLastSyncedAt} shopifyFetchedAt={shopifyFetchedAt} />
+
       <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <KpiTile num={liveCount} label="Live on Shopify" tone="good" active={activeGoLive.has("Live")} onClick={() => toggleGoLiveStatus("Live")} />
         <KpiTile
@@ -270,17 +463,46 @@ export function StockStatusFacetedTable({
         <KpiTile num={mismatchCount} label="Stock mismatches" tone={mismatchCount > 0 ? "crit" : undefined} />
         <KpiTile num={totalWh.toLocaleString("en-IN")} label="Total WH stock" />
         <KpiTile num={totalShopify.toLocaleString("en-IN")} label="Total Shopify SOH" />
-        <KpiTile num={`₹${Math.round(totalWhStockValue).toLocaleString("en-IN")}`} label="WH stock value (MRP)" />
+        <KpiTile num={INR(totalWhStockValue)} label="WH stock value (MRP)" />
+        <KpiTile num={INR(canGoLiveValue)} label="Can-go-live opportunity (MRP)" tone="warn" />
       </div>
       <p className="mb-4 text-[11.5px] text-ink-3">
         Shopify is the only live channel wired up here today - Myntra/Ajio/other marketplace inventory isn&apos;t
-        fed into this comparison yet (their sales are tracked on the Ecomm page, but not live stock). Stock value is
-        MRP-based (no distinct cost/selling price is captured in the warehouse data), so treat it as a ceiling, not
-        an estimate of realizable revenue.
+        fed into this comparison yet (their sales are tracked on the Ecomm page, but not live stock). All value
+        figures are MRP-based (no distinct cost/selling price is captured in the warehouse data) - treat them as a
+        ceiling, not an estimate of realizable revenue.
       </p>
 
       <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-ink-3">Channel-wise Stock Comparison</h3>
       <ChannelComparisonTable summaries={channelSummaries} />
+
+      <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="rounded-lg border border-line p-4">
+          <h3 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-ink-3">Inventory Funnel</h3>
+          <FunnelChart
+            stages={[
+              { label: "WH Stock", units: funnel.whStock },
+              { label: "Style on Shopify", units: funnel.whStockCataloguedStyle },
+              { label: "Colour on Shopify", units: funnel.whStockCataloguedColour },
+              { label: "Live (SOH > 0)", units: funnel.liveShopifySoh },
+            ]}
+          />
+        </div>
+        <div className="rounded-lg border border-line p-4">
+          <h3 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-ink-3">WH Stock Distribution</h3>
+          <DistributionRing segments={distributionSegments} />
+        </div>
+      </div>
+
+      <div className="mb-6">
+        <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-ink-3">Stock Health</h3>
+        <AlertsPanel
+          alerts={alerts}
+          onDrill={(a) => {
+            if (a.filterFacet) setSingleFacet(a.filterFacet, a.filterValue!);
+          }}
+        />
+      </div>
 
       <FacetFilterBar pageKey={PAGE_KEY} rows={rows} facets={facets} advFields={advFields} groupByOptions={[]} state={state} onChange={setState} />
       <div className="mb-2 text-[12px] text-ink-3">
