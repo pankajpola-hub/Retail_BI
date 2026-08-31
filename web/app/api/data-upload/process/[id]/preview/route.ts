@@ -5,6 +5,7 @@ import { parseSaleWorkbook } from "@/lib/erpReports/parseSaleWorkbook";
 import { parseStockWorkbook } from "@/lib/erpReports/parseStockWorkbook";
 import { parseSchemeWorkbook } from "@/lib/erpReports/parseSchemeWorkbook";
 import { parseMasterWorkbook } from "@/lib/erpReports/parseMasterWorkbook";
+import { parseChannelSummaryWorkbook } from "@/lib/erpReports/parseChannelSummaryWorkbook";
 
 // See api/data-upload/upload/route.ts's note on this — downloading +
 // parsing a large workbook can plausibly exceed Vercel's default function
@@ -12,7 +13,7 @@ import { parseMasterWorkbook } from "@/lib/erpReports/parseMasterWorkbook";
 export const maxDuration = 60;
 
 type UploadRow = {
-  report_type: "sale" | "stock" | "scheme" | "master";
+  report_type: "sale" | "stock" | "scheme" | "master" | "channel_summary";
   storage_path: string;
   file_name: string;
 };
@@ -122,6 +123,32 @@ export async function POST(_request: Request, { params }: { params: { id: string
           headerMapping,
           headersFound,
           sampleErrors: skipped.slice(0, 20).map((s) => ({ rowNumber: s.rowNumber, error: s.reason })),
+          sample: rows.slice(0, 5),
+        },
+      });
+    }
+
+    if (upload.report_type === "channel_summary") {
+      // "Sale Summary" — wholesale/distribution-channel sales (0101). Fixed
+      // header (unlike master), so no header-mapping table to show, but the
+      // header row's POSITION varies (the profiled sample has a leading
+      // blank row) — surfacing which row the parser actually found it on is
+      // the one extra thing worth showing here, same spirit as master's
+      // headerMapping: make the one genuinely-variable thing visible before
+      // committing.
+      const { rows, sheetName } = parseChannelSummaryWorkbook(arrayBuffer);
+      const errorRows = rows.filter((r) => r.error);
+      const activeChannels = new Set(rows.filter((r) => !r.error).map((r) => r.channelName)).size;
+      return NextResponse.json({
+        ok: true,
+        data: {
+          reportType: "channel_summary",
+          sheetName,
+          totalRows: rows.length,
+          validRows: rows.length - errorRows.length,
+          errorRows: errorRows.length,
+          activeChannels,
+          sampleErrors: errorRows.slice(0, 20).map((r) => ({ rowNumber: r.rowNumber, error: r.error })),
           sample: rows.slice(0, 5),
         },
       });

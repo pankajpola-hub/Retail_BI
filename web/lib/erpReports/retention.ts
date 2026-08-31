@@ -28,7 +28,12 @@ import { removeObjectFile } from "@/lib/storage/supabase";
  */
 export async function cleanupOlderUploads(
   supabase: DataClient,
-  reportType: "sale" | "stock" | "scheme" | "master",
+  // "channel_summary" (0101) follows the exact same "sale" posture: its
+  // table (raw_logic.channel_sales_summary) accumulates across uploads and
+  // has no upload_id FK blocking deletion of an old upload row (it has an
+  // upload_id column, but ON DELETE SET NULL, not a hard reference — see
+  // that table's own comment), so it's safe to prune right after upload too.
+  reportType: "sale" | "stock" | "scheme" | "master" | "channel_summary",
   keepId: string
 ): Promise<void> {
   try {

@@ -4,13 +4,17 @@ import { Fragment, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type PreviewData = {
-  reportType: "sale" | "stock" | "scheme" | "master";
+  reportType: "sale" | "stock" | "scheme" | "master" | "channel_summary";
   totalRows: number;
   validRows: number;
   errorRows: number;
   sampleErrors: { rowNumber: number; error: string }[];
   totalClosingStock?: number;
   withScheme?: number;
+  // channel_summary only — distinct Channel Name values in the file, the
+  // one number worth showing before committing (row counts alone can't
+  // tell you whether this file introduced a brand-new channel).
+  activeChannels?: number;
   /**
    * Master only. Unlike the Sale/Stock reports, whose headers are fixed, the
    * item master is matched by fuzzy column aliases — so the ONE thing worth
@@ -58,7 +62,7 @@ async function postJson<T>(url: string, body?: unknown): Promise<T> {
 // (2026-08-25) made it plausible for a Sale file to carry just as many
 // rows as (or more than) a large master file.
 const BATCH_SIZE = 8000;
-const BATCHED_REPORT_TYPES = new Set(["master", "sale"]);
+const BATCHED_REPORT_TYPES = new Set(["master", "sale", "channel_summary"]);
 
 type BatchedCommitResult = {
   committedRows: number;
@@ -236,6 +240,12 @@ export function ProcessButton({ uploadId }: { uploadId: string }) {
             <>
               <dt className="text-ink-3">Duplicate item codes collapsed</dt>
               <dd>{data.duplicatesCollapsed.toLocaleString("en-IN")}</dd>
+            </>
+          )}
+          {data.reportType === "channel_summary" && data.activeChannels != null && (
+            <>
+              <dt className="text-ink-3">Distinct channels in this file</dt>
+              <dd>{data.activeChannels.toLocaleString("en-IN")}</dd>
             </>
           )}
         </dl>

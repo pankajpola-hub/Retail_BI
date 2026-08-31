@@ -9,6 +9,7 @@ const REPORT_LABELS: Record<string, string> = {
   stock: "Stock report",
   scheme: "Scheme report",
   master: "Master (item attributes)",
+  channel_summary: "Sale Summary (channel sales)",
 };
 
 type UploadStatus =
@@ -73,7 +74,7 @@ function putFileToSignedUrl(signedUrl: string, apikey: string, file: File, onPer
   });
 }
 
-export function UploadReportForm({ reportType }: { reportType: "sale" | "stock" | "scheme" | "master" }) {
+export function UploadReportForm({ reportType }: { reportType: "sale" | "stock" | "scheme" | "master" | "channel_summary" }) {
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<UploadStatus>({ state: "idle" });

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient as createDataClient } from "@/lib/data/client";
 import { cleanupOlderUploads } from "@/lib/erpReports/retention";
 
-const REPORT_TYPES = ["sale", "stock", "scheme", "master"] as const;
+const REPORT_TYPES = ["sale", "stock", "scheme", "master", "channel_summary"] as const;
 type ReportType = (typeof REPORT_TYPES)[number];
 
 /**
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
 
   if (typeof reportType !== "string" || !REPORT_TYPES.includes(reportType as ReportType)) {
     return NextResponse.json(
-      { ok: false, error: { code: "invalid_body", message: "reportType must be one of sale, stock, scheme, master." } },
+      { ok: false, error: { code: "invalid_body", message: "reportType must be one of sale, stock, scheme, master, channel_summary." } },
       { status: 400 }
     );
   }
@@ -65,7 +65,9 @@ export async function POST(request: Request) {
   }
 
   const newId = inserted?.[0]?.id;
-  if (newId && (reportType === "sale" || reportType === "master")) {
+  // channel_summary (0101) added alongside sale/master — see
+  // cleanupOlderUploads' own updated comment for why that's safe.
+  if (newId && (reportType === "sale" || reportType === "master" || reportType === "channel_summary")) {
     await cleanupOlderUploads(supabase, reportType, newId);
   }
 
