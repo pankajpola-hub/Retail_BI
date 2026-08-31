@@ -40,19 +40,21 @@ export type ChannelSalesKpis = {
   returnsValue: number;
   /** Distinct channel_name in the current (already filtered) scope. */
   activeChannels: number;
-  /** MoM: last two distinct bill_month values present in scope, Σnet each, (latest-prior)/|prior|*100. null if fewer than 2 months are in scope. */
-  momPct: number | null;
-  latestMonth: string | null;
-  priorMonth: string | null;
 };
 
+/**
+ * The naive "last two months in scope" MoM growth this used to compute is
+ * gone — see lib/saleSummary/comparison.ts for its MoM/YoY/like-to-like
+ * replacement, which (unlike this function) needs data outside `rows` alone
+ * (a lookback row set for the comparison month) so it isn't a pure function
+ * of one row array the way every other KPI here is.
+ */
 export function computeChannelSalesKpis(rows: ChannelSalesRow[]): ChannelSalesKpis {
   let totalNet = 0;
   let totalGross = 0;
   let totalQty = 0;
   let returnsValue = 0;
   const channels = new Set<string>();
-  const byMonth = new Map<string, number>();
 
   for (const r of rows) {
     const net = num(r.net_amount);
@@ -63,21 +65,10 @@ export function computeChannelSalesKpis(rows: ChannelSalesRow[]): ChannelSalesKp
     totalQty += qty;
     if (qty < 0) returnsValue += net;
     if (r.channel_name) channels.add(r.channel_name);
-    byMonth.set(r.bill_month, (byMonth.get(r.bill_month) ?? 0) + net);
   }
 
   const discountPct = totalGross !== 0 ? ((totalGross - totalNet) / totalGross) * 100 : null;
   const isMarkup = discountPct !== null && discountPct < 0;
-
-  const months = [...byMonth.keys()].sort();
-  const lastTwo = months.slice(-2);
-  let momPct: number | null = null;
-  if (lastTwo.length === 2) {
-    const [prior, latest] = lastTwo as [string, string];
-    const priorVal = byMonth.get(prior) ?? 0;
-    const latestVal = byMonth.get(latest) ?? 0;
-    momPct = priorVal !== 0 ? ((latestVal - priorVal) / Math.abs(priorVal)) * 100 : null;
-  }
 
   return {
     totalNet,
@@ -87,9 +78,6 @@ export function computeChannelSalesKpis(rows: ChannelSalesRow[]): ChannelSalesKp
     isMarkup,
     returnsValue,
     activeChannels: channels.size,
-    momPct,
-    latestMonth: lastTwo[1] ?? null,
-    priorMonth: lastTwo[0] ?? null,
   };
 }
 

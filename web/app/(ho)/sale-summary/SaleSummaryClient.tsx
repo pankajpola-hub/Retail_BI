@@ -10,28 +10,39 @@ import {
   type FacetFilterState,
 } from "@/components/ui/FacetFilterBar";
 import { KpiCard } from "@/components/ui/KpiCard";
+import { DeltaBadge } from "@/components/ui/DeltaBadge";
 import { TrendChart } from "@/components/ui/TrendChart";
 import {
   computeChannelSalesKpis,
   computeBreakdown,
   computeMonthlyTrend,
+  num,
   type ChannelSalesRow,
   type BreakdownRow,
 } from "@/lib/saleSummary/aggregate";
+import { aggregateLeaves, buildHierarchyRows } from "@/lib/saleSummary/hierarchy";
+import {
+  comparisonMonthFor,
+  computeGroupGrowth,
+  computeNetworkComparison,
+  latestMonthIn,
+  type ComparisonType,
+} from "@/lib/saleSummary/comparison";
+import { currentYm } from "@/lib/saleSummary/month";
+import { fmtInrAbbrev, fmtCount } from "@/lib/saleSummary/format";
+import { HierarchyTable } from "./HierarchyTable";
+import { MixDonutChart } from "./MixDonutChart";
+import { Sparkline } from "./Sparkline";
 
 const PAGE_KEY = "sale_summary";
-const TOP_PARTIES_LIMIT = 50;
-
-const INR = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
-const pctLabel = (n: number | null) => (n === null ? "—" : `${n.toFixed(1)}%`);
 
 /**
  * Breakdown table with a subtotal/total footer — same "never average a
  * ratio column" convention as PeriodSalesFacetedTable / AgentSalesFacetedTable
  * / StoreDiagnosisFacetedTable: qty/gross/net sum, discountPct is
  * RECOMPUTED from the summed gross/net (not an average of the per-row %s).
- * `footerLabel` lets the Top Parties table say "Total — top N parties"
- * instead of a misleading grand "Total" once the list is capped.
+ * Still used for the Branch/warehouse breakdown — the Channel Type breakdown
+ * this table used to also render is gone, replaced by HierarchyTable below.
  */
 function BreakdownTable({
   rows,
@@ -72,9 +83,9 @@ function BreakdownTable({
           {rows.map((r) => (
             <tr key={r.key} className="border-b border-line-soft last:border-0">
               <td className="px-3 py-2">{r.key}</td>
-              <td className="px-3 py-2 text-right font-mono">{Math.round(r.qty).toLocaleString("en-IN")}</td>
-              <td className="px-3 py-2 text-right font-mono">{INR(r.gross)}</td>
-              <td className="px-3 py-2 text-right font-mono">{INR(r.net)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmtCount(r.qty)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmtInrAbbrev(r.gross)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmtInrAbbrev(r.net)}</td>
               <td className="px-3 py-2 text-right font-mono">
                 {r.discountPct === null ? "—" : r.discountPct < 0 ? `${Math.abs(r.discountPct).toFixed(1)}% markup` : `${r.discountPct.toFixed(1)}%`}
               </td>
@@ -92,9 +103,9 @@ function BreakdownTable({
           <tfoot>
             <tr className="border-t-2 border-line bg-surface-2 font-bold">
               <td className="px-3 py-2">{footerLabel}</td>
-              <td className="px-3 py-2 text-right font-mono">{Math.round(totals.qty).toLocaleString("en-IN")}</td>
-              <td className="px-3 py-2 text-right font-mono">{INR(totals.gross)}</td>
-              <td className="px-3 py-2 text-right font-mono">{INR(totals.net)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmtCount(totals.qty)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmtInrAbbrev(totals.gross)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmtInrAbbrev(totals.net)}</td>
               <td className="px-3 py-2 text-right font-mono">
                 {totals.discountPct === null
                   ? "—"
@@ -110,7 +121,9 @@ function BreakdownTable({
   );
 }
 
-export function SaleSummaryClient({ rows }: { rows: ChannelSalesRow[] }) {
+const COMPARISON_LABELS: Record<ComparisonType, string> = { mom: "MoM", yoy: "YoY" };
+
+export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]; priorRows: ChannelSalesRow[] }) {
   const [state, setState] = useState<FacetFilterState>(emptyFilterState);
   // Returns-only is a simple boolean toggle, deliberately kept OUTSIDE
   // FacetFilterState (which models multi-select facets, free-text search,
@@ -120,6 +133,11 @@ export function SaleSummaryClient({ rows }: { rows: ChannelSalesRow[] }) {
   // chip row like any other filter, which is confusing for what's meant to
   // read as a single on/off switch).
   const [returnsOnly, setReturnsOnly] = useState(false);
+  const [comparisonType, setComparisonType] = useState<ComparisonType>("mom");
+  // Default OFF per the redesign brief — a simple total-vs-total comparison
+  // (today's behavior) unless the user explicitly opts into excluding
+  // newly-onboarded/churned channels from skewing the delta.
+  const [likeToLike, setLikeToLike] = useState(false);
 
   const facets = useMemo<FacetDef<ChannelSalesRow>[]>(
     () => [
@@ -134,7 +152,10 @@ export function SaleSummaryClient({ rows }: { rows: ChannelSalesRow[] }) {
   // AdvField on each keystroke) — party_name and channel_name being in here
   // is what satisfies "Channel/Party search" without a second search box:
   // typing "Shoppers Stop" in the page's one search field narrows every KPI,
-  // table and the trend chart at once, including the Top Parties table.
+  // table and the trend chart at once, including the hierarchy table below
+  // (which also auto-expands every Channel Type while a search is active —
+  // see HierarchyTable's forceExpandAll prop — so a search hit is never
+  // hidden behind a collapsed row).
   const advFields = useMemo<AdvField<ChannelSalesRow>[]>(
     () => [
       { key: "party", label: "Party", get: (r) => r.party_name },
@@ -164,39 +185,192 @@ export function SaleSummaryClient({ rows }: { rows: ChannelSalesRow[] }) {
     [facetFiltered, returnsOnly]
   );
 
+  // Same facet/search/returns-only state applied to the lookback row set
+  // (page.tsx's `priorRows`, up to 12 months before the displayed range) —
+  // "compare within the same filtered scope for both periods" from the
+  // redesign brief. Never fed into FacetFilterBar's own `rows` prop: facet
+  // option-counts must stay anchored to what's actually displayed, not
+  // silently widen to include months the user never selected.
+  const filteredPrior = useMemo(() => {
+    const facetPrior = applyFacetFilter(priorRows, facets, advFields, state);
+    return returnsOnly ? facetPrior.filter((r) => Number(r.total_quantity) < 0) : facetPrior;
+  }, [priorRows, facets, advFields, state, returnsOnly]);
+
   const kpis = useMemo(() => computeChannelSalesKpis(filtered), [filtered]);
   const channelTypeRows = useMemo(() => computeBreakdown(filtered, (r) => r.channel_type ?? "(no channel type)"), [filtered]);
+  const channelModelRows = useMemo(() => computeBreakdown(filtered, (r) => r.channel_model ?? "(no channel model)"), [filtered]);
   const branchRows = useMemo(() => computeBreakdown(filtered, (r) => r.branch_name), [filtered]);
-  const allPartyRows = useMemo(() => computeBreakdown(filtered, (r) => r.party_name), [filtered]);
-  const topPartyRows = useMemo(() => allPartyRows.slice(0, TOP_PARTIES_LIMIT), [allPartyRows]);
   const trendPoints = useMemo(() => computeMonthlyTrend(filtered), [filtered]);
+
+  // Per-month net/gross/qty series for the KPI card sparklines — the same
+  // grain computeMonthlyTrend already produces for net, extended here to
+  // gross/qty too since the sparklines sit on three different cards.
+  const monthlySeries = useMemo(() => {
+    const byMonth = new Map<string, { net: number; gross: number; qty: number }>();
+    for (const r of filtered) {
+      const cur = byMonth.get(r.bill_month) ?? { net: 0, gross: 0, qty: 0 };
+      cur.net += num(r.net_amount);
+      cur.gross += num(r.gross_amount);
+      cur.qty += num(r.total_quantity);
+      byMonth.set(r.bill_month, cur);
+    }
+    return [...byMonth.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [filtered]);
+  const netSpark = useMemo(() => monthlySeries.map(([, v]) => v.net), [monthlySeries]);
+  const grossSpark = useMemo(() => monthlySeries.map(([, v]) => v.gross), [monthlySeries]);
+  const qtySpark = useMemo(() => monthlySeries.map(([, v]) => v.qty), [monthlySeries]);
+
+  // --- MoM/YoY comparison (see lib/saleSummary/comparison.ts for the full
+  // "what counts as current/comparison" reasoning) ---
+  const latestMonth = useMemo(() => latestMonthIn(filtered), [filtered]);
+  const comparisonMonth = useMemo(() => (latestMonth ? comparisonMonthFor(latestMonth, comparisonType) : null), [latestMonth, comparisonType]);
+  const currentMonthRows = useMemo(() => (latestMonth ? filtered.filter((r) => r.bill_month === latestMonth) : []), [filtered, latestMonth]);
+  const comparisonMonthRows = useMemo(() => {
+    if (!comparisonMonth) return [];
+    // The comparison month can be inside the displayed range itself (e.g.
+    // MoM when two consecutive months are both selected) or only reachable
+    // via the lookback set — check both.
+    return [...filtered, ...filteredPrior].filter((r) => r.bill_month === comparisonMonth);
+  }, [filtered, filteredPrior, comparisonMonth]);
+  const isPartialMonth = latestMonth !== null && latestMonth.slice(0, 7) === currentYm();
+
+  const networkComparison = useMemo(
+    () =>
+      computeNetworkComparison({
+        currentMonthRows,
+        comparisonMonthRows,
+        latestMonth,
+        comparisonMonth,
+        comparisonType,
+        likeToLike,
+        isPartialMonth,
+      }),
+    [currentMonthRows, comparisonMonthRows, latestMonth, comparisonMonth, comparisonType, likeToLike, isPartialMonth]
+  );
+
+  const hierarchyRows = useMemo(() => {
+    const scopeLeaves = aggregateLeaves(filtered);
+    const growthLeaves = latestMonth
+      ? {
+          currentMonthLeaves: aggregateLeaves(currentMonthRows),
+          comparisonMonthLeaves: comparisonMonthRows.length > 0 ? aggregateLeaves(comparisonMonthRows) : null,
+        }
+      : null;
+    return buildHierarchyRows(scopeLeaves, growthLeaves);
+  }, [filtered, latestMonth, currentMonthRows, comparisonMonthRows]);
+
+  // --- Auto-generated insight strip — the single largest Channel Type by
+  // net sales in the current filtered scope, plus its own MoM/YoY delta
+  // when a comparison baseline exists. Template + real numbers, not a
+  // canned sentence: every value it prints comes straight out of
+  // channelTypeRows/kpis/networkComparison above. ---
+  const insight = useMemo(() => {
+    const top = channelTypeRows[0];
+    if (!top || kpis.totalNet === 0) return null;
+    const sharePct = (top.net / kpis.totalNet) * 100;
+    const topTypeGrowth =
+      latestMonth && comparisonMonthRows.length > 0
+        ? computeGroupGrowth(
+            currentMonthRows.filter((r) => (r.channel_type ?? "(no channel type)") === top.key),
+            comparisonMonthRows.filter((r) => (r.channel_type ?? "(no channel type)") === top.key)
+          )
+        : null;
+    const growthClause =
+      topTypeGrowth === null
+        ? ""
+        : ` — ${topTypeGrowth >= 0 ? "up" : "down"} ${Math.abs(topTypeGrowth).toFixed(1)}% ${COMPARISON_LABELS[comparisonType]} for ${latestMonth!.slice(0, 7)}`;
+    return `${top.key} drove ${sharePct.toFixed(0)}% of net sales in this scope (${fmtInrAbbrev(top.net)})${growthClause}.`;
+  }, [channelTypeRows, kpis.totalNet, latestMonth, comparisonMonthRows, currentMonthRows, comparisonType]);
+
+  const hasSearchActive = state.search.trim().length > 0;
 
   return (
     <>
+      {insight && (
+        <div className="mb-4 rounded-md border border-line-soft bg-surface-2 px-3.5 py-2.5 text-[13px] text-ink-2">{insight}</div>
+      )}
+
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <KpiCard label="Net sales" value={INR(kpis.totalNet)} />
-        <KpiCard label="Gross sales" value={INR(kpis.totalGross)} />
-        <KpiCard label="Total qty" value={Math.round(kpis.totalQty).toLocaleString("en-IN")} />
+        <KpiCard label="Net sales" value={fmtInrAbbrev(kpis.totalNet)} sub={<Sparkline values={netSpark} />} />
+        <KpiCard label="Gross sales" value={fmtInrAbbrev(kpis.totalGross)} sub={<Sparkline values={grossSpark} />} />
+        <KpiCard label="Total qty" value={fmtCount(kpis.totalQty)} sub={<Sparkline values={qtySpark} />} />
         <KpiCard
           label={kpis.isMarkup ? "Markup %" : "Discount %"}
           value={kpis.discountPct === null ? "—" : `${Math.abs(kpis.discountPct).toFixed(1)}%`}
           sub={
             kpis.isMarkup
               ? "Net exceeds gross for this scope — expected for this channel, see docs."
-              : undefined
+              : "Signed: positive = discount given (net < gross); flips to “Markup %” when net exceeds gross."
           }
         />
         <KpiCard
           label="Returns value"
-          value={INR(kpis.returnsValue)}
+          value={fmtInrAbbrev(kpis.returnsValue)}
           sub="Σ net, negative-quantity rows"
         />
         <KpiCard label="Active channels" value={String(kpis.activeChannels)} />
-        <KpiCard
-          label="MoM growth"
-          value={kpis.momPct === null ? "—" : `${kpis.momPct >= 0 ? "+" : ""}${kpis.momPct.toFixed(1)}%`}
-          sub={kpis.priorMonth && kpis.latestMonth ? `${kpis.priorMonth.slice(0, 7)} → ${kpis.latestMonth.slice(0, 7)}` : "Needs 2+ months in scope"}
-        />
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="rounded-lg border border-line-soft bg-surface px-4 pb-4 pt-4 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[10.5px] font-semibold uppercase tracking-[0.11em] text-ink-3">
+              {COMPARISON_LABELS[comparisonType]} growth — net sales
+            </div>
+            {isPartialMonth && (
+              <span className="rounded-full border border-dashed border-line px-2 py-0.5 text-[10.5px] text-ink-3" title="The latest month in scope is still accumulating data.">
+                Partial month
+              </span>
+            )}
+          </div>
+          <div className="font-mono font-tabular mt-2 text-[26px] leading-none tracking-tight text-ink">
+            {networkComparison.growthPct === null ? "—" : `${networkComparison.growthPct >= 0 ? "+" : ""}${networkComparison.growthPct.toFixed(1)}%`}
+          </div>
+          <DeltaBadge
+            current={networkComparison.currentNet}
+            previous={networkComparison.comparisonNet}
+            baselineLabel={
+              networkComparison.latestMonth && networkComparison.comparisonMonth
+                ? `${networkComparison.comparisonMonth.slice(0, 7)} → ${networkComparison.latestMonth.slice(0, 7)}`
+                : "vs comparison period"
+            }
+          />
+          {likeToLike && networkComparison.likeToLike && (networkComparison.excludedNewChannels > 0 || networkComparison.excludedChurnedChannels > 0) && (
+            <p className="mt-2 text-[11px] text-ink-3">
+              Like-to-like: excluded {networkComparison.excludedNewChannels} new + {networkComparison.excludedChurnedChannels} discontinued channel
+              {networkComparison.excludedNewChannels + networkComparison.excludedChurnedChannels === 1 ? "" : "s"} from this delta.
+            </p>
+          )}
+        </div>
+
+        <div className="rounded-lg border border-dashed border-line-soft bg-surface px-4 pb-4 pt-4">
+          <div className="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.11em] text-ink-3">Comparison settings</div>
+          <div className="flex flex-wrap items-center gap-2">
+            {(["mom", "yoy"] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setComparisonType(t)}
+                className={`rounded-full border px-3 py-1 text-[12.5px] font-medium ${
+                  comparisonType === t ? "border-accent bg-accent-soft text-accent-ink" : "border-line text-ink-3 hover:text-ink-2"
+                }`}
+              >
+                {t === "mom" ? "Month-over-month" : "Year-over-year"}
+              </button>
+            ))}
+            <label className="ml-1 flex min-h-[32px] items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12.5px] text-ink-2">
+              <input type="checkbox" checked={likeToLike} onChange={(e) => setLikeToLike(e.target.checked)} />
+              Compare like-to-like only
+            </label>
+          </div>
+          <p className="mt-2 text-[11px] text-ink-3">
+            {networkComparison.latestMonth
+              ? `Comparing ${networkComparison.latestMonth.slice(0, 7)} to ${
+                  networkComparison.comparisonMonth ? networkComparison.comparisonMonth.slice(0, 7) : "—"
+                }${networkComparison.comparisonNet === null ? " (no data for the comparison month in this scope)" : ""}.`
+              : "No months in the current scope to compare."}
+          </p>
+        </div>
       </div>
 
       <div className="mt-6 flex flex-wrap items-center gap-2">
@@ -215,12 +389,18 @@ export function SaleSummaryClient({ rows }: { rows: ChannelSalesRow[] }) {
         </label>
       </div>
 
-      <div className="mt-6">
-        <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Channel Type breakdown</span>
-        <p className="mt-1 text-[11.5px] text-ink-3">Primary view — every row in scope belongs to exactly one Channel Type, so this table's total equals the KPI cards above.</p>
-        <div className="mt-2">
-          <BreakdownTable rows={channelTypeRows} keyLabel="Channel Type" footerLabel="Total" emptyLabel="No rows match these filters." />
+      <div className="mt-6 grid grid-cols-1 gap-3 lg:grid-cols-[1.6fr_1fr]">
+        <div>
+          <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Channel Model / Type / Name</span>
+          <p className="mt-1 text-[11.5px] text-ink-3">
+            Collapsed to Channel Model + Channel Type by default — click a Channel Type row to reveal its Channel Name parties. Growth (
+            {COMPARISON_LABELS[comparisonType]}) reflects the latest month in scope, not the full range total above.
+          </p>
+          <div className="mt-2">
+            <HierarchyTable rows={hierarchyRows} forceExpandAll={hasSearchActive} emptyLabel="No rows match these filters." />
+          </div>
         </div>
+        <MixDonutChart modelRows={channelModelRows} typeRows={channelTypeRows} />
       </div>
 
       <div className="mt-6">
@@ -231,29 +411,12 @@ export function SaleSummaryClient({ rows }: { rows: ChannelSalesRow[] }) {
       </div>
 
       <div className="mt-6">
-        <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
-          Top parties {allPartyRows.length > TOP_PARTIES_LIMIT ? `(top ${TOP_PARTIES_LIMIT} of ${allPartyRows.length})` : ""}
-        </span>
-        <p className="mt-1 text-[11.5px] text-ink-3">
-          {allPartyRows.length} distinct part{allPartyRows.length === 1 ? "y" : "ies"} in scope — too many for a dropdown. Use the search box above to find one by name; it narrows this table (and every KPI/table on the page) the same way.
-        </p>
-        <div className="mt-2">
-          <BreakdownTable
-            rows={topPartyRows}
-            keyLabel="Party"
-            footerLabel={allPartyRows.length > TOP_PARTIES_LIMIT ? `Total — top ${topPartyRows.length} parties` : "Total"}
-            emptyLabel="No parties match these filters."
-          />
-        </div>
-      </div>
-
-      <div className="mt-6">
         <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Monthly trend — net sales</span>
         <div className="mt-2 border border-line-soft p-3">
           {trendPoints.length === 0 ? (
             <p className="py-10 text-center text-sm text-ink-3">No data in this month range / filter.</p>
           ) : (
-            <TrendChart points={trendPoints} ariaLabel="Net sales by month, wholesale/distribution channels" />
+            <TrendChart points={trendPoints} ariaLabel="Net sales by month, wholesale/distribution channels" valueFormatter={fmtInrAbbrev} />
           )}
         </div>
       </div>

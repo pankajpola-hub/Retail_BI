@@ -8,7 +8,7 @@ import { cellToNumber, cellToString } from "./common";
  * party, channel) by whoever exports it — a genuinely different shape from
  * the bill/line-grain Sale report parseSaleWorkbook.ts reads.
  *
- * Two things this parser handles that the fixed-shape Sale/Stock parsers
+ * Three things this parser handles that the fixed-shape Sale/Stock parsers
  * don't need to:
  *
  *  1. LEADING BLANK ROW — the profiled sample file has its header on ROW 2,
@@ -24,6 +24,22 @@ import { cellToNumber, cellToString } from "./common";
  *     below. A cell Excel already turned into a real Date (cellDates: true
  *     can do this for some locale/format combinations) is also accepted,
  *     normalized to the 1st of ITS month the same way.
+ *
+ *  3. WHICH SHEET HAS THE DATA IS NOT POSITIONAL — the source workbook grew
+ *     a second sheet ("Channels and its linking", a 73-row Channel Model ->
+ *     Channel Type -> Channel Name reference table) placed BEFORE the real
+ *     8,146-row "Sales data" sheet, so `workbook.SheetNames[0]` silently read
+ *     the wrong sheet the moment that reference tab was added — every upload
+ *     failed with "no rows" even though the file was well-formed. The fix:
+ *     don't trust position OR a hardcoded sheet-name string (a future export
+ *     could rename either tab) — scan EVERY sheet in the workbook, in order,
+ *     for one whose header row matches REQUIRED_COLUMNS (same header-row
+ *     LOCATING technique as point 1, just applied across sheets too, not
+ *     only down rows within one sheet), and read the first one that matches.
+ *     The Channel Model/Type mapping the linking sheet carries is redundant
+ *     with what's already denormalized onto every Sales data row (verified
+ *     1:1 in the real file — see migration 0101's header), so that sheet is
+ *     never parsed for its own data, only skipped over.
  */
 
 export type ParsedChannelSummaryRow = {
@@ -106,27 +122,53 @@ function findHeaderRow(data: unknown[][]): { idx: number; index: Map<string, num
   return null;
 }
 
+/**
+ * Scans every sheet, in workbook order, for the first one whose header row
+ * (located via findHeaderRow, itself tolerant of a leading blank row) has
+ * every REQUIRED_COLUMNS name — i.e. finds the sales-data sheet BY SHAPE, not
+ * by position or by a hardcoded name. A reference/mapping tab like "Channels
+ * and its linking" (no TOTAL QUANTITY / GROSS AMOUNT / NET AMOUNT columns)
+ * never matches and is skipped over regardless of where it sits in the
+ * workbook. Returns null only if no sheet matches at all.
+ */
+function findDataSheet(
+  workbook: XLSX.WorkBook
+): { sheetName: string; data: unknown[][]; header: { idx: number; index: Map<string, number> } } | null {
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) continue;
+    const data = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null, blankrows: false });
+    const header = findHeaderRow(data);
+    if (header) return { sheetName, data, header };
+  }
+  return null;
+}
+
 export function parseChannelSummaryWorkbook(buffer: ArrayBuffer): {
   rows: ParsedChannelSummaryRow[];
   sheetName: string;
 } {
   const workbook = XLSX.read(buffer, { type: "array", cellDates: true });
-  const sheetName = workbook.SheetNames[0] ?? "";
-  const sheet = workbook.Sheets[sheetName];
-  if (!sheet) return { rows: [], sheetName };
 
-  const data = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null, blankrows: false });
-  const header = findHeaderRow(data);
-  if (!header) {
-    const firstNonEmpty = data.slice(0, MAX_HEADER_SCAN_ROWS).find((r) => r && r.some((c) => cellToString(c) !== null));
-    const found = (firstNonEmpty ?? []).map((c) => cellToString(c)).filter((c): c is string => c !== null);
+  const found = findDataSheet(workbook);
+  if (!found) {
+    // Best-effort diagnostic: show what the first sheet's first non-blank row
+    // actually contains, so a genuine shape mismatch is easy to debug even
+    // though nothing in the workbook matched.
+    const firstSheet = workbook.Sheets[workbook.SheetNames[0] ?? ""];
+    const firstData = firstSheet
+      ? XLSX.utils.sheet_to_json<unknown[]>(firstSheet, { header: 1, defval: null, blankrows: false })
+      : [];
+    const firstNonEmpty = firstData.slice(0, MAX_HEADER_SCAN_ROWS).find((r) => r && r.some((c) => cellToString(c) !== null));
+    const foundHeaders = (firstNonEmpty ?? []).map((c) => cellToString(c)).filter((c): c is string => c !== null);
     throw new Error(
-      `No recognizable Sale Summary header row found in the first ${MAX_HEADER_SCAN_ROWS} rows. ` +
-        `Looked for: ${REQUIRED_COLUMNS.join(", ")}. Headers read on the first non-blank row: ${
-          found.length > 0 ? found.join(", ") : "(none)"
+      `No sheet with a recognizable Sale Summary header row found. Looked for: ${REQUIRED_COLUMNS.join(", ")}. ` +
+        `Sheets in this file: ${workbook.SheetNames.join(", ")}. Headers read on sheet "${workbook.SheetNames[0] ?? ""}"'s first non-blank row: ${
+          foundHeaders.length > 0 ? foundHeaders.join(", ") : "(none)"
         }.`
     );
   }
+  const { sheetName, data, header } = found;
   const { idx: headerRowIdx, index } = header;
   const col = (name: string) => index.get(name.toUpperCase())!;
 
