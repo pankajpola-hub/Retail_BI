@@ -14,14 +14,7 @@ import {
   type BreakdownRow,
 } from "@/lib/saleSummary/aggregate";
 import { aggregateLeaves, buildHierarchyRows } from "@/lib/saleSummary/hierarchy";
-import {
-  comparisonMonthFor,
-  computeGroupGrowth,
-  computeNetworkComparison,
-  latestMonthIn,
-  type ComparisonType,
-} from "@/lib/saleSummary/comparison";
-import { currentYm } from "@/lib/saleSummary/month";
+import { computeGroupGrowth, computeNetworkComparison, formatExcludedNames } from "@/lib/saleSummary/comparison";
 import { fmtInrAbbrev, fmtCount } from "@/lib/saleSummary/format";
 import { HierarchyTable } from "./HierarchyTable";
 import { MixDonutChart } from "./MixDonutChart";
@@ -29,6 +22,9 @@ import { Sparkline } from "./Sparkline";
 import { useSaleSummaryState } from "./SaleSummaryShell";
 
 const PAGE_KEY = "sale_summary";
+
+/** "2026-01" / "2026-01" -> "2026-01"; "2026-01" / "2026-03" -> "2026-01 – 2026-03". Shared by every "Comparing X to Y" caption on this page. */
+const rangeLabel = (from: string, to: string) => (from === to ? from : `${from} – ${to}`);
 
 /**
  * Breakdown table with a subtotal/total footer — same "sum extensive
@@ -104,18 +100,35 @@ function BreakdownTable({
   );
 }
 
-const COMPARISON_LABELS: Record<ComparisonType, string> = { mom: "MoM", yoy: "YoY" };
+export function SaleSummaryClient({
+  rows,
+  compareRows,
+  fromMonth,
+  toMonth,
+  compareFromMonth,
+  compareToMonth,
+}: {
+  rows: ChannelSalesRow[];
+  /** Empty when comparison is off — page.tsx only fetches this row set when compareFromMonth/compareToMonth are both present. */
+  compareRows: ChannelSalesRow[];
+  fromMonth: string;
+  toMonth: string;
+  compareFromMonth: string | null;
+  compareToMonth: string | null;
+}) {
+  // Facet/search state, Returns-only and likeToLike live in SaleSummaryShell's
+  // Context, not local useState here — this component remounts on every
+  // date-range change (see SaleSummaryShell.tsx for the full root-cause
+  // writeup), so anything stored in local state here would silently reset on
+  // every such navigation. Reading them via context instead means they're
+  // simply re-read from a stable ancestor that never remounts, so they
+  // survive. compareFromMonth/compareToMonth, by contrast, arrive as PROPS
+  // (sourced from the URL via page.tsx) rather than Context — they're what
+  // DRIVES this component's remount/refetch in the first place, so they're
+  // naturally always fresh and need no separate persistence.
+  const { filterState: state, setFilterState: setState, returnsOnly, setReturnsOnly, likeToLike } = useSaleSummaryState();
 
-export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]; priorRows: ChannelSalesRow[] }) {
-  // Facet/search state, Returns-only, comparisonType and likeToLike ALL live
-  // in SaleSummaryShell's Context now, not local useState here — this
-  // component remounts on every date-range change (see SaleSummaryShell.tsx
-  // for the full root-cause writeup), so anything stored in local state here
-  // would silently reset on every such navigation. Reading them via context
-  // instead means they're simply re-read from a stable ancestor that never
-  // remounts, so they survive.
-  const { filterState: state, setFilterState: setState, returnsOnly, setReturnsOnly, comparisonType, setComparisonType, likeToLike, setLikeToLike } =
-    useSaleSummaryState();
+  const comparing = Boolean(compareFromMonth && compareToMonth);
 
   const facets = useMemo<FacetDef<ChannelSalesRow>[]>(
     () => [
@@ -163,16 +176,17 @@ export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]
     [facetFiltered, returnsOnly]
   );
 
-  // Same facet/search/returns-only state applied to the lookback row set
-  // (page.tsx's `priorRows`, up to 12 months before the displayed range) —
-  // "compare within the same filtered scope for both periods" from the
-  // redesign brief. Never fed into FacetFilterBar's own `rows` prop: facet
-  // option-counts must stay anchored to what's actually displayed, not
-  // silently widen to include months the user never selected.
-  const filteredPrior = useMemo(() => {
-    const facetPrior = applyFacetFilter(priorRows, facets, advFields, state);
-    return returnsOnly ? facetPrior.filter((r) => Number(r.total_quantity) < 0) : facetPrior;
-  }, [priorRows, facets, advFields, state, returnsOnly]);
+  // Same facet/search/returns-only state applied to the comparison range
+  // (page.tsx's `compareRows`) — "compare within the same filtered scope for
+  // both periods" from the original redesign brief, still true now that the
+  // comparison side is an arbitrary range rather than one lookback month.
+  // Never fed into FacetFilterBar's own `rows` prop: facet option-counts
+  // must stay anchored to what's actually displayed (the main range), not
+  // silently widen to include the comparison range the user picked.
+  const filteredCompare = useMemo(() => {
+    const facetCompare = applyFacetFilter(compareRows, facets, advFields, state);
+    return returnsOnly ? facetCompare.filter((r) => Number(r.total_quantity) < 0) : facetCompare;
+  }, [compareRows, facets, advFields, state, returnsOnly]);
 
   const kpis = useMemo(() => computeChannelSalesKpis(filtered), [filtered]);
   const channelTypeRows = useMemo(() => computeBreakdown(filtered, (r) => r.channel_type ?? "(no channel type)"), [filtered]);
@@ -198,48 +212,38 @@ export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]
   const grossSpark = useMemo(() => monthlySeries.map(([, v]) => v.gross), [monthlySeries]);
   const qtySpark = useMemo(() => monthlySeries.map(([, v]) => v.qty), [monthlySeries]);
 
-  // --- MoM/YoY comparison (see lib/saleSummary/comparison.ts for the full
-  // "what counts as current/comparison" reasoning) ---
-  const latestMonth = useMemo(() => latestMonthIn(filtered), [filtered]);
-  const comparisonMonth = useMemo(() => (latestMonth ? comparisonMonthFor(latestMonth, comparisonType) : null), [latestMonth, comparisonType]);
-  const currentMonthRows = useMemo(() => (latestMonth ? filtered.filter((r) => r.bill_month === latestMonth) : []), [filtered, latestMonth]);
-  const comparisonMonthRows = useMemo(() => {
-    if (!comparisonMonth) return [];
-    // The comparison month can be inside the displayed range itself (e.g.
-    // MoM when two consecutive months are both selected) or only reachable
-    // via the lookback set — check both.
-    return [...filtered, ...filteredPrior].filter((r) => r.bill_month === comparisonMonth);
-  }, [filtered, filteredPrior, comparisonMonth]);
-  const isPartialMonth = latestMonth !== null && latestMonth.slice(0, 7) === currentYm();
-
+  // --- Range-vs-range comparison (see lib/saleSummary/comparison.ts for the
+  // full "sum the whole main range vs sum the whole comparison range"
+  // reasoning) — OFF by default, active only once the user picks a
+  // comparison range via ComparisonMonthRangePicker in the sticky header. ---
   const networkComparison = useMemo(
     () =>
       computeNetworkComparison({
-        currentMonthRows,
-        comparisonMonthRows,
-        latestMonth,
-        comparisonMonth,
-        comparisonType,
+        mainFromMonth: fromMonth,
+        mainToMonth: toMonth,
+        currentRows: filtered,
+        comparisonFromMonth: compareFromMonth,
+        comparisonToMonth: compareToMonth,
+        comparisonRows: filteredCompare,
         likeToLike,
-        isPartialMonth,
       }),
-    [currentMonthRows, comparisonMonthRows, latestMonth, comparisonMonth, comparisonType, likeToLike, isPartialMonth]
+    [fromMonth, toMonth, filtered, compareFromMonth, compareToMonth, filteredCompare, likeToLike]
   );
 
   const hierarchyRows = useMemo(() => {
     const scopeLeaves = aggregateLeaves(filtered);
-    const growthLeaves = latestMonth
+    const growthLeaves = comparing
       ? {
-          currentMonthLeaves: aggregateLeaves(currentMonthRows),
-          comparisonMonthLeaves: comparisonMonthRows.length > 0 ? aggregateLeaves(comparisonMonthRows) : null,
+          currentMonthLeaves: aggregateLeaves(filtered),
+          comparisonMonthLeaves: filteredCompare.length > 0 ? aggregateLeaves(filteredCompare) : null,
         }
       : null;
     return buildHierarchyRows(scopeLeaves, growthLeaves);
-  }, [filtered, latestMonth, currentMonthRows, comparisonMonthRows]);
+  }, [filtered, comparing, filteredCompare]);
 
   // --- Auto-generated insight strip — the single largest Channel Type by
-  // net sales in the current filtered scope, plus its own MoM/YoY delta
-  // when a comparison baseline exists. Template + real numbers, not a
+  // net sales in the current filtered scope, plus its own growth vs the
+  // comparison range when one is active. Template + real numbers, not a
   // canned sentence: every value it prints comes straight out of
   // channelTypeRows/kpis/networkComparison above. ---
   const insight = useMemo(() => {
@@ -247,10 +251,10 @@ export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]
     if (!top || kpis.totalNet === 0) return null;
     const sharePct = (top.net / kpis.totalNet) * 100;
     const topTypeGrowth =
-      latestMonth && comparisonMonthRows.length > 0
+      comparing && filteredCompare.length > 0
         ? computeGroupGrowth(
-            currentMonthRows.filter((r) => (r.channel_type ?? "(no channel type)") === top.key),
-            comparisonMonthRows.filter((r) => (r.channel_type ?? "(no channel type)") === top.key)
+            filtered.filter((r) => (r.channel_type ?? "(no channel type)") === top.key),
+            filteredCompare.filter((r) => (r.channel_type ?? "(no channel type)") === top.key)
           )
         : null;
     // Both aspects, per Pankaj — "growth to be measure for both aspect qty
@@ -266,19 +270,20 @@ export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]
             topTypeGrowth.qtyGrowthPct === null
               ? ""
               : `qty ${topTypeGrowth.qtyGrowthPct >= 0 ? "up" : "down"} ${Math.abs(topTypeGrowth.qtyGrowthPct).toFixed(1)}%`
-          } ${COMPARISON_LABELS[comparisonType]} for ${latestMonth!.slice(0, 7)}`;
+          } vs ${rangeLabel(compareFromMonth as string, compareToMonth as string)}`;
     return `${top.key} drove ${sharePct.toFixed(0)}% of net sales in this scope (${fmtInrAbbrev(top.net)})${growthClause}.`;
-  }, [channelTypeRows, kpis.totalNet, latestMonth, comparisonMonthRows, currentMonthRows, comparisonType]);
+  }, [channelTypeRows, kpis.totalNet, comparing, filteredCompare, filtered, compareFromMonth, compareToMonth]);
 
-  // Shared "Comparing 2026-08 to 2025-08." caption — every table/card that
-  // shows a growth figure repeats this exact line so the comparison window
-  // is never implicit (per Pankaj: "this kind of details to be shown on
-  // every table top wherever there is comparison like growth").
-  const comparisonPeriodLabel = networkComparison.latestMonth
-    ? `Comparing ${networkComparison.latestMonth.slice(0, 7)} to ${
-        networkComparison.comparisonMonth ? networkComparison.comparisonMonth.slice(0, 7) : "—"
-      } (${COMPARISON_LABELS[comparisonType]})${networkComparison.comparisonGross === null ? " — no data for the comparison month in this scope" : ""}.`
-    : "No months in the current scope to compare.";
+  // Shared "Comparing Jan 2026 – Mar 2026 to Oct 2025 – Dec 2025." caption —
+  // every table/card that shows a growth figure repeats this exact line so
+  // the comparison window is never implicit (per Pankaj: "this kind of
+  // details to be shown on every table top wherever there is comparison like
+  // growth"). States the actual ranges, not a computed single month.
+  const comparisonPeriodLabel = comparing
+    ? `Comparing ${rangeLabel(fromMonth, toMonth)} to ${rangeLabel(compareFromMonth as string, compareToMonth as string)}${
+        networkComparison.comparisonGross === null ? " — no data for the comparison range in this scope" : ""
+      }.`
+    : "Comparison is off — use the “+ Compare” control in the header above to compare this range against another.";
 
   const hasSearchActive = state.search.trim().length > 0;
 
@@ -307,81 +312,85 @@ export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]
         <KpiCard label="Active channels" value={String(kpis.activeChannels)} />
       </div>
 
-      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div className="rounded-lg border border-line-soft bg-surface px-4 pb-4 pt-4 shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-[10.5px] font-semibold uppercase tracking-[0.11em] text-ink-3">
-              {COMPARISON_LABELS[comparisonType]} growth — qty &amp; value
-            </div>
-            {isPartialMonth && (
-              <span className="rounded-full border border-dashed border-line px-2 py-0.5 text-[10.5px] text-ink-3" title="The latest month in scope is still accumulating data.">
-                Partial month
-              </span>
-            )}
-          </div>
-          <p className="mt-1 text-[11px] text-ink-3">{comparisonPeriodLabel}</p>
-          <div className="mt-3 grid grid-cols-2 gap-4">
-            <div>
-              <div className="text-[10px] uppercase tracking-wide text-ink-3">Value (taxable)</div>
-              <div className="font-mono font-tabular mt-1 text-[22px] leading-none tracking-tight text-ink">
-                {networkComparison.grossGrowthPct === null ? "—" : `${networkComparison.grossGrowthPct >= 0 ? "+" : ""}${networkComparison.grossGrowthPct.toFixed(1)}%`}
-              </div>
-              <DeltaBadge
-                current={networkComparison.currentGross}
-                previous={networkComparison.comparisonGross}
-                baselineLabel={
-                  networkComparison.latestMonth && networkComparison.comparisonMonth
-                    ? `${networkComparison.comparisonMonth.slice(0, 7)} → ${networkComparison.latestMonth.slice(0, 7)}`
-                    : "vs comparison period"
-                }
-              />
-            </div>
-            <div>
-              <div className="text-[10px] uppercase tracking-wide text-ink-3">Qty</div>
-              <div className="font-mono font-tabular mt-1 text-[22px] leading-none tracking-tight text-ink">
-                {networkComparison.qtyGrowthPct === null ? "—" : `${networkComparison.qtyGrowthPct >= 0 ? "+" : ""}${networkComparison.qtyGrowthPct.toFixed(1)}%`}
-              </div>
-              <DeltaBadge
-                current={networkComparison.currentQty}
-                previous={networkComparison.comparisonQty}
-                baselineLabel={
-                  networkComparison.latestMonth && networkComparison.comparisonMonth
-                    ? `${networkComparison.comparisonMonth.slice(0, 7)} → ${networkComparison.latestMonth.slice(0, 7)}`
-                    : "vs comparison period"
-                }
-              />
-            </div>
-          </div>
-          {likeToLike && networkComparison.likeToLike && (networkComparison.excludedNewChannels > 0 || networkComparison.excludedChurnedChannels > 0) && (
-            <p className="mt-2 text-[11px] text-ink-3">
-              Like-to-like: excluded {networkComparison.excludedNewChannels} new + {networkComparison.excludedChurnedChannels} discontinued channel
-              {networkComparison.excludedNewChannels + networkComparison.excludedChurnedChannels === 1 ? "" : "s"} from this delta.
-            </p>
+      {
+        // Growth panel — only meaningful once comparison is ON (ask 4:
+        // "'Comparison settings' should be optional only if user wants to
+        // use only"). Its own range picker/like-to-like toggle now live in
+        // the sticky header next to the main date filter (ask 3), so this
+        // card is read-only: numbers when comparing, a one-line nudge when
+        // not.
+      }
+      <div className="mt-3 rounded-lg border border-line-soft bg-surface px-4 pb-4 pt-4 shadow-sm sm:max-w-xl">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-[10.5px] font-semibold uppercase tracking-[0.11em] text-ink-3">Growth — qty &amp; value</div>
+          {comparing && networkComparison.isPartialMonth && (
+            <span
+              className="rounded-full border border-dashed border-line px-2 py-0.5 text-[10.5px] text-ink-3"
+              title="The latest month in one of the compared ranges is still accumulating data."
+            >
+              Partial month
+            </span>
           )}
         </div>
-
-        <div className="rounded-lg border border-dashed border-line-soft bg-surface px-4 pb-4 pt-4">
-          <div className="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.11em] text-ink-3">Comparison settings</div>
-          <div className="flex flex-wrap items-center gap-2">
-            {(["mom", "yoy"] as const).map((t) => (
-              <button
-                key={t}
-                type="button"
-                onClick={() => setComparisonType(t)}
-                className={`rounded-full border px-3 py-1 text-[12.5px] font-medium ${
-                  comparisonType === t ? "border-accent bg-accent-soft text-accent-ink" : "border-line text-ink-3 hover:text-ink-2"
-                }`}
-              >
-                {t === "mom" ? "Month-over-month" : "Year-over-year"}
-              </button>
-            ))}
-            <label className="ml-1 flex min-h-[32px] items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12.5px] text-ink-2">
-              <input type="checkbox" checked={likeToLike} onChange={(e) => setLikeToLike(e.target.checked)} />
-              Compare like-to-like only
-            </label>
-          </div>
-          <p className="mt-2 text-[11px] text-ink-3">{comparisonPeriodLabel}</p>
-        </div>
+        <p className="mt-1 text-[11px] text-ink-3">{comparisonPeriodLabel}</p>
+        {comparing && (
+          <>
+            <div className="mt-3 grid grid-cols-2 gap-4">
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-ink-3">Value (taxable)</div>
+                <div className="font-mono font-tabular mt-1 text-[22px] leading-none tracking-tight text-ink">
+                  {networkComparison.grossGrowthPct === null
+                    ? "—"
+                    : `${networkComparison.grossGrowthPct >= 0 ? "+" : ""}${networkComparison.grossGrowthPct.toFixed(1)}%`}
+                </div>
+                <DeltaBadge
+                  current={networkComparison.currentGross}
+                  previous={networkComparison.comparisonGross}
+                  baselineLabel={`${rangeLabel(compareFromMonth as string, compareToMonth as string)} → ${rangeLabel(fromMonth, toMonth)}`}
+                />
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-ink-3">Qty</div>
+                <div className="font-mono font-tabular mt-1 text-[22px] leading-none tracking-tight text-ink">
+                  {networkComparison.qtyGrowthPct === null
+                    ? "—"
+                    : `${networkComparison.qtyGrowthPct >= 0 ? "+" : ""}${networkComparison.qtyGrowthPct.toFixed(1)}%`}
+                </div>
+                <DeltaBadge
+                  current={networkComparison.currentQty}
+                  previous={networkComparison.comparisonQty}
+                  baselineLabel={`${rangeLabel(compareFromMonth as string, compareToMonth as string)} → ${rangeLabel(fromMonth, toMonth)}`}
+                />
+              </div>
+            </div>
+            {
+              // Like-to-like detail (ask 1, per Pankaj: "need more extensive
+              // detailed mentioned there") — names the actual excluded
+              // channels, not just a count, truncated past
+              // EXCLUDED_NAME_DISPLAY_LIMIT via formatExcludedNames so a big
+              // onboarding/churn wave doesn't produce a wall of text.
+              likeToLike &&
+                networkComparison.likeToLike &&
+                (networkComparison.excludedNewChannelNames.length > 0 || networkComparison.excludedChurnedChannelNames.length > 0) && (
+                  <p className="mt-2 text-[11px] text-ink-3">
+                    Like-to-like: excluded {networkComparison.excludedNewChannelNames.length} new
+                    {networkComparison.excludedNewChannelNames.length > 0
+                      ? ` (${formatExcludedNames(networkComparison.excludedNewChannelNames)})`
+                      : ""}{" "}
+                    and {networkComparison.excludedChurnedChannelNames.length} discontinued
+                    {networkComparison.excludedChurnedChannelNames.length > 0
+                      ? ` (${formatExcludedNames(networkComparison.excludedChurnedChannelNames)})`
+                      : ""}{" "}
+                    channel
+                    {networkComparison.excludedNewChannelNames.length + networkComparison.excludedChurnedChannelNames.length === 1
+                      ? ""
+                      : "s"}{" "}
+                    from this delta.
+                  </p>
+                )
+            }
+          </>
+        )}
       </div>
 
       <div className="mt-6 flex flex-wrap items-center gap-2">
@@ -405,7 +414,7 @@ export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]
           <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Channel Model / Type / Name</span>
           <p className="mt-1 text-[11.5px] text-ink-3">
             Collapsed to Channel Model + Channel Type by default — click a Channel Type row to reveal its Channel Name parties. The two
-            Growth columns reflect the latest month in scope, not the full range total above. {comparisonPeriodLabel}
+            Growth columns reflect this range vs the comparison range, not a single month. {comparisonPeriodLabel}
           </p>
           <div className="mt-2">
             <HierarchyTable rows={hierarchyRows} forceExpandAll={hasSearchActive} emptyLabel="No rows match these filters." />

@@ -62,20 +62,26 @@ export type HierarchyRow = {
   /** Distinct Channel Name count under this node — 1 at leaf level, always shown so a collapsed row still says how much it's hiding. */
   childCount: number;
   /**
-   * Latest-month-vs-comparison-month % change for THIS node (not the full
-   * scope total) — see SaleSummaryClient/comparison.ts for why growth is
-   * always a single-month read even though qty/gross/net above are summed
-   * over the whole selected month range. Measured on BOTH qty and gross
-   * (2026-08-31, per Pankaj: "growth to be measure for both aspect qty and
-   * value" — value here means TAXABLE value = gross_amount, not net, which
-   * is after-tax and channel-dependent — see aggregate.ts's header). null
-   * when no comparison is active, the node didn't exist in the comparison
-   * month (a genuinely new channel — shown as "no comparison baseline", not
-   * 0%), or the comparison month's value for this node was exactly zero.
+   * Main-range-vs-comparison-range % change for THIS node (2026-08-31
+   * redesign #2 — previously a latest-month-vs-one-baseline-month read; see
+   * SaleSummaryClient/comparison.ts for why the model changed to a genuine
+   * "any range vs any range" comparison). `currentMonthLeaves`/
+   * `comparisonMonthLeaves` below are named for historical continuity with
+   * that prior single-month model but now hold the FULL main-range and
+   * comparison-range leaf sums respectively — growthFor() just sums whatever
+   * it's given, so widening the "current"/"comparison" row sets from one
+   * month each to a whole range required no change to this function itself.
+   * Measured on BOTH qty and gross (2026-08-31, per Pankaj: "growth to be
+   * measure for both aspect qty and value" — value here means TAXABLE value
+   * = gross_amount, not net, which is after-tax and channel-dependent — see
+   * aggregate.ts's header). null when no comparison is active, the node
+   * didn't exist in the comparison range (a genuinely new channel — shown as
+   * "no comparison baseline", not 0%), or the comparison range's value for
+   * this node was exactly zero.
    */
   qtyGrowthPct: number | null;
   grossGrowthPct: number | null;
-  /** True once a comparison is active AND the comparison month had ANY data for this node's own scope (shared by both growth fields — presence/absence of the node in the comparison month doesn't depend on which metric you're looking at). Lets a cell distinguish "0% change" from "nothing to compare against". */
+  /** True once a comparison is active AND the comparison range had ANY data for this node's own scope (shared by both growth fields — presence/absence of the node in the comparison range doesn't depend on which metric you're looking at). Lets a cell distinguish "0% change" from "nothing to compare against". */
   hasComparisonBaseline: boolean;
 };
 
@@ -119,10 +125,13 @@ const modelKey = (l: HierarchyLeafAgg) => l.channelModel;
  * computeBreakdown already uses — rather than alphabetically, since this is
  * meant to read as a management ranking, not a directory.
  *
- * `growthLeaves` — when provided — supplies the single-latest-month current
- * and comparison leaf sets growthPct is computed from (see this file's
- * header for why growth doesn't use `scopeLeaves`' own, possibly
- * multi-month, totals).
+ * `growthLeaves` — when provided — supplies the main-range and comparison-
+ * range leaf sets growthPct is computed from. In practice `currentMonthLeaves`
+ * is `scopeLeaves` itself (the main range's own leaves) once a comparison is
+ * active; kept as a separate parameter (rather than always deriving it from
+ * `scopeLeaves`) so `hasComparisonBaseline` can still be false — and growth
+ * fields null — when no comparison range is active at all, without the
+ * caller needing a second code path.
  */
 export function buildHierarchyRows(
   scopeLeaves: HierarchyLeafAgg[],

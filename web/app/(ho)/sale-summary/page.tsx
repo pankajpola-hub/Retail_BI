@@ -5,6 +5,7 @@ import { requirePageAccess } from "@/lib/auth/roles";
 import { KpiGridSkeleton, ChartSkeleton, TableSkeleton, SectionLabelSkeleton } from "@/components/ui/Skeleton";
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
 import { MonthRangePicker } from "./MonthRangePicker";
+import { ComparisonMonthRangePicker } from "./ComparisonMonthRangePicker";
 import { SaleSummaryClient } from "./SaleSummaryClient";
 import { SaleSummaryShell } from "./SaleSummaryShell";
 import type { ChannelSalesRow } from "@/lib/saleSummary/aggregate";
@@ -38,10 +39,21 @@ export const dynamic = "force-dynamic";
  * fetch for the whole page" convention — a real second section would slot
  * in the same way if one is ever needed.
  */
-async function ChannelSalesSection({ fromMonth, toMonth }: { fromMonth: string; toMonth: string }) {
+async function ChannelSalesSection({
+  fromMonth,
+  toMonth,
+  compareFromMonth,
+  compareToMonth,
+}: {
+  fromMonth: string;
+  toMonth: string;
+  compareFromMonth: string | null;
+  compareToMonth: string | null;
+}) {
   const supabase = await createClient();
   const from = monthToFirstOfMonthDate(fromMonth);
   const toExclusive = monthToExclusiveUpperBound(toMonth);
+  const comparing = Boolean(compareFromMonth && compareToMonth);
 
   // fetchAllRows(): PostgREST's project-level "Max Rows" caps every response
   // at 1000 regardless of .limit() (see lib/data/client.ts's own note, and
@@ -65,33 +77,43 @@ async function ChannelSalesSection({ fromMonth, toMonth }: { fromMonth: string; 
         .order("id", { ascending: true }) as unknown as QueryChain<ChannelSalesRow>
   );
 
-  // Lookback window for the MoM/YoY comparison system (lib/saleSummary/
-  // comparison.ts) — the comparison month for a given "latest month in
-  // scope" can fall BEFORE `from` (e.g. YoY on a 3-month selection needs
-  // data 12 months back, and MoM on a single-month selection needs the one
-  // month right before it). Bounded to a fixed 12 months before `fromMonth`
-  // regardless of how wide [fromMonth, toMonth] is: that covers YoY (needs
-  // latest-12) for every possible "latest month" >= fromMonth, and MoM
-  // (needs latest-1) trivially. A SEPARATE query/array from `rows`, not a
-  // wider single fetch — FacetFilterBar's facet option-counts must stay
-  // anchored to the page's own displayed month range (`rows`), not quietly
-  // include lookback months the user never selected.
-  const priorFrom = monthToFirstOfMonthDate(shiftMonth(fromMonth, -12));
-  const priorRowsPromise = fetchAllRows<ChannelSalesRow>(
-    () =>
-      supabase
-        .schema("sales")
-        .from<ChannelSalesRow>("vw_channel_sales_summary")
-        .select(selectCols)
-        .gte("bill_month", priorFrom)
-        .lt("bill_month", from)
-        .order("bill_month", { ascending: true })
-        .order("id", { ascending: true }) as unknown as QueryChain<ChannelSalesRow>
+  // Comparison row set, driven by the user-chosen compareFromMonth/
+  // compareToMonth (ComparisonMonthRangePicker.tsx) — replaces the old fixed
+  // "12 months before fromMonth" lookback now that comparison is an
+  // arbitrary range, not a single latest-month-vs-baseline read. Only
+  // fetched at all when comparison is ON (both params present): per Pankaj,
+  // "'Comparison settings' should be optional only if user wants to use
+  // only" — an unopened comparison picker must cost nothing extra. A
+  // SEPARATE query/array from `rows`, not a wider single fetch —
+  // FacetFilterBar's facet option-counts must stay anchored to the page's
+  // own displayed month range (`rows`), not quietly widen to include the
+  // comparison range the user picked.
+  const compareRowsPromise: Promise<ChannelSalesRow[]> = comparing
+    ? fetchAllRows<ChannelSalesRow>(
+        () =>
+          supabase
+            .schema("sales")
+            .from<ChannelSalesRow>("vw_channel_sales_summary")
+            .select(selectCols)
+            .gte("bill_month", monthToFirstOfMonthDate(compareFromMonth as string))
+            .lt("bill_month", monthToExclusiveUpperBound(compareToMonth as string))
+            .order("bill_month", { ascending: true })
+            .order("id", { ascending: true }) as unknown as QueryChain<ChannelSalesRow>
+      )
+    : Promise.resolve([]);
+
+  const [rows, compareRows] = await Promise.all([rowsPromise, compareRowsPromise]);
+
+  return (
+    <SaleSummaryClient
+      rows={rows}
+      compareRows={compareRows}
+      fromMonth={fromMonth}
+      toMonth={toMonth}
+      compareFromMonth={compareFromMonth}
+      compareToMonth={compareToMonth}
+    />
   );
-
-  const [rows, priorRows] = await Promise.all([rowsPromise, priorRowsPromise]);
-
-  return <SaleSummaryClient rows={rows} priorRows={priorRows} />;
 }
 
 function ChannelSalesSkeleton() {
@@ -121,7 +143,7 @@ function ChannelSalesSkeleton() {
 export default async function SaleSummaryPage({
   searchParams,
 }: {
-  searchParams: { fromMonth?: string; toMonth?: string };
+  searchParams: { fromMonth?: string; toMonth?: string; compareFromMonth?: string; compareToMonth?: string };
 }) {
   await requirePageAccess("sale-summary");
 
@@ -130,6 +152,12 @@ export default async function SaleSummaryPage({
   // not the dawn of time" convention DateRangePicker's own presets use.
   const toMonth = searchParams.toMonth ?? now;
   const fromMonth = searchParams.fromMonth ?? shiftMonth(toMonth, -11);
+
+  // Comparison is "on" exactly when BOTH params are present in the URL —
+  // no separate flag (per Pankaj: comparison must be optional/opt-in). See
+  // ComparisonMonthRangePicker.tsx.
+  const compareFromMonth = searchParams.compareFromMonth && searchParams.compareToMonth ? searchParams.compareFromMonth : null;
+  const compareToMonth = searchParams.compareFromMonth && searchParams.compareToMonth ? searchParams.compareToMonth : null;
 
   return (
     <main className="py-6">
@@ -166,13 +194,32 @@ export default async function SaleSummaryPage({
       }
       <SaleSummaryShell>
         <div className="sticky top-14 z-30 -mx-4 mt-4 border-b border-line-soft bg-ground/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-ground/80 sm:-mx-6 sm:px-6">
-          <MonthRangePicker fromMonth={fromMonth} toMonth={toMonth} />
+          {
+            // Main + comparison pickers side by side (ask 3: "shift this on
+            // header where main date filter freezed") — wraps to a stacked
+            // layout on narrow screens via flex-wrap, same responsive
+            // convention as this app's other filter bars.
+          }
+          <div className="flex flex-wrap items-center gap-2">
+            <MonthRangePicker fromMonth={fromMonth} toMonth={toMonth} />
+            <ComparisonMonthRangePicker
+              fromMonth={fromMonth}
+              toMonth={toMonth}
+              compareFromMonth={compareFromMonth}
+              compareToMonth={compareToMonth}
+            />
+          </div>
         </div>
 
         <div className="mt-6">
           <SectionErrorBoundary label="Sale Summary">
             <Suspense fallback={<ChannelSalesSkeleton />}>
-              <ChannelSalesSection fromMonth={fromMonth} toMonth={toMonth} />
+              <ChannelSalesSection
+                fromMonth={fromMonth}
+                toMonth={toMonth}
+                compareFromMonth={compareFromMonth}
+                compareToMonth={compareToMonth}
+              />
             </Suspense>
           </SectionErrorBoundary>
         </div>

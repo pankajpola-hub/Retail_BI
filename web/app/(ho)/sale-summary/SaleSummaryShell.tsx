@@ -2,7 +2,6 @@
 
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { emptyFilterState, type FacetFilterState } from "@/components/ui/FacetFilterBar";
-import type { ComparisonType } from "@/lib/saleSummary/comparison";
 
 /**
  * Holds every piece of UI-only state that must survive a date-range change
@@ -17,10 +16,10 @@ import type { ComparisonType } from "@/lib/saleSummary/comparison";
  * showing; SaleSummaryClient (the component INSIDE that Suspense boundary)
  * gets a fresh mount once the new data arrives. Every plain useState() that
  * used to live in SaleSummaryClient — facet/search state, the Returns-only
- * toggle, the MoM/YoY comparisonType, and the like-to-like toggle — was
- * silently reset to its default on every date-range change, which is
- * exactly the "not synced" symptom: change the date, and everything else
- * quietly reverts without any visible signal that it happened.
+ * toggle, and the like-to-like toggle — was silently reset to its default on
+ * every date-range change, which is exactly the "not synced" symptom: change
+ * the date, and everything else quietly reverts without any visible signal
+ * that it happened.
  *
  * THE FIX: move that state into a Context Provider rendered in page.tsx
  * ABOVE the <Suspense> boundary (SaleSummaryShell wraps
@@ -35,14 +34,22 @@ import type { ComparisonType } from "@/lib/saleSummary/comparison";
  * this is the standard Next.js "Client Component wrapping Server Component
  * children" pattern; the Provider here does not need to import or know
  * anything about ChannelSalesSection's server-side data fetching.
+ *
+ * comparisonType (the old MoM/YoY toggle) is GONE from this Context
+ * (2026-08-31 redesign #2) — comparison is now an arbitrary range picked via
+ * ComparisonMonthRangePicker, and that range (compareFromMonth/
+ * compareToMonth) lives in the URL, not here. It doesn't need a Context slot
+ * at all: URL params naturally survive the same Suspense remount this
+ * Context exists to work around, since they're the very thing that DRIVES
+ * the remount/refetch — duplicating them into Context would just be two
+ * sources of truth for the same value. likeToLike stays here: it's a
+ * client-only display preference that never changes what's fetched.
  */
 export type SaleSummaryState = {
   filterState: FacetFilterState;
   setFilterState: (s: FacetFilterState) => void;
   returnsOnly: boolean;
   setReturnsOnly: (v: boolean) => void;
-  comparisonType: ComparisonType;
-  setComparisonType: (t: ComparisonType) => void;
   likeToLike: boolean;
   setLikeToLike: (v: boolean) => void;
 };
@@ -58,15 +65,12 @@ export function useSaleSummaryState(): SaleSummaryState {
 export function SaleSummaryShell({ children }: { children: ReactNode }) {
   const [filterState, setFilterState] = useState<FacetFilterState>(emptyFilterState);
   const [returnsOnly, setReturnsOnly] = useState(false);
-  const [comparisonType, setComparisonType] = useState<ComparisonType>("mom");
   // Default OFF — a simple total-vs-total comparison unless the user
   // explicitly opts into excluding newly-onboarded/churned channels.
   const [likeToLike, setLikeToLike] = useState(false);
 
   return (
-    <SaleSummaryStateContext.Provider
-      value={{ filterState, setFilterState, returnsOnly, setReturnsOnly, comparisonType, setComparisonType, likeToLike, setLikeToLike }}
-    >
+    <SaleSummaryStateContext.Provider value={{ filterState, setFilterState, returnsOnly, setReturnsOnly, likeToLike, setLikeToLike }}>
       {children}
     </SaleSummaryStateContext.Provider>
   );
