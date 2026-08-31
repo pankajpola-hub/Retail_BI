@@ -40,6 +40,7 @@ const HREF_PAGE_KEY: Record<string, PageKey> = {
   "/data-upload": "data-upload",
   "/workspace": "workspace",
   "/configurations": "configurations",
+  "/sale-summary": "sale-summary",
   // /sales (2026-08-28): now HAS an entry, unlike its predecessor /network.
   // The reason it used to be deliberately excluded no longer applies —
   // PAGE_BUSINESS_UNIT.sales is ["retail","ecomm"] (an array meaning "any
@@ -77,6 +78,12 @@ const NAV_LINKS: NavLink[] = [
   // Marketplace reconciliation (ecomm vertical) — gated like the ecomm pages.
   { href: "/reconciliation", labelKey: "navReconciliation", icon: "ecomm", roles: ["ho_admin", "super_admin", "marketing"], group: "Overview" },
   { href: "/targets", labelKey: "navTargets", icon: "targets", roles: ["ho_admin", "super_admin"], group: "Overview" },
+  // Sale Summary (0101) — wholesale/distribution-channel sales (agents,
+  // distributors, LFS, MBO, ecomm marketplaces). "mix" icon reused (two
+  // crossing paths) — it was defined for the old /sale-stock-mix nav entry
+  // that no longer exists, and reads fine here as "several channels feeding
+  // one view". role list mirrors PAGE_ROLE_DEFAULTS["sale-summary"].
+  { href: "/sale-summary", labelKey: "navSaleSummary", icon: "mix", roles: ["ho_admin", "regional_manager", "super_admin"], group: "Overview" },
   { href: "/workspace", labelKey: "navWorkspace", icon: "workspace", roles: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"], group: "Workspace" },
   { href: "/users", labelKey: "navUsers", icon: "users", roles: ["super_admin"], group: "Admin" },
   { href: "/integrations", labelKey: "navIntegrations", icon: "integrations", roles: ["super_admin"], group: "Admin" },

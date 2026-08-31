@@ -63,7 +63,12 @@ export type PageKey =
   | "data-upload"
   | "workspace"
   | "configurations"
-  | "ecomm";
+  | "ecomm"
+  // Sale Summary (migration 0101) — wholesale/distribution-channel sales
+  // (agents, distributors, LFS, MBO, ecomm marketplaces). A different
+  // business view from every page above, all of which are EBO-retail-
+  // focused; see server/db/migrations/0101_channel_sales_summary.sql.
+  | "sale-summary";
 
 export const PAGE_KEYS: PageKey[] = [
   "sales",
@@ -77,6 +82,7 @@ export const PAGE_KEYS: PageKey[] = [
   "workspace",
   "configurations",
   "ecomm",
+  "sale-summary",
 ];
 
 export const PAGE_LABELS: Record<PageKey, string> = {
@@ -91,6 +97,7 @@ export const PAGE_LABELS: Record<PageKey, string> = {
   workspace: "Workspace",
   configurations: "Configurations",
   ecomm: "Ecomm",
+  "sale-summary": "Sale Summary",
 };
 
 /**

@@ -5,6 +5,7 @@ import { parseSaleWorkbook } from "@/lib/erpReports/parseSaleWorkbook";
 import { parseStockWorkbook } from "@/lib/erpReports/parseStockWorkbook";
 import { parseSchemeWorkbook } from "@/lib/erpReports/parseSchemeWorkbook";
 import { parseMasterWorkbook } from "@/lib/erpReports/parseMasterWorkbook";
+import { parseChannelSummaryWorkbook } from "@/lib/erpReports/parseChannelSummaryWorkbook";
 import { cleanupOlderUploads } from "@/lib/erpReports/retention";
 
 // See api/data-upload/upload/route.ts's note on this — parsing a large
@@ -19,11 +20,15 @@ export const maxDuration = 60;
 // for the p_mark_processed RPC changes these batch sizes pair with.
 const MASTER_BATCH_SIZE = 8000;
 const SALE_BATCH_SIZE = 8000;
+// channel_summary (0101) starts batched from day one even though the
+// profiled sample (8,146 rows) is well under this — see migration 0101's
+// own comment on ops.fn_process_channel_summary_upload for why.
+const CHANNEL_SUMMARY_BATCH_SIZE = 8000;
 
 type UploadRow = {
-  report_type: "sale" | "stock" | "scheme" | "master";
+  report_type: "sale" | "stock" | "scheme" | "master" | "channel_summary";
   storage_path: string;
-  file_name: string; // recorded as raw_logic.item_master.source_file on a master commit
+  file_name: string; // recorded as raw_logic.item_master.source_file on a master commit, raw_logic.channel_sales_summary.source_file on a channel_summary commit
 };
 
 /**
@@ -262,6 +267,64 @@ export async function POST(request: Request, { params }: { params: { id: string 
           duplicatesCollapsed,
           skippedRows: skipped.length,
           totalRows: rows.length,
+          nextOffset: offset + batchSize,
+          done: isLastBatch,
+        },
+      });
+    }
+
+    if (upload.report_type === "channel_summary") {
+      // Batched (0101), same shape as master/sale above.
+      const body = await request.json().catch(() => ({}));
+      const offset = typeof body?.offset === "number" && body.offset >= 0 ? body.offset : 0;
+      const batchSize = typeof body?.batchSize === "number" && body.batchSize > 0 ? body.batchSize : CHANNEL_SUMMARY_BATCH_SIZE;
+
+      const { rows } = parseChannelSummaryWorkbook(arrayBuffer);
+      const valid = rows.filter((r) => !r.error);
+      const slice = valid.slice(offset, offset + batchSize);
+      const isLastBatch = offset + batchSize >= valid.length;
+      const payload = slice.map((r) => ({
+        branch_name: r.branchName,
+        bill_month: r.billMonth,
+        party_name: r.partyName,
+        channel_name: r.channelName,
+        channel_type: r.channelType,
+        channel_model: r.channelModel,
+        total_quantity: r.totalQuantity,
+        gross_amount: r.grossAmount,
+        net_amount: r.netAmount,
+      }));
+
+      const { data, error } = await supabase
+        .schema("ops")
+        .rpc<{ inserted: number; updated: number; total: number }>("fn_process_channel_summary_upload", {
+          p_upload_id: params.id,
+          p_rows: payload,
+          p_source_file: upload.file_name,
+          p_mark_processed: isLastBatch,
+        });
+
+      if (error) {
+        await markFailed(error.message);
+        return NextResponse.json({ ok: false, error: { code: "commit_failed", message: error.message } }, { status: 400 });
+      }
+
+      // No cleanupOlderUploads call here — channel_summary follows "sale"/
+      // "master"'s exact placement: that cleanup already ran at register
+      // time (api/data-upload/register/route.ts), before this route was
+      // ever hit, since raw_logic.channel_sales_summary has no live-
+      // snapshot FK forcing it to wait until after a successful process
+      // (unlike "stock"/"scheme" below).
+
+      return NextResponse.json({
+        ok: true,
+        data: {
+          reportType: "channel_summary",
+          committedRows: data?.total ?? 0,
+          insertedRows: data?.inserted ?? 0,
+          updatedRows: data?.updated ?? 0,
+          skippedRows: rows.length - valid.length,
+          totalRows: valid.length,
           nextOffset: offset + batchSize,
           done: isLastBatch,
         },

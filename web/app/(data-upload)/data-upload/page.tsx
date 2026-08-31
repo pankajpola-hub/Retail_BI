@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 
 type UploadRow = {
   id: string;
-  report_type: "sale" | "stock" | "scheme" | "master";
+  report_type: "sale" | "stock" | "scheme" | "master" | "channel_summary";
   file_name: string;
   uploaded_at: string;
   status: string;
@@ -100,6 +100,17 @@ export default async function DataUploadPage() {
       title: "Master",
       helperText:
         "Fills product attributes (category, gender, subcategory, season, size) matched by item code, for items whose sale export didn't carry them.",
+    },
+    // Sale Summary (0101) — wholesale/distribution-channel sales feeding
+    // /sale-summary. Literal title/helper, same reasoning as "master"
+    // above: not worth a dictionary key on a page this app doesn't
+    // translate (see translations.ts's own header on which surfaces are
+    // in scope).
+    {
+      type: "channel_summary",
+      title: "Sale Summary (channel sales)",
+      helperText:
+        "Monthly pre-aggregated wholesale/distribution-channel sales — agents, distributors, LFS, MBO, ecommerce marketplaces. One row per branch × month × party × channel; re-uploading a month updates it, never duplicates. Feeds /sale-summary.",
     },
   ];
 
