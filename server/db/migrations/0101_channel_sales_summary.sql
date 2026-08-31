@@ -167,14 +167,25 @@ grant execute on function ops.fn_process_channel_summary_upload(uuid, jsonb, tex
 -- -----------------------------------------------------------------------------
 -- sales.vw_channel_sales_summary — read path for the /sale-summary page
 -- -----------------------------------------------------------------------------
+-- Role-gated at the DB layer, not just the route (C-09 lesson, 2026-08-27:
+-- sales.vw_sale_transactions_export / vw_stock_with_scheme were reachable
+-- raw over PostgREST with no predicate of their own, bypassing whatever
+-- role check the Next.js route did — see migration 0097's header for the
+-- full story). This view has an even simpler answer than 0097's two: there
+-- is exactly ONE known caller (the /sale-summary page) and its role list is
+-- already fixed by this same migration's role_permissions seed just above
+-- (ho_admin/regional_manager/super_admin), so the view checks that exact
+-- list directly rather than the weaker "is not null" 0097 used where the
+-- real caller set was more varied.
 create view sales.vw_channel_sales_summary as
 select
   id, branch_name, bill_month, party_name, channel_name, channel_type, channel_model,
   total_quantity, gross_amount, net_amount, created_at, updated_at
-from raw_logic.channel_sales_summary;
+from raw_logic.channel_sales_summary
+where core.fn_user_role() in ('ho_admin', 'regional_manager', 'super_admin');
 
 comment on view sales.vw_channel_sales_summary is
-  'Read path for /sale-summary (HQ-only wholesale/distribution-channel view). security_invoker left at its default OFF — see raw_logic.channel_sales_summary''s own comment.';
+  'Read path for /sale-summary (HQ-only wholesale/distribution-channel view). Role-gated directly (core.fn_user_role() in ho_admin/regional_manager/super_admin) rather than relying on the route layer alone — see C-09 (migration 0097) for why an unscoped grant to authenticated is not enough on its own. security_invoker left at its default OFF — see raw_logic.channel_sales_summary''s own comment.';
 
 grant select on sales.vw_channel_sales_summary to authenticated;
 
