@@ -50,19 +50,47 @@ async function ChannelSalesSection({ fromMonth, toMonth }: { fromMonth: string; 
   // .order() is required, not decoration: .range()-paginated calls are only
   // a correct partition of the table if the server-side ordering is stable
   // across the separate REST calls.
-  const rows = await fetchAllRows<ChannelSalesRow>(
+  const selectCols = "id, branch_name, bill_month, party_name, channel_name, channel_type, channel_model, total_quantity, gross_amount, net_amount";
+
+  const rowsPromise = fetchAllRows<ChannelSalesRow>(
     () =>
       supabase
         .schema("sales")
         .from<ChannelSalesRow>("vw_channel_sales_summary")
-        .select("id, branch_name, bill_month, party_name, channel_name, channel_type, channel_model, total_quantity, gross_amount, net_amount")
+        .select(selectCols)
         .gte("bill_month", from)
         .lt("bill_month", toExclusive)
         .order("bill_month", { ascending: true })
         .order("id", { ascending: true }) as unknown as QueryChain<ChannelSalesRow>
   );
 
-  return <SaleSummaryClient rows={rows} />;
+  // Lookback window for the MoM/YoY comparison system (lib/saleSummary/
+  // comparison.ts) — the comparison month for a given "latest month in
+  // scope" can fall BEFORE `from` (e.g. YoY on a 3-month selection needs
+  // data 12 months back, and MoM on a single-month selection needs the one
+  // month right before it). Bounded to a fixed 12 months before `fromMonth`
+  // regardless of how wide [fromMonth, toMonth] is: that covers YoY (needs
+  // latest-12) for every possible "latest month" >= fromMonth, and MoM
+  // (needs latest-1) trivially. A SEPARATE query/array from `rows`, not a
+  // wider single fetch — FacetFilterBar's facet option-counts must stay
+  // anchored to the page's own displayed month range (`rows`), not quietly
+  // include lookback months the user never selected.
+  const priorFrom = monthToFirstOfMonthDate(shiftMonth(fromMonth, -12));
+  const priorRowsPromise = fetchAllRows<ChannelSalesRow>(
+    () =>
+      supabase
+        .schema("sales")
+        .from<ChannelSalesRow>("vw_channel_sales_summary")
+        .select(selectCols)
+        .gte("bill_month", priorFrom)
+        .lt("bill_month", from)
+        .order("bill_month", { ascending: true })
+        .order("id", { ascending: true }) as unknown as QueryChain<ChannelSalesRow>
+  );
+
+  const [rows, priorRows] = await Promise.all([rowsPromise, priorRowsPromise]);
+
+  return <SaleSummaryClient rows={rows} priorRows={priorRows} />;
 }
 
 function ChannelSalesSkeleton() {

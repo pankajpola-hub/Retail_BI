@@ -6,7 +6,14 @@
 type KpiCardProps = {
   label: string;
   value: string;
-  sub?: string;
+  /**
+   * Plain caption text on every existing caller. Widened to accept a node
+   * too (2026-08-31, /sale-summary's KPI sparklines — components/ui/../
+   * app/(ho)/sale-summary/Sparkline.tsx) so a small inline trend chart can
+   * sit in the same slot rather than this component needing a THIRD "trend"
+   * slot; existing string callers are unaffected.
+   */
+  sub?: string | React.ReactNode;
   tone?: "default" | "muted"; // "muted" = the dashed "no data yet" state from the mock
   /**
    * Optional comparison delta, rendered between the value and `sub` — in
