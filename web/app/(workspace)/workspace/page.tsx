@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { requirePageAccess, PAGE_ROLE_DEFAULTS } from "@/lib/auth/roles";
 import { ownStores } from "@/lib/scope/ownStores";
 import { createClient } from "@/lib/data/client";
@@ -7,12 +8,27 @@ import {
   listMyWorkspaces,
   listSharedWithMe,
 } from "@/lib/workspace/actions";
-import { fetchSalesComponentData, SALES_COMPONENT_RENDERERS, PLANNED_METRIC_IDS } from "@/lib/workspace/renderSalesComponents";
-import { fetchStockComponentData, STOCK_COMPONENT_RENDERERS } from "@/lib/workspace/renderStockComponents";
-import { fetchMixComponentData, MIX_COMPONENT_RENDERERS } from "@/lib/workspace/renderMixComponents";
-import { fetchReplenishmentComponentData, REPLENISHMENT_COMPONENT_RENDERERS } from "@/lib/workspace/renderReplenishmentComponents";
+import {
+  fetchSalesComponentData,
+  SALES_COMPONENT_RENDERERS,
+  PLANNED_METRIC_IDS,
+  type SalesComponentData,
+} from "@/lib/workspace/renderSalesComponents";
+import { fetchStockComponentData, STOCK_COMPONENT_RENDERERS, type StockComponentData } from "@/lib/workspace/renderStockComponents";
+import { fetchMixComponentData, MIX_COMPONENT_RENDERERS, type MixComponentData } from "@/lib/workspace/renderMixComponents";
+import {
+  fetchReplenishmentComponentData,
+  REPLENISHMENT_COMPONENT_RENDERERS,
+  type ReplenishmentComponentData,
+} from "@/lib/workspace/renderReplenishmentComponents";
 import { fetchFootfallComponentData, FOOTFALL_COMPONENT_RENDERERS } from "@/lib/workspace/renderFootfallComponents";
-import { fetchTargetsComponentData, TARGETS_COMPONENT_RENDERERS } from "@/lib/workspace/renderTargetsComponents";
+import type { FootfallInsights } from "@/lib/network/footfall";
+import { fetchTargetsComponentData, TARGETS_COMPONENT_RENDERERS, type TargetsComponentData } from "@/lib/workspace/renderTargetsComponents";
+import {
+  fetchProductAttributeComponentData,
+  PRODUCT_ATTRIBUTE_COMPONENT_RENDERERS,
+} from "@/lib/workspace/renderProductAttributeComponent";
+import type { SaleAttributeLineRow } from "@/lib/sales/attributeBreakdown";
 import { listMetricDefinitionsByIds, listDimensionDefinitions } from "@/lib/workspace/semantic";
 import { listMyScheduledExports } from "@/lib/exports/actions";
 import { WorkspaceGridClient, type GridItemMeta } from "./WorkspaceGridClient";
@@ -22,6 +38,7 @@ import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { ScheduledExportsPanel } from "./ScheduledExportsPanel";
 import { LazyMount } from "./LazyMount";
 import { ChartSkeleton } from "@/components/ui/Skeleton";
+import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
 
 export const dynamic = "force-dynamic";
 
@@ -38,6 +55,89 @@ type ComponentDefRow = {
 };
 
 const isoDate = (d: Date) => d.toISOString().slice(0, 10);
+
+/**
+ * One tiny async server component per family, each `await`ing the SAME
+ * shared promise a sibling item of the same family also awaits (see the
+ * `*DataPromise` values above) — this is what gives every grid item its own
+ * Suspense boundary and its own SectionErrorBoundary (parity item 6) without
+ * re-running the family's query once per item. If `componentId` isn't a
+ * known renderer for this family (shouldn't happen — callers only reach
+ * these from inside an `in SALES_COMPONENT_RENDERERS` etc. check) this
+ * renders nothing rather than throwing.
+ */
+async function SalesFamilyItem({ dataPromise, componentId }: { dataPromise: Promise<SalesComponentData>; componentId: string }) {
+  const data = await dataPromise;
+  const Renderer = SALES_COMPONENT_RENDERERS[componentId];
+  return Renderer ? <Renderer data={data} /> : null;
+}
+
+async function StockFamilyItem({
+  dataPromise,
+  componentId,
+  storeIds,
+}: {
+  dataPromise: Promise<StockComponentData>;
+  componentId: string;
+  storeIds: string[];
+}) {
+  const data = await dataPromise;
+  const Renderer = STOCK_COMPONENT_RENDERERS[componentId];
+  return Renderer ? <Renderer data={data} storeIds={storeIds} /> : null;
+}
+
+async function MixFamilyItem({
+  dataPromise,
+  componentId,
+  storeIds,
+}: {
+  dataPromise: Promise<MixComponentData>;
+  componentId: string;
+  storeIds: string[];
+}) {
+  const data = await dataPromise;
+  const Renderer = MIX_COMPONENT_RENDERERS[componentId];
+  return Renderer ? <Renderer data={data} storeIds={storeIds} /> : null;
+}
+
+async function ReplenishmentFamilyItem({ dataPromise, componentId }: { dataPromise: Promise<ReplenishmentComponentData>; componentId: string }) {
+  const data = await dataPromise;
+  const Renderer = REPLENISHMENT_COMPONENT_RENDERERS[componentId];
+  return Renderer ? <Renderer data={data} /> : null;
+}
+
+async function FootfallFamilyItem({ dataPromise, componentId }: { dataPromise: Promise<FootfallInsights>; componentId: string }) {
+  const data = await dataPromise;
+  const Renderer = FOOTFALL_COMPONENT_RENDERERS[componentId];
+  return Renderer ? <Renderer data={data} /> : null;
+}
+
+async function TargetsFamilyItem({ dataPromise, componentId }: { dataPromise: Promise<TargetsComponentData>; componentId: string }) {
+  const data = await dataPromise;
+  const Renderer = TARGETS_COMPONENT_RENDERERS[componentId];
+  return Renderer ? <Renderer data={data} /> : null;
+}
+
+/**
+ * D-05 parity item 2 — its own family, deliberately NOT folded into
+ * SalesFamilyItem/salesDataPromise above. See
+ * lib/workspace/renderProductAttributeComponent.tsx's header for why: this is
+ * the only line-grain fetch in the whole Sales set of components, so it gets
+ * its own needs.../promise/Suspense boundary below, same "pay only for what's
+ * added, and never hold up siblings" pattern StockFamilyItem/MixFamilyItem/etc.
+ * already establish for their own families.
+ */
+async function ProductAttributeFamilyItem({
+  dataPromise,
+  componentId,
+}: {
+  dataPromise: Promise<SaleAttributeLineRow[]>;
+  componentId: string;
+}) {
+  const data = await dataPromise;
+  const Renderer = PRODUCT_ATTRIBUTE_COMPONENT_RENDERERS[componentId];
+  return Renderer ? <Renderer data={data} /> : null;
+}
 
 export default async function WorkspacePage({
   searchParams,
@@ -78,6 +178,11 @@ export default async function WorkspacePage({
 
   const dateFilter = filters.find((f) => f.dimension_id === "date");
   const storeFilter = filters.find((f) => f.dimension_id === "store");
+  // D-05 parity item 1 — period comparison. Same well-known-dimension_id
+  // pattern as store/date (see lib/workspace/actions.ts's updateWorkspaceFilters),
+  // not a Phase 6 governed dimension — excluded from dimensionFilters below
+  // exactly like store/date already are.
+  const compareDateFilter = filters.find((f) => f.dimension_id === "compare_date");
 
   const today = new Date();
   const defaultFrom = new Date(today);
@@ -85,13 +190,15 @@ export default async function WorkspacePage({
   const from = dateFilter?.values[0] ?? isoDate(defaultFrom);
   const to = dateFilter?.values[1] ?? isoDate(today);
   const storeIds = storeFilter?.values ?? [];
+  const compareFrom = compareDateFilter?.values[0] ?? null;
+  const compareTo = compareDateFilter?.values[1] ?? null;
 
-  // Phase 6: every saved filter that isn't the store/date scope handled above
-  // is a governed dimension filter, resolved by the query planner against
-  // whichever view each component reads. Empty value lists are dropped here
-  // rather than sent as a no-op predicate.
+  // Phase 6: every saved filter that isn't the store/date/compare_date scope
+  // handled above is a governed dimension filter, resolved by the query
+  // planner against whichever view each component reads. Empty value lists
+  // are dropped here rather than sent as a no-op predicate.
   const dimensionFilters = filters
-    .filter((f) => f.dimension_id !== "store" && f.dimension_id !== "date" && f.values.length > 0)
+    .filter((f) => f.dimension_id !== "store" && f.dimension_id !== "date" && f.dimension_id !== "compare_date" && f.values.length > 0)
     .map((f) => ({ dimensionId: f.dimension_id, values: f.values }));
 
   const weeklyStart = new Date(from);
@@ -109,6 +216,7 @@ export default async function WorkspacePage({
     ...REPLENISHMENT_COMPONENT_RENDERERS,
     ...FOOTFALL_COMPONENT_RENDERERS,
     ...TARGETS_COMPONENT_RENDERERS,
+    ...PRODUCT_ATTRIBUTE_COMPONENT_RENDERERS,
   };
   const wiredIds = Object.keys(ALL_RENDERERS);
   const [{ data: registryRows }, plannedMetrics, allDimensions] = await Promise.all([
@@ -165,22 +273,51 @@ export default async function WorkspacePage({
   const needsReplenishmentData = components.some((c) => c.component_id in REPLENISHMENT_COMPONENT_RENDERERS);
   const needsFootfallData = components.some((c) => c.component_id in FOOTFALL_COMPONENT_RENDERERS);
   const needsTargetsData = components.some((c) => c.component_id in TARGETS_COMPONENT_RENDERERS);
+  // D-05 parity item 2 — cost-gated separately from needsSalesData: this is
+  // the only line-grain fetch in the family (see
+  // renderProductAttributeComponent.tsx's header), so a workspace that never
+  // adds product_attribute_table never queries vw_ebo_sale_attribute_lines,
+  // and one that does never makes the OTHER Sales tiles wait on it.
+  const needsProductAttributeData = components.some((c) => c.component_id in PRODUCT_ATTRIBUTE_COMPONENT_RENDERERS);
 
-  const [salesData, stockData, mixData, replenishmentData, footfallData, targetsData] = await Promise.all([
-    needsSalesData
-      ? fetchSalesComponentData(
-          { supabase, storeIds, from, to, weeklyStart: isoDate(weeklyStart), metricsById, dimensionsById, dimensionFilters },
-          storeNames
-        )
-      : Promise.resolve(null),
-    needsStockData
-      ? fetchStockComponentData({ supabase, storeIds, canEditCapacity: user.role === "ho_admin" || user.role === "super_admin" })
-      : Promise.resolve(null),
-    needsMixData ? fetchMixComponentData({ supabase, storeIds }) : Promise.resolve(null),
-    needsReplenishmentData ? fetchReplenishmentComponentData({ supabase }) : Promise.resolve(null),
-    needsFootfallData ? fetchFootfallComponentData({ supabase, storeIds, from, to, storeNames }) : Promise.resolve(null),
-    needsTargetsData ? fetchTargetsComponentData({ supabase, storeIds }) : Promise.resolve(null),
-  ]);
+  // D-05/parity-6 — one promise per family, started here but NOT awaited.
+  // Previously all six lived in one `await Promise.all(...)`, which blocked
+  // the ENTIRE page on whichever family's query was slowest and took the
+  // whole route down if any one of them rejected (no SectionErrorBoundary,
+  // no Suspense — see docs/audit/D-frontend.md's parity item 6). Each promise
+  // below starts executing immediately (a called async function runs
+  // synchronously up to its first await) and is awaited independently, once
+  // per grid item that needs it, inside that item's own Suspense boundary
+  // (see the *FamilyItem components below) — so a workspace with both a Sales
+  // KPI grid and a Stock table streams each in as soon as ITS OWN family
+  // resolves, and a failing family only takes down the items that read it,
+  // never the rest of the grid. Multiple items of the same family (e.g. two
+  // Sales KPI grids) all await this SAME promise object, so the underlying
+  // query still runs exactly once per family per page render — unchanged
+  // from the old Promise.all's fetch cost, only the blocking/isolation
+  // behaviour changed.
+  const salesDataPromise: Promise<SalesComponentData> | null = needsSalesData
+    ? fetchSalesComponentData(
+        { supabase, storeIds, from, to, weeklyStart: isoDate(weeklyStart), today, compareFrom, compareTo, metricsById, dimensionsById, dimensionFilters },
+        storeNames
+      )
+    : null;
+  const stockDataPromise: Promise<StockComponentData> | null = needsStockData
+    ? fetchStockComponentData({ supabase, storeIds, canEditCapacity: user.role === "ho_admin" || user.role === "super_admin" })
+    : null;
+  const mixDataPromise: Promise<MixComponentData> | null = needsMixData ? fetchMixComponentData({ supabase, storeIds }) : null;
+  const replenishmentDataPromise: Promise<ReplenishmentComponentData> | null = needsReplenishmentData
+    ? fetchReplenishmentComponentData({ supabase })
+    : null;
+  const footfallDataPromise: Promise<FootfallInsights> | null = needsFootfallData
+    ? fetchFootfallComponentData({ supabase, storeIds, from, to, storeNames })
+    : null;
+  const targetsDataPromise: Promise<TargetsComponentData> | null = needsTargetsData
+    ? fetchTargetsComponentData({ supabase, storeIds })
+    : null;
+  const productAttributeDataPromise: Promise<SaleAttributeLineRow[]> | null = needsProductAttributeData
+    ? fetchProductAttributeComponentData({ supabase, storeIds, from, to })
+    : null;
 
   const gridItems: GridItemMeta[] = components.map((c) => ({
     id: c.id,
@@ -194,55 +331,88 @@ export default async function WorkspacePage({
 
   // Each card's content is wrapped in LazyMount so it doesn't actually
   // mount (layout/paint) until scrolled near-into-view, matching the
-  // "a 25-component workspace stays usable" goal. Data for every added
-  // component is still fetched eagerly above — see LazyMount's own header
-  // comment for why that's a stated follow-up, not silently claimed done.
+  // "a 25-component workspace stays usable" goal. LazyMount only defers
+  // MOUNT — every family's query already started above regardless of scroll
+  // position (see the *DataPromise comment). Inside that, each item gets its
+  // own SectionErrorBoundary + Suspense (parity item 6): a slow or failing
+  // component no longer blocks or breaks the rest of the grid.
   const renderedChildren = components.map((c) => {
-    if (c.component_id in SALES_COMPONENT_RENDERERS && salesData) {
-      const Renderer = SALES_COMPONENT_RENDERERS[c.component_id]!;
+    const label = registryById.get(c.component_id)?.name ?? c.component_id;
+    const fallback = <ChartSkeleton height={140} />;
+    if (c.component_id in SALES_COMPONENT_RENDERERS && salesDataPromise) {
       return (
-        <LazyMount key={c.id} fallback={<ChartSkeleton height={140} />}>
-          <Renderer data={salesData} />
+        <LazyMount key={c.id} fallback={fallback}>
+          <SectionErrorBoundary label={label}>
+            <Suspense fallback={fallback}>
+              <SalesFamilyItem dataPromise={salesDataPromise} componentId={c.component_id} />
+            </Suspense>
+          </SectionErrorBoundary>
         </LazyMount>
       );
     }
-    if (c.component_id in STOCK_COMPONENT_RENDERERS && stockData) {
-      const Renderer = STOCK_COMPONENT_RENDERERS[c.component_id]!;
+    if (c.component_id in STOCK_COMPONENT_RENDERERS && stockDataPromise) {
       return (
-        <LazyMount key={c.id} fallback={<ChartSkeleton height={140} />}>
-          <Renderer data={stockData} storeIds={storeIds} />
+        <LazyMount key={c.id} fallback={fallback}>
+          <SectionErrorBoundary label={label}>
+            <Suspense fallback={fallback}>
+              <StockFamilyItem dataPromise={stockDataPromise} componentId={c.component_id} storeIds={storeIds} />
+            </Suspense>
+          </SectionErrorBoundary>
         </LazyMount>
       );
     }
-    if (c.component_id in MIX_COMPONENT_RENDERERS && mixData) {
-      const Renderer = MIX_COMPONENT_RENDERERS[c.component_id]!;
+    if (c.component_id in MIX_COMPONENT_RENDERERS && mixDataPromise) {
       return (
-        <LazyMount key={c.id} fallback={<ChartSkeleton height={140} />}>
-          <Renderer data={mixData} storeIds={storeIds} />
+        <LazyMount key={c.id} fallback={fallback}>
+          <SectionErrorBoundary label={label}>
+            <Suspense fallback={fallback}>
+              <MixFamilyItem dataPromise={mixDataPromise} componentId={c.component_id} storeIds={storeIds} />
+            </Suspense>
+          </SectionErrorBoundary>
         </LazyMount>
       );
     }
-    if (c.component_id in REPLENISHMENT_COMPONENT_RENDERERS && replenishmentData) {
-      const Renderer = REPLENISHMENT_COMPONENT_RENDERERS[c.component_id]!;
+    if (c.component_id in REPLENISHMENT_COMPONENT_RENDERERS && replenishmentDataPromise) {
       return (
-        <LazyMount key={c.id} fallback={<ChartSkeleton height={140} />}>
-          <Renderer data={replenishmentData} />
+        <LazyMount key={c.id} fallback={fallback}>
+          <SectionErrorBoundary label={label}>
+            <Suspense fallback={fallback}>
+              <ReplenishmentFamilyItem dataPromise={replenishmentDataPromise} componentId={c.component_id} />
+            </Suspense>
+          </SectionErrorBoundary>
         </LazyMount>
       );
     }
-    if (c.component_id in FOOTFALL_COMPONENT_RENDERERS && footfallData) {
-      const Renderer = FOOTFALL_COMPONENT_RENDERERS[c.component_id]!;
+    if (c.component_id in FOOTFALL_COMPONENT_RENDERERS && footfallDataPromise) {
       return (
-        <LazyMount key={c.id} fallback={<ChartSkeleton height={140} />}>
-          <Renderer data={footfallData} />
+        <LazyMount key={c.id} fallback={fallback}>
+          <SectionErrorBoundary label={label}>
+            <Suspense fallback={fallback}>
+              <FootfallFamilyItem dataPromise={footfallDataPromise} componentId={c.component_id} />
+            </Suspense>
+          </SectionErrorBoundary>
         </LazyMount>
       );
     }
-    if (c.component_id in TARGETS_COMPONENT_RENDERERS && targetsData) {
-      const Renderer = TARGETS_COMPONENT_RENDERERS[c.component_id]!;
+    if (c.component_id in TARGETS_COMPONENT_RENDERERS && targetsDataPromise) {
       return (
-        <LazyMount key={c.id} fallback={<ChartSkeleton height={140} />}>
-          <Renderer data={targetsData} />
+        <LazyMount key={c.id} fallback={fallback}>
+          <SectionErrorBoundary label={label}>
+            <Suspense fallback={fallback}>
+              <TargetsFamilyItem dataPromise={targetsDataPromise} componentId={c.component_id} />
+            </Suspense>
+          </SectionErrorBoundary>
+        </LazyMount>
+      );
+    }
+    if (c.component_id in PRODUCT_ATTRIBUTE_COMPONENT_RENDERERS && productAttributeDataPromise) {
+      return (
+        <LazyMount key={c.id} fallback={fallback}>
+          <SectionErrorBoundary label={label}>
+            <Suspense fallback={fallback}>
+              <ProductAttributeFamilyItem dataPromise={productAttributeDataPromise} componentId={c.component_id} />
+            </Suspense>
+          </SectionErrorBoundary>
         </LazyMount>
       );
     }
@@ -288,6 +458,8 @@ export default async function WorkspacePage({
           initialStoreIds={storeIds}
           initialFrom={from}
           initialTo={to}
+          initialCompareFrom={compareFrom}
+          initialCompareTo={compareTo}
         />
       </div>
 

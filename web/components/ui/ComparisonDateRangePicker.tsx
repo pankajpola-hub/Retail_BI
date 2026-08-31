@@ -39,11 +39,22 @@ export function ComparisonDateRangePicker({
   to,
   compareFrom,
   compareTo,
+  onApply,
 }: {
   from: string;
   to: string;
   compareFrom: string | null;
   compareTo: string | null;
+  /**
+   * Workspace parity (D-05 item 1) — Workspace persists filters through
+   * lib/workspace/actions.ts's updateWorkspaceFilters (a saved DB row),
+   * NOT the URL, unlike this component's original ?compareFrom=&compareTo=
+   * push() on /sales. When provided, `onApply` is called with the new
+   * compareFrom/compareTo instead of pushing a URL — the default (no prop)
+   * preserves the original /sales behaviour exactly, so that page needs no
+   * change.
+   */
+  onApply?: (compareFrom: string | null, compareTo: string | null) => void;
 }) {
   const active = Boolean(compareFrom && compareTo);
   const [open, setOpen] = useState(false);
@@ -72,6 +83,11 @@ export function ComparisonDateRangePicker({
   }, []);
 
   function apply(newFrom: string | null, newTo: string | null) {
+    if (onApply) {
+      onApply(newFrom, newTo);
+      setOpen(false);
+      return;
+    }
     const params = new URLSearchParams(searchParams.toString());
     if (newFrom && newTo) {
       params.set("compareFrom", newFrom);

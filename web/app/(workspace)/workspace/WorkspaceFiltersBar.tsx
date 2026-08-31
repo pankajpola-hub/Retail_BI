@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { updateWorkspaceFilters } from "@/lib/workspace/actions";
 import { Input } from "@/components/ui/input";
+import { ComparisonDateRangePicker } from "@/components/ui/ComparisonDateRangePicker";
 
 /**
  * Store scope as a searchable checkbox popover (same interaction pattern as
@@ -39,16 +40,23 @@ export function WorkspaceFiltersBar({
   initialStoreIds,
   initialFrom,
   initialTo,
+  initialCompareFrom,
+  initialCompareTo,
 }: {
   workspaceId: string;
   stores: { store_id: string; store_name: string }[];
   initialStoreIds: string[];
   initialFrom: string;
   initialTo: string;
+  /** D-05 parity item 1 — both null when no comparison is saved. */
+  initialCompareFrom: string | null;
+  initialCompareTo: string | null;
 }) {
   const [storeIds, setStoreIds] = useState<string[]>(initialStoreIds);
   const [from, setFrom] = useState(initialFrom);
   const [to, setTo] = useState(initialTo);
+  const [compareFrom, setCompareFrom] = useState(initialCompareFrom);
+  const [compareTo, setCompareTo] = useState(initialCompareTo);
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<string[]>(initialStoreIds);
   const [query, setQuery] = useState("");
@@ -72,9 +80,21 @@ export function WorkspaceFiltersBar({
   const visible = filtered.slice(0, cap);
   const hiddenCount = filtered.length - visible.length;
 
-  function apply(nextStoreIds: string[], nextFrom: string, nextTo: string) {
+  function apply(
+    nextStoreIds: string[],
+    nextFrom: string,
+    nextTo: string,
+    nextCompareFrom: string | null = compareFrom,
+    nextCompareTo: string | null = compareTo
+  ) {
     startTransition(async () => {
-      await updateWorkspaceFilters(workspaceId, { storeIds: nextStoreIds, from: nextFrom, to: nextTo });
+      await updateWorkspaceFilters(workspaceId, {
+        storeIds: nextStoreIds,
+        from: nextFrom,
+        to: nextTo,
+        compareFrom: nextCompareFrom,
+        compareTo: nextCompareTo,
+      });
     });
   }
 
@@ -82,6 +102,12 @@ export function WorkspaceFiltersBar({
     setOpen(false);
     setStoreIds(pending);
     apply(pending, from, to);
+  }
+
+  function applyComparison(nextCompareFrom: string | null, nextCompareTo: string | null) {
+    setCompareFrom(nextCompareFrom);
+    setCompareTo(nextCompareTo);
+    apply(storeIds, from, to, nextCompareFrom, nextCompareTo);
   }
 
   useEffect(() => {
@@ -297,6 +323,13 @@ export function WorkspaceFiltersBar({
           onBlur={handleDateBlur}
           className="min-h-[30px] w-auto py-1 text-[12.5px]"
         />
+      </div>
+
+      <div className="h-6 w-px bg-line-soft" aria-hidden />
+
+      <div className="flex items-center gap-2">
+        <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Compare</span>
+        <ComparisonDateRangePicker from={from} to={to} compareFrom={compareFrom} compareTo={compareTo} onApply={applyComparison} />
       </div>
 
       {isPending && <span className="text-[11px] text-ink-3">Applying…</span>}
