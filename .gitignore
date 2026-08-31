@@ -21,3 +21,7 @@ web/.design-scratch/
 .env
 .env.local
 .env.*.local
+
+# User's local scratch/test data files at repo root — never commit
+/_test_24-25.xlsx
+/_test_26-27.xlsx
