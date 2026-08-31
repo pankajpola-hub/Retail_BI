@@ -27,6 +27,25 @@ const PAGE_KEY = "sale_summary";
 const rangeLabel = (from: string, to: string) => (from === to ? from : `${from} – ${to}`);
 
 /**
+ * "vs ₹45.6 L (Oct 2025 – Dec 2025)" — the comparison period's own actual
+ * figure, shown directly under the current period's number on the Net/
+ * Gross/Qty KPI cards (2026-08-31, per Pankaj: "add compare period's sale
+ * and qty below the current period sale and qty for actual reference").
+ * Deliberately just the raw number, not a %/growth figure — that's what the
+ * Growth panel below already covers; this is purely "what was the other
+ * period's actual total", for reading the two side by side. Renders nothing
+ * when comparison is off or the comparison range has no data in scope.
+ */
+function ComparisonRefLine({ value, rangeText }: { value: string | null; rangeText: string }) {
+  if (value === null) return null;
+  return (
+    <div className="mt-1 text-[11px] text-ink-3">
+      vs <span className="font-mono">{value}</span> ({rangeText})
+    </div>
+  );
+}
+
+/**
  * Breakdown table with a subtotal/total footer — same "sum extensive
  * columns" convention as PeriodSalesFacetedTable / AgentSalesFacetedTable /
  * StoreDiagnosisFacetedTable. Still used for the Branch/warehouse breakdown
@@ -188,6 +207,16 @@ export function SaleSummaryClient({
     return returnsOnly ? facetCompare.filter((r) => Number(r.total_quantity) < 0) : facetCompare;
   }, [compareRows, facets, advFields, state, returnsOnly]);
 
+  // Comparison period's own Net total — a plain sum, not a growth/ratio
+  // figure (so it doesn't need to live in comparison.ts's growth engine),
+  // purely for ComparisonRefLine's "vs ₹X (period)" reference on the Net
+  // sales KPI card. null (renders nothing) when comparison is off or the
+  // comparison range has no rows in the current filtered scope.
+  const comparisonNetTotal = useMemo(
+    () => (comparing && filteredCompare.length > 0 ? filteredCompare.reduce((s, r) => s + num(r.net_amount), 0) : null),
+    [comparing, filteredCompare]
+  );
+
   const kpis = useMemo(() => computeChannelSalesKpis(filtered), [filtered]);
   const channelTypeRows = useMemo(() => computeBreakdown(filtered, (r) => r.channel_type ?? "(no channel type)"), [filtered]);
   const channelModelRows = useMemo(() => computeBreakdown(filtered, (r) => r.channel_model ?? "(no channel model)"), [filtered]);
@@ -301,9 +330,38 @@ export function SaleSummaryClient({
         // page until a proper discount engine replaces it.
       }
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <KpiCard label="Net sales" value={fmtInrAbbrev(kpis.totalNet)} sub={<Sparkline values={netSpark} />} />
-        <KpiCard label="Gross sales (taxable)" value={fmtInrAbbrev(kpis.totalGross)} sub={<Sparkline values={grossSpark} />} />
-        <KpiCard label="Total qty" value={fmtCount(kpis.totalQty)} sub={<Sparkline values={qtySpark} />} />
+        <KpiCard
+          label="Net sales"
+          value={fmtInrAbbrev(kpis.totalNet)}
+          delta={comparing ? <ComparisonRefLine value={comparisonNetTotal === null ? null : fmtInrAbbrev(comparisonNetTotal)} rangeText={rangeLabel(compareFromMonth as string, compareToMonth as string)} /> : undefined}
+          sub={<Sparkline values={netSpark} />}
+        />
+        <KpiCard
+          label="Gross sales (taxable)"
+          value={fmtInrAbbrev(kpis.totalGross)}
+          delta={
+            comparing ? (
+              <ComparisonRefLine
+                value={networkComparison.comparisonGross === null ? null : fmtInrAbbrev(networkComparison.comparisonGross)}
+                rangeText={rangeLabel(compareFromMonth as string, compareToMonth as string)}
+              />
+            ) : undefined
+          }
+          sub={<Sparkline values={grossSpark} />}
+        />
+        <KpiCard
+          label="Total qty"
+          value={fmtCount(kpis.totalQty)}
+          delta={
+            comparing ? (
+              <ComparisonRefLine
+                value={networkComparison.comparisonQty === null ? null : fmtCount(networkComparison.comparisonQty)}
+                rangeText={rangeLabel(compareFromMonth as string, compareToMonth as string)}
+              />
+            ) : undefined
+          }
+          sub={<Sparkline values={qtySpark} />}
+        />
         <KpiCard
           label="Returns value"
           value={fmtInrAbbrev(kpis.returnsValue)}
