@@ -23,6 +23,11 @@ import {
 import { fetchFootfallComponentData, FOOTFALL_COMPONENT_RENDERERS } from "@/lib/workspace/renderFootfallComponents";
 import type { FootfallInsights } from "@/lib/network/footfall";
 import { fetchTargetsComponentData, TARGETS_COMPONENT_RENDERERS, type TargetsComponentData } from "@/lib/workspace/renderTargetsComponents";
+import {
+  fetchProductAttributeComponentData,
+  PRODUCT_ATTRIBUTE_COMPONENT_RENDERERS,
+} from "@/lib/workspace/renderProductAttributeComponent";
+import type { SaleAttributeLineRow } from "@/lib/sales/attributeBreakdown";
 import { listMetricDefinitionsByIds, listDimensionDefinitions } from "@/lib/workspace/semantic";
 import { listMyScheduledExports } from "@/lib/exports/actions";
 import { WorkspaceGridClient, type GridItemMeta } from "./WorkspaceGridClient";
@@ -112,6 +117,27 @@ async function TargetsFamilyItem({ dataPromise, componentId }: { dataPromise: Pr
   return Renderer ? <Renderer data={data} /> : null;
 }
 
+/**
+ * D-05 parity item 2 — its own family, deliberately NOT folded into
+ * SalesFamilyItem/salesDataPromise above. See
+ * lib/workspace/renderProductAttributeComponent.tsx's header for why: this is
+ * the only line-grain fetch in the whole Sales set of components, so it gets
+ * its own needs.../promise/Suspense boundary below, same "pay only for what's
+ * added, and never hold up siblings" pattern StockFamilyItem/MixFamilyItem/etc.
+ * already establish for their own families.
+ */
+async function ProductAttributeFamilyItem({
+  dataPromise,
+  componentId,
+}: {
+  dataPromise: Promise<SaleAttributeLineRow[]>;
+  componentId: string;
+}) {
+  const data = await dataPromise;
+  const Renderer = PRODUCT_ATTRIBUTE_COMPONENT_RENDERERS[componentId];
+  return Renderer ? <Renderer data={data} /> : null;
+}
+
 export default async function WorkspacePage({
   searchParams,
 }: {
@@ -184,6 +210,7 @@ export default async function WorkspacePage({
     ...REPLENISHMENT_COMPONENT_RENDERERS,
     ...FOOTFALL_COMPONENT_RENDERERS,
     ...TARGETS_COMPONENT_RENDERERS,
+    ...PRODUCT_ATTRIBUTE_COMPONENT_RENDERERS,
   };
   const wiredIds = Object.keys(ALL_RENDERERS);
   const [{ data: registryRows }, plannedMetrics, allDimensions] = await Promise.all([
@@ -240,6 +267,12 @@ export default async function WorkspacePage({
   const needsReplenishmentData = components.some((c) => c.component_id in REPLENISHMENT_COMPONENT_RENDERERS);
   const needsFootfallData = components.some((c) => c.component_id in FOOTFALL_COMPONENT_RENDERERS);
   const needsTargetsData = components.some((c) => c.component_id in TARGETS_COMPONENT_RENDERERS);
+  // D-05 parity item 2 — cost-gated separately from needsSalesData: this is
+  // the only line-grain fetch in the family (see
+  // renderProductAttributeComponent.tsx's header), so a workspace that never
+  // adds product_attribute_table never queries vw_ebo_sale_attribute_lines,
+  // and one that does never makes the OTHER Sales tiles wait on it.
+  const needsProductAttributeData = components.some((c) => c.component_id in PRODUCT_ATTRIBUTE_COMPONENT_RENDERERS);
 
   // D-05/parity-6 — one promise per family, started here but NOT awaited.
   // Previously all six lived in one `await Promise.all(...)`, which blocked
@@ -275,6 +308,9 @@ export default async function WorkspacePage({
     : null;
   const targetsDataPromise: Promise<TargetsComponentData> | null = needsTargetsData
     ? fetchTargetsComponentData({ supabase, storeIds })
+    : null;
+  const productAttributeDataPromise: Promise<SaleAttributeLineRow[]> | null = needsProductAttributeData
+    ? fetchProductAttributeComponentData({ supabase, storeIds, from, to })
     : null;
 
   const gridItems: GridItemMeta[] = components.map((c) => ({
@@ -358,6 +394,17 @@ export default async function WorkspacePage({
           <SectionErrorBoundary label={label}>
             <Suspense fallback={fallback}>
               <TargetsFamilyItem dataPromise={targetsDataPromise} componentId={c.component_id} />
+            </Suspense>
+          </SectionErrorBoundary>
+        </LazyMount>
+      );
+    }
+    if (c.component_id in PRODUCT_ATTRIBUTE_COMPONENT_RENDERERS && productAttributeDataPromise) {
+      return (
+        <LazyMount key={c.id} fallback={fallback}>
+          <SectionErrorBoundary label={label}>
+            <Suspense fallback={fallback}>
+              <ProductAttributeFamilyItem dataPromise={productAttributeDataPromise} componentId={c.component_id} />
             </Suspense>
           </SectionErrorBoundary>
         </LazyMount>
