@@ -270,7 +270,22 @@ export async function resetWorkspace(workspaceId: string): Promise<void> {
  */
 export async function updateWorkspaceFilters(
   workspaceId: string,
-  filters: { storeIds: string[]; from: string; to: string }
+  filters: {
+    storeIds: string[];
+    from: string;
+    to: string;
+    /**
+     * D-05 parity item 1 (period comparison) — both-or-neither, same
+     * convention app/(ho)/sales/page.tsx's compareFrom/compareTo URL params
+     * use: a half-set range is dropped rather than silently completed. Stored
+     * under its own well-known dimension_id ("compare_date"), special-cased
+     * in workspace/page.tsx exactly like "store"/"date" already are — NOT a
+     * Phase 6 governed dimension, so no workspace.dimension_definitions row
+     * is needed for it.
+     */
+    compareFrom?: string | null;
+    compareTo?: string | null;
+  }
 ): Promise<void> {
   const supabase = await createClient();
   await requireCallerId(supabase);
@@ -280,7 +295,7 @@ export async function updateWorkspaceFilters(
     .from("workspace_filters")
     .delete()
     .eq("workspace_id", workspaceId)
-    .in("dimension_id", ["store", "date"]);
+    .in("dimension_id", ["store", "date", "compare_date"]);
   if (deleteError) throw new Error(deleteError.message);
 
   const rows: Record<string, unknown>[] = [
@@ -288,6 +303,9 @@ export async function updateWorkspaceFilters(
   ];
   if (filters.storeIds.length > 0) {
     rows.push({ workspace_id: workspaceId, dimension_id: "store", operator: "in", values: filters.storeIds });
+  }
+  if (filters.compareFrom && filters.compareTo) {
+    rows.push({ workspace_id: workspaceId, dimension_id: "compare_date", operator: "range", values: [filters.compareFrom, filters.compareTo] });
   }
 
   const { error: insertError } = await supabase.schema("workspace").from("workspace_filters").insert(rows);

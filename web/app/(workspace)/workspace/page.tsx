@@ -146,6 +146,11 @@ export default async function WorkspacePage({
 
   const dateFilter = filters.find((f) => f.dimension_id === "date");
   const storeFilter = filters.find((f) => f.dimension_id === "store");
+  // D-05 parity item 1 — period comparison. Same well-known-dimension_id
+  // pattern as store/date (see lib/workspace/actions.ts's updateWorkspaceFilters),
+  // not a Phase 6 governed dimension — excluded from dimensionFilters below
+  // exactly like store/date already are.
+  const compareDateFilter = filters.find((f) => f.dimension_id === "compare_date");
 
   const today = new Date();
   const defaultFrom = new Date(today);
@@ -153,13 +158,15 @@ export default async function WorkspacePage({
   const from = dateFilter?.values[0] ?? isoDate(defaultFrom);
   const to = dateFilter?.values[1] ?? isoDate(today);
   const storeIds = storeFilter?.values ?? [];
+  const compareFrom = compareDateFilter?.values[0] ?? null;
+  const compareTo = compareDateFilter?.values[1] ?? null;
 
-  // Phase 6: every saved filter that isn't the store/date scope handled above
-  // is a governed dimension filter, resolved by the query planner against
-  // whichever view each component reads. Empty value lists are dropped here
-  // rather than sent as a no-op predicate.
+  // Phase 6: every saved filter that isn't the store/date/compare_date scope
+  // handled above is a governed dimension filter, resolved by the query
+  // planner against whichever view each component reads. Empty value lists
+  // are dropped here rather than sent as a no-op predicate.
   const dimensionFilters = filters
-    .filter((f) => f.dimension_id !== "store" && f.dimension_id !== "date" && f.values.length > 0)
+    .filter((f) => f.dimension_id !== "store" && f.dimension_id !== "date" && f.dimension_id !== "compare_date" && f.values.length > 0)
     .map((f) => ({ dimensionId: f.dimension_id, values: f.values }));
 
   const weeklyStart = new Date(from);
@@ -252,7 +259,7 @@ export default async function WorkspacePage({
   // behaviour changed.
   const salesDataPromise: Promise<SalesComponentData> | null = needsSalesData
     ? fetchSalesComponentData(
-        { supabase, storeIds, from, to, weeklyStart: isoDate(weeklyStart), today, metricsById, dimensionsById, dimensionFilters },
+        { supabase, storeIds, from, to, weeklyStart: isoDate(weeklyStart), today, compareFrom, compareTo, metricsById, dimensionsById, dimensionFilters },
         storeNames
       )
     : null;
@@ -398,6 +405,8 @@ export default async function WorkspacePage({
           initialStoreIds={storeIds}
           initialFrom={from}
           initialTo={to}
+          initialCompareFrom={compareFrom}
+          initialCompareTo={compareTo}
         />
       </div>
 

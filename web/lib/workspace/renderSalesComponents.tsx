@@ -1,5 +1,6 @@
 import type { DataClient, QueryChain } from "@/lib/data/client";
 import { KpiCard } from "@/components/ui/KpiCard";
+import { DeltaBadge } from "@/components/ui/DeltaBadge";
 import { TrendChart } from "@/components/ui/TrendChart";
 import { HourlyBarChart } from "@/components/ui/HourlyBarChart";
 import {
@@ -92,6 +93,14 @@ export type SalesComponentScope = {
    */
   today: Date;
   /**
+   * D-05 parity item 1 — period comparison, both-or-neither (same convention
+   * as sales/page.tsx's compareFrom/compareTo URL params). Null/null means
+   * "no comparison active", the default — the extra query below is only
+   * issued when both are set.
+   */
+  compareFrom: string | null;
+  compareTo: string | null;
+  /**
    * The workspace.metric_definitions rows this module plans against, keyed by
    * id — fetched by the CALLER alongside its own registry read so the
    * semantic-layer lookup shares that round trip instead of adding one.
@@ -169,13 +178,19 @@ function addDaysIso(iso: string, days: number): string {
 }
 
 async function fetchRaw(scope: SalesComponentScope) {
-  const { supabase, storeIds, from, to, weeklyStart, metricsById, dimensionsById, dimensionFilters } = scope;
+  const { supabase, storeIds, from, to, weeklyStart, compareFrom, compareTo, metricsById, dimensionsById, dimensionFilters } = scope;
   const applyStore = <T extends { eq: (c: string, v: string) => T; in: (c: string, v: string[]) => T }>(q: T): T => {
     if (storeIds.length === 0) return q;
     if (storeIds.length === 1) return q.eq("store_id", storeIds[0]!);
     return q.in("store_id", storeIds);
   };
   const period = { from, to };
+  const comparing = Boolean(compareFrom && compareTo);
+  // Comparison window's own weekly lookback — same -7 days rule as the
+  // primary weeklyStart the caller (workspace/page.tsx) precomputes, applied
+  // here since compareFrom is only known inside this scope.
+  const compareWeeklyStart = comparing ? new Date(compareFrom as string) : null;
+  if (compareWeeklyStart) compareWeeklyStart.setDate(compareWeeklyStart.getDate() - 7);
   // Daily/Monthly grain windows for the period-faceted table — exactly the
   // same lookback sales/page.tsx's EboDetailSection uses (:363-366): one day
   // back gives Daily a DoD baseline, ~400 days back gives Monthly (and
@@ -213,7 +228,7 @@ async function fetchRaw(scope: SalesComponentScope) {
     );
   }
 
-  const [{ data: daily }, { data: weeks }, { data: schemeDaily }, { data: hourly }, { data: agentDaily }, { data: dailyFull }, { data: monthly }] = await timeAll(
+  const [{ data: daily }, { data: weeks }, { data: schemeDaily }, { data: hourly }, { data: agentDaily }, { data: dailyFull }, { data: monthly }, { data: compareWeeks }] = await timeAll(
     "workspace:sales-components",
     [
       plannedOrFallback<DailyRow>(
@@ -263,10 +278,21 @@ async function fetchRaw(scope: SalesComponentScope) {
       applyStore(
         supabase.schema("sales").from<MonthlyRow>("vw_ebo_sales_monthly").select("*").gte("month_start", isoDate(monthlyStart)).lte("month_start", to) as unknown as QueryChain<MonthlyRow>
       ),
+      // D-05 parity item 1 — ONE extra query for the whole comparison strip,
+      // issued only when a comparison range is actually active (same
+      // both-or-neither gate as sales/page.tsx's EboDetailSection :390-394).
+      // The weekly view already carries every metric the KPI grid shows
+      // (net/gross/discount/bills/qty), so no second daily/monthly fetch is
+      // needed just to compare — same reasoning as that section's own comment.
+      comparing
+        ? (applyStore(
+            supabase.schema("sales").from<WeeklyRow>("vw_ebo_sales_weekly").select("*").gte("week_start", isoDate(compareWeeklyStart as Date)).lte("week_start", compareTo as string) as unknown as QueryChain<WeeklyRow>
+          ))
+        : Promise.resolve({ data: [] as WeeklyRow[] }),
     ] as const
   );
 
-  return { daily, weeks, schemeDaily, hourly, agentDaily, dailyFull, monthly };
+  return { daily, weeks, schemeDaily, hourly, agentDaily, dailyFull, monthly, compareWeeks, comparing };
 }
 
 /**
@@ -297,9 +323,16 @@ function deriveSalesComponentData(
   storeNames: Map<string, string>,
   from: string,
   to: string,
-  today: Date
+  today: Date,
+  compareFrom: string | null,
+  compareTo: string | null
 ) {
   const totals = computeSalesTotals(raw.weeks, from);
+  // D-05 parity item 1 — same function (computeSalesTotals), second window,
+  // never a parallel formula. Mirrors sales/page.tsx's EboDetailSection
+  // (:402) exactly, including reading the comparison weeks off the SAME
+  // weekly view the primary totals use.
+  const compareTotals = raw.comparing && compareFrom ? computeSalesTotals(raw.compareWeeks, compareFrom) : null;
   const league = computeLeague(totals.weekRows, totals.storesInView, storeNames);
   const { schemeRows, schemeMaxQty } = computeSchemeRows(raw.schemeDaily);
   const trendPoints = computeTrendPoints(raw.daily);
@@ -336,6 +369,9 @@ function deriveSalesComponentData(
   const agentRows = computeAgentRows(raw.agentDaily);
   return {
     totals,
+    compareTotals,
+    compareFrom,
+    compareTo,
     league,
     schemeRows,
     schemeMaxQty,
@@ -354,21 +390,67 @@ function deriveSalesComponentData(
 
 export async function fetchSalesComponentData(scope: SalesComponentScope, storeNames: Map<string, string>) {
   const raw = await fetchRaw(scope);
-  return deriveSalesComponentData(raw, storeNames, scope.from, scope.to, scope.today);
+  return deriveSalesComponentData(raw, storeNames, scope.from, scope.to, scope.today, scope.compareFrom, scope.compareTo);
 }
 
 const INR = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
 
+/**
+ * D-05 parity item 1 (2026-08-27) — `delta={<DeltaBadge .../>}` threaded
+ * exactly as sales/page.tsx's EboDetailSection comparison strip does
+ * (:462-499): rendered only when data.compareTotals is set (comparison
+ * active), Discount % uses mode="pp" + invert (a RISING discount rate is
+ * bad news, and a percentage's own change is percentage POINTS, not a
+ * percent-of-a-percent), every other card uses the "pct" default.
+ */
 export function SalesKpiGrid({ data }: { data: SalesComponentData }) {
   const { totalNetSales, totalGrossSales, discountPct, totalDiscount, totalSaleBills, totalSaleQty, salesPerUnit, networkAtv, networkUpt } = data.totals;
+  const cmp = data.compareTotals;
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-      <KpiCard label="Net sales" value={INR(totalNetSales)} sub={`gross ${INR(totalGrossSales)}`} />
-      <KpiCard label="Discount" value={discountPct !== null ? `${discountPct.toFixed(1)}%` : "—"} sub={INR(totalDiscount) + " given"} />
-      <KpiCard label="Sale bills" value={String(totalSaleBills)} />
-      <KpiCard label="Units sold" value={String(totalSaleQty)} sub={salesPerUnit !== null ? `${INR(salesPerUnit)}/unit` : undefined} />
-      <KpiCard label="ATV" value={networkAtv !== null ? INR(networkAtv) : "—"} />
-      <KpiCard label="UPT" value={networkUpt !== null ? networkUpt.toFixed(2) : "—"} />
+      <KpiCard
+        label="Net sales"
+        value={INR(totalNetSales)}
+        sub={`gross ${INR(totalGrossSales)}`}
+        delta={cmp && <DeltaBadge current={totalNetSales} previous={cmp.totalNetSales} baselineLabel={`vs ${INR(cmp.totalNetSales)}`} />}
+      />
+      <KpiCard
+        label="Discount"
+        value={discountPct !== null ? `${discountPct.toFixed(1)}%` : "—"}
+        sub={INR(totalDiscount) + " given"}
+        delta={
+          cmp && (
+            <DeltaBadge
+              current={discountPct}
+              previous={cmp.discountPct}
+              mode="pp"
+              invert
+              baselineLabel={cmp.discountPct !== null ? `vs ${cmp.discountPct.toFixed(1)}%` : "vs —"}
+            />
+          )
+        }
+      />
+      <KpiCard
+        label="Sale bills"
+        value={String(totalSaleBills)}
+        delta={cmp && <DeltaBadge current={totalSaleBills} previous={cmp.totalSaleBills} baselineLabel={`vs ${cmp.totalSaleBills}`} />}
+      />
+      <KpiCard
+        label="Units sold"
+        value={String(totalSaleQty)}
+        sub={salesPerUnit !== null ? `${INR(salesPerUnit)}/unit` : undefined}
+        delta={cmp && <DeltaBadge current={totalSaleQty} previous={cmp.totalSaleQty} baselineLabel={`vs ${cmp.totalSaleQty}`} />}
+      />
+      <KpiCard
+        label="ATV"
+        value={networkAtv !== null ? INR(networkAtv) : "—"}
+        delta={cmp && <DeltaBadge current={networkAtv} previous={cmp.networkAtv} baselineLabel={cmp.networkAtv !== null ? `vs ${INR(cmp.networkAtv)}` : "vs —"} />}
+      />
+      <KpiCard
+        label="UPT"
+        value={networkUpt !== null ? networkUpt.toFixed(2) : "—"}
+        delta={cmp && <DeltaBadge current={networkUpt} previous={cmp.networkUpt} baselineLabel={cmp.networkUpt !== null ? `vs ${cmp.networkUpt.toFixed(2)}` : "vs —"} />}
+      />
     </div>
   );
 }
