@@ -126,7 +126,27 @@ already computed elsewhere in the same file, not invent one.
 **When these report back**: same procedure as Wave 1 — review diff, commit if uncommitted,
 merge to `master` one at a time, `tsc --noEmit` + `next build` after each, delete worktree/branch.
 
-### Wave 3 (Workspace parity, D-05) — LAUNCHED 2026-08-27, one agent, sequential steps
+### Wave 3 (Workspace parity, D-05) — ALL 4 STEPS DONE AND MERGED 2026-08-31
+
+Merged to master (single merge commit, all 4 steps, clean auto-merge — only
+`workspace/page.tsx` had an overlapping change from another session, resolved
+cleanly). `tsc --noEmit` + `next build` (39 routes) both clean. Migration
+`0102_workspace_product_attribute_table.sql` (renumbered from the worktree's
+own `0098`, which collided with master's marketplace-recon migration) run
+against the live DB and verified.
+
+Step 4's one deviation from the original plan: rather than adding
+`product_attribute_table` into the shared `SALES_COMPONENT_RENDERERS` map
+(which all share one `Promise.all`-fetched dataset), it became its own
+top-level family module (`renderProductAttributeComponent.tsx`) — mirroring
+how Stock/Mix/Replenishment/Footfall/Targets are already separate families —
+because the plan's own cost-gating requirement (keep the line-grain fetch OUT
+of the shared fetch) couldn't be satisfied inside that shared map. Reasoning
+documented in commit `132ed43`.
+
+Old status note (superseded by the above, kept for history):
+
+
 
 Single agent (not parallel — every step touches `workspace/page.tsx`/`renderSalesComponents.tsx`,
 parallel agents would conflict), isolated worktree, committing after each of 4 steps in the
