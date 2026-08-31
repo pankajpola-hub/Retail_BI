@@ -17,7 +17,7 @@ const ALLOWED_TYPES = [
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx
   "application/vnd.ms-excel", // .xls
 ];
-const REPORT_TYPES = ["sale", "stock", "scheme", "master"] as const;
+const REPORT_TYPES = ["sale", "stock", "scheme", "master", "channel_summary"] as const;
 type ReportType = (typeof REPORT_TYPES)[number];
 
 /**
