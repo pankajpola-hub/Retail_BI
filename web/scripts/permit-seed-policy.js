@@ -30,11 +30,16 @@ const permit = new Permit({
   pdp: "https://cloudpdp.api.permit.io",
 });
 
-// Mirrors web/lib/auth/roles.ts's PAGE_KEYS / PAGE_LABELS exactly.
+// Mirrors web/lib/auth/permissions.ts's PAGE_KEYS / PAGE_LABELS exactly.
+// Re-synced 2026-08-31 (was stale since before the network->sales rename,
+// migration 0100 — this script only runs on demand, never automatically, so
+// it silently drifted behind PAGE_KEYS for a while. If you're re-running
+// this after another page/role change, diff against permissions.ts/roles.ts
+// again first — don't assume this copy is current.)
 const PAGES = [
-  { key: "network", name: "Network" },
+  { key: "sales", name: "Sales" },
   { key: "stock-details", name: "Stock Details" },
-  { key: "replenishment", name: "Replenishment" },
+  { key: "replenishment", name: "Movement" },
   { key: "footfall", name: "Footfall" },
   { key: "targets", name: "Targets" },
   { key: "users", name: "Users" },
@@ -43,11 +48,13 @@ const PAGES = [
   { key: "workspace", name: "Workspace" },
   { key: "configurations", name: "Configurations" },
   { key: "ecomm", name: "Ecomm" },
+  { key: "sale-summary", name: "Sale Summary" },
 ];
 
-// Mirrors web/lib/auth/roles.ts's PAGE_ROLE_DEFAULTS exactly.
+// Mirrors web/lib/auth/roles.ts's PAGE_ROLE_DEFAULTS exactly (re-synced
+// alongside PAGES above — see that comment).
 const PAGE_ROLE_DEFAULTS = {
-  network: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"],
+  sales: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"],
   "stock-details": ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"],
   replenishment: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"],
   footfall: ["ebo_manager", "ho_admin", "super_admin"],
@@ -58,6 +65,7 @@ const PAGE_ROLE_DEFAULTS = {
   workspace: ["ho_admin", "regional_manager", "super_admin", "ebo_manager", "marketing"],
   configurations: ["super_admin"],
   ecomm: ["ho_admin", "super_admin", "marketing"],
+  "sale-summary": ["ho_admin", "regional_manager", "super_admin"],
 };
 
 const ROLES = [
