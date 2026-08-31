@@ -262,6 +262,17 @@ export const PAGE_ROLE_DEFAULTS: Record<PageKey, AppRole[]> = {
   // writes daily footfall/remarks scoped to physical stores (0032) — Ecomm
   // has no store concept, so that role doesn't fit even though it exists.
   ecomm: ["ho_admin", "super_admin", "marketing"],
+  // Sale Summary (0101) — wholesale/distribution-channel financials (agent/
+  // distributor/LFS/MBO/marketplace sales), not store-scoped (no
+  // core.fn_user_store_ids() dependency anywhere this page reads) and more
+  // sensitive than the retail EBO numbers already on /sales. Same list
+  // /targets uses minus ebo_manager (a store manager has no reason to see
+  // wholesale-channel financials) and minus marketing (this is distribution
+  // financials, not a marketing-facing channel report the way /ecomm is).
+  // Kept in sync with core.role_permissions' seed for 'sale-summary.view' in
+  // migration 0101 — this TS list is only the fallback for when resolveAccess()
+  // is unavailable, same relationship every other entry here has to its DB row.
+  "sale-summary": ["ho_admin", "regional_manager", "super_admin"],
 };
 
 // Which business unit(s) each page belongs to — checked in requirePageAccess()
@@ -293,6 +304,13 @@ export const PAGE_BUSINESS_UNIT: Record<PageKey, BusinessUnit | BusinessUnit[]> 
   workspace: "retail",
   configurations: "retail",
   ecomm: "ecomm",
+  // Wholesale/distribution channels (agent, distributor, LFS, MBO) are part
+  // of the same "retail" business this app already models everywhere else —
+  // ecommerce MARKETPLACE channel rows exist in the data (Channel Type
+  // 'ECOM-MKTPL-SOR' etc.) but that's a row-level attribute of one business,
+  // not a reason to gate the whole page behind the separate 'ecomm' business
+  // unit (which means the Uniware-fed pipeline elsewhere in this app).
+  "sale-summary": "retail",
 };
 
 /** Shared by requirePageAccess() below and AppShell's nav-link filter — a

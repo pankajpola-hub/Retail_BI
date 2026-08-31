@@ -55,6 +55,7 @@ export type Dict = {
   navWorkspace: string;
   navConfigurations: string;
   navEcomm: string;
+  navSaleSummary: string;
   signOut: string;
 
   // login
@@ -158,6 +159,7 @@ const en: Dict = {
   navStockStatus: "Stock Status",
   navReplenishment: "Replenishment",
   navSaleStockMix: "Sale vs Stock Mix",
+  navSaleSummary: "Sale Summary",
   navMovement: "Movement",
   navWorkspace: "Workspace",
   navConfigurations: "Configurations",
@@ -263,6 +265,7 @@ const hi: Dict = {
   navStockStatus: "Stock Status",
   navReplenishment: "Replenishment",
   navSaleStockMix: "Sale vs Stock Mix",
+  navSaleSummary: "Sale Summary",
   navMovement: "Movement",
   navWorkspace: "Workspace",
   navConfigurations: "Configurations",
@@ -367,6 +370,7 @@ const mr: Dict = {
   navStockStatus: "Stock Status",
   navReplenishment: "Replenishment",
   navSaleStockMix: "Sale vs Stock Mix",
+  navSaleSummary: "Sale Summary",
   navMovement: "Movement",
   navWorkspace: "Workspace",
   navConfigurations: "Configurations",
