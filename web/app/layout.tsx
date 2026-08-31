@@ -3,7 +3,7 @@ import "./globals.css";
 import { TopProgressBar } from "@/components/ui/TopProgressBar";
 
 export const metadata: Metadata = {
-  title: "EBO Sales Intelligence",
+  title: "Nexus Revenue",
   description: "Detect, diagnose, recommend, act, measure — for the EBO network.",
 };
 

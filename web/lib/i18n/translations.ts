@@ -146,7 +146,7 @@ export type Dict = {
 };
 
 const en: Dict = {
-  appName: "EBO Sales Intelligence",
+  appName: "Nexus Revenue",
   navNetwork: "Sales",
   navFootfall: "Footfall",
   navReconciliation: "Reconciliation",
@@ -251,7 +251,7 @@ const en: Dict = {
 };
 
 const hi: Dict = {
-  appName: "EBO Sales Intelligence",
+  appName: "Nexus Revenue",
   navNetwork: "Sales",
   navFootfall: "Footfall",
   navReconciliation: "Reconciliation",
@@ -355,7 +355,7 @@ const hi: Dict = {
 };
 
 const mr: Dict = {
-  appName: "EBO Sales Intelligence",
+  appName: "Nexus Revenue",
   navNetwork: "Sales",
   navFootfall: "Footfall",
   navReconciliation: "Reconciliation",

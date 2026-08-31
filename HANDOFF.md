@@ -1,4 +1,4 @@
-# EBO Sales Intelligence — Handoff Notes
+# Nexus Revenue — Handoff Notes
 
 Operational context for picking this project back up in a new session. This file is committed (no secrets in it) — actual credentials live in `web/.env.local` (gitignored) and in the self-hosted server's own config, not here.
 

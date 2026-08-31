@@ -1,4 +1,4 @@
-# EBO Sales Intelligence — web app
+# Nexus Revenue — web app
 
 Next.js 14 (App Router) + TypeScript + Tailwind, over the Supabase schema in
 [`../supabase`](../supabase/README.md). No component kit, no chart library —
