@@ -2,10 +2,20 @@
  * Pure aggregation for /sale-summary — wholesale/distribution-channel sales
  * (raw_logic.channel_sales_summary via sales.vw_channel_sales_summary,
  * migration 0101). Mirrors this app's established convention (see
- * lib/sales/aggregate.ts's computeSalesTotals/computeLeague): every ratio
- * (discount/markup %) is recomputed from SUMMED numerator/denominator, never
- * averaged from per-row or per-group percentages — averaging would weight a
- * ₹500 row the same as a ₹50 lakh row.
+ * lib/sales/aggregate.ts's computeSalesTotals/computeLeague): every ratio is
+ * recomputed from SUMMED numerator/denominator, never averaged from per-row
+ * or per-group percentages — averaging would weight a ₹500 row the same as a
+ * ₹50 lakh row.
+ *
+ * DISCOUNT/MARKUP % REMOVED (2026-08-31, per Pankaj): gross_amount is the
+ * TAXABLE value and net_amount is the AFTER-TAX value for this channel — the
+ * (gross-net)/gross figure this page used to show as "Discount %"/"Markup %"
+ * was therefore a tax-rate artifact, not a real discount/markup, and worse,
+ * whether to check discount against MRP*qty, taxable value, or net value
+ * differs PARTY-BY-PARTY (this data has no MRP column to even attempt that
+ * check). Hidden everywhere on this page until a proper discount engine
+ * (one that knows each party's actual basis) replaces it — do not
+ * reintroduce (gross-net)/gross as "discount" anywhere on this page.
  */
 
 export type ChannelSalesRow = {
@@ -27,15 +37,6 @@ export type ChannelSalesKpis = {
   totalNet: number;
   totalGross: number;
   totalQty: number;
-  /**
-   * Signed: (Σgross - Σnet) / Σgross * 100. Positive means a real discount
-   * (net < gross, the everyday case). Negative means net EXCEEDS gross for
-   * this scope — a genuine, confirmed convention for this channel (markup /
-   * GST-inclusive net — see migration 0101's header), not a data error.
-   */
-  discountPct: number | null;
-  /** True when discountPct < 0 — the KPI card flips the sign and relabels "Markup %" rather than showing a confusing negative discount. */
-  isMarkup: boolean;
   /** Σnet_amount over rows with total_quantity < 0 (returns). Can itself be positive or negative depending on this channel's net/gross convention on returned lines. */
   returnsValue: number;
   /** Distinct channel_name in the current (already filtered) scope. */
@@ -67,15 +68,10 @@ export function computeChannelSalesKpis(rows: ChannelSalesRow[]): ChannelSalesKp
     if (r.channel_name) channels.add(r.channel_name);
   }
 
-  const discountPct = totalGross !== 0 ? ((totalGross - totalNet) / totalGross) * 100 : null;
-  const isMarkup = discountPct !== null && discountPct < 0;
-
   return {
     totalNet,
     totalGross,
     totalQty,
-    discountPct,
-    isMarkup,
     returnsValue,
     activeChannels: channels.size,
   };
@@ -86,10 +82,9 @@ export type BreakdownRow = {
   qty: number;
   gross: number;
   net: number;
-  discountPct: number | null;
 };
 
-/** Groups rows by `keyOf`, summing qty/gross/net and recomputing discountPct from the summed parts — the table-footer-subtotal pattern PeriodSalesFacetedTable/AgentSalesFacetedTable/StoreDiagnosisFacetedTable already establish. */
+/** Groups rows by `keyOf`, summing qty/gross/net — the table-footer-subtotal pattern PeriodSalesFacetedTable/AgentSalesFacetedTable/StoreDiagnosisFacetedTable already establish. */
 export function computeBreakdown(rows: ChannelSalesRow[], keyOf: (r: ChannelSalesRow) => string): BreakdownRow[] {
   const map = new Map<string, { qty: number; gross: number; net: number }>();
   for (const r of rows) {
@@ -100,13 +95,7 @@ export function computeBreakdown(rows: ChannelSalesRow[], keyOf: (r: ChannelSale
     cur.net += num(r.net_amount);
     map.set(key, cur);
   }
-  return [...map.entries()]
-    .map(([key, v]) => ({
-      key,
-      ...v,
-      discountPct: v.gross !== 0 ? ((v.gross - v.net) / v.gross) * 100 : null,
-    }))
-    .sort((a, b) => b.net - a.net);
+  return [...map.entries()].map(([key, v]) => ({ key, ...v })).sort((a, b) => b.net - a.net);
 }
 
 export type TrendPoint = { label: string; value: number; date: string };

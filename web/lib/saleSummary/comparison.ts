@@ -28,6 +28,14 @@
  * (`priorRows`, fetched by page.tsx from up to 12 months before the
  * selected range's start) purely to supply that lookback — see page.tsx's
  * own comment on the bound it fetches.
+ *
+ * MEASURED ON QTY AND GROSS, NOT NET (2026-08-31, per Pankaj): growth is
+ * tracked for both "how many units" (qty) and "how much taxable value"
+ * (gross_amount — the everyday meaning of "value" for this data; net_amount
+ * is AFTER-TAX and its own relationship to gross differs party-by-party, see
+ * aggregate.ts's header on why discount/markup % was removed for the same
+ * reason). Net still appears elsewhere on the page as a real figure — it's
+ * just not what growth/comparison is measured against.
  */
 
 import { num, type ChannelSalesRow } from "./aggregate";
@@ -55,10 +63,13 @@ export type NetworkComparison = {
   latestMonth: string | null;
   comparisonMonth: string | null;
   comparisonType: ComparisonType;
-  currentNet: number;
+  currentQty: number;
   /** null when the comparison month has no data in scope at all (not even a zero baseline). */
-  comparisonNet: number | null;
-  growthPct: number | null;
+  comparisonQty: number | null;
+  qtyGrowthPct: number | null;
+  currentGross: number;
+  comparisonGross: number | null;
+  grossGrowthPct: number | null;
   likeToLike: boolean;
   /** Channels present in the current month only — excluded from both sums when likeToLike is on. */
   excludedNewChannels: number;
@@ -98,17 +109,25 @@ export function computeNetworkComparison(params: {
     comparisonRows = comparisonMonthRows.filter((r) => currentChannels.has(r.channel_name));
   }
 
-  const currentNet = currentRows.reduce((s, r) => s + num(r.net_amount), 0);
-  const comparisonNet = comparisonMonthRows.length > 0 ? comparisonRows.reduce((s, r) => s + num(r.net_amount), 0) : null;
-  const growthPct = comparisonNet !== null && comparisonNet !== 0 ? ((currentNet - comparisonNet) / Math.abs(comparisonNet)) * 100 : null;
+  const sumQty = (rs: ChannelSalesRow[]) => rs.reduce((s, r) => s + num(r.total_quantity), 0);
+  const sumGross = (rs: ChannelSalesRow[]) => rs.reduce((s, r) => s + num(r.gross_amount), 0);
+  const pct = (curr: number, prev: number | null): number | null => (prev === null || prev === 0 ? null : ((curr - prev) / Math.abs(prev)) * 100);
+
+  const currentQty = sumQty(currentRows);
+  const comparisonQty = comparisonMonthRows.length > 0 ? sumQty(comparisonRows) : null;
+  const currentGross = sumGross(currentRows);
+  const comparisonGross = comparisonMonthRows.length > 0 ? sumGross(comparisonRows) : null;
 
   return {
     latestMonth,
     comparisonMonth,
     comparisonType,
-    currentNet,
-    comparisonNet,
-    growthPct,
+    currentQty,
+    comparisonQty,
+    qtyGrowthPct: pct(currentQty, comparisonQty),
+    currentGross,
+    comparisonGross,
+    grossGrowthPct: pct(currentGross, comparisonGross),
     likeToLike,
     excludedNewChannels,
     excludedChurnedChannels,
@@ -116,11 +135,16 @@ export function computeNetworkComparison(params: {
   };
 }
 
-/** Latest-month-vs-comparison-month growth% for one arbitrary row subset (e.g. one Channel Type) — used by the insight strip. null with no comparison data for that subset. */
-export function computeGroupGrowth(currentMonthRows: ChannelSalesRow[], comparisonMonthRows: ChannelSalesRow[]): number | null {
-  if (comparisonMonthRows.length === 0) return null;
-  const currentNet = currentMonthRows.reduce((s, r) => s + num(r.net_amount), 0);
-  const comparisonNet = comparisonMonthRows.reduce((s, r) => s + num(r.net_amount), 0);
-  if (comparisonNet === 0) return null;
-  return ((currentNet - comparisonNet) / Math.abs(comparisonNet)) * 100;
+/** Latest-month-vs-comparison-month {qty, gross} growth% for one arbitrary row subset (e.g. one Channel Type) — used by the insight strip. Each field null independently with no comparison data/zero baseline for that metric. */
+export function computeGroupGrowth(
+  currentMonthRows: ChannelSalesRow[],
+  comparisonMonthRows: ChannelSalesRow[]
+): { qtyGrowthPct: number | null; grossGrowthPct: number | null } {
+  if (comparisonMonthRows.length === 0) return { qtyGrowthPct: null, grossGrowthPct: null };
+  const pct = (curr: number, prev: number): number | null => (prev === 0 ? null : ((curr - prev) / Math.abs(prev)) * 100);
+  const currentQty = currentMonthRows.reduce((s, r) => s + num(r.total_quantity), 0);
+  const comparisonQty = comparisonMonthRows.reduce((s, r) => s + num(r.total_quantity), 0);
+  const currentGross = currentMonthRows.reduce((s, r) => s + num(r.gross_amount), 0);
+  const comparisonGross = comparisonMonthRows.reduce((s, r) => s + num(r.gross_amount), 0);
+  return { qtyGrowthPct: pct(currentQty, comparisonQty), grossGrowthPct: pct(currentGross, comparisonGross) };
 }

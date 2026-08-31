@@ -37,12 +37,12 @@ import { Sparkline } from "./Sparkline";
 const PAGE_KEY = "sale_summary";
 
 /**
- * Breakdown table with a subtotal/total footer — same "never average a
- * ratio column" convention as PeriodSalesFacetedTable / AgentSalesFacetedTable
- * / StoreDiagnosisFacetedTable: qty/gross/net sum, discountPct is
- * RECOMPUTED from the summed gross/net (not an average of the per-row %s).
- * Still used for the Branch/warehouse breakdown — the Channel Type breakdown
- * this table used to also render is gone, replaced by HierarchyTable below.
+ * Breakdown table with a subtotal/total footer — same "sum extensive
+ * columns" convention as PeriodSalesFacetedTable / AgentSalesFacetedTable /
+ * StoreDiagnosisFacetedTable. Still used for the Branch/warehouse breakdown
+ * — the Channel Type breakdown this table used to also render is gone,
+ * replaced by HierarchyTable below. No Discount/Markup % column — removed
+ * 2026-08-31, see aggregate.ts's header.
  */
 function BreakdownTable({
   rows,
@@ -64,7 +64,7 @@ function BreakdownTable({
       gross += r.gross;
       net += r.net;
     }
-    return { qty, gross, net, discountPct: gross !== 0 ? ((gross - net) / gross) * 100 : null };
+    return { qty, gross, net };
   }, [rows]);
 
   return (
@@ -74,9 +74,8 @@ function BreakdownTable({
           <tr className="border-b border-line-soft bg-surface-2 text-left text-[10px] uppercase tracking-wide text-ink-3">
             <th className="px-3 py-2">{keyLabel}</th>
             <th className="px-3 py-2 text-right">Qty</th>
-            <th className="px-3 py-2 text-right">Gross</th>
+            <th className="px-3 py-2 text-right">Gross (taxable)</th>
             <th className="px-3 py-2 text-right">Net</th>
-            <th className="px-3 py-2 text-right">Discount / Markup %</th>
           </tr>
         </thead>
         <tbody>
@@ -86,14 +85,11 @@ function BreakdownTable({
               <td className="px-3 py-2 text-right font-mono">{fmtCount(r.qty)}</td>
               <td className="px-3 py-2 text-right font-mono">{fmtInrAbbrev(r.gross)}</td>
               <td className="px-3 py-2 text-right font-mono">{fmtInrAbbrev(r.net)}</td>
-              <td className="px-3 py-2 text-right font-mono">
-                {r.discountPct === null ? "—" : r.discountPct < 0 ? `${Math.abs(r.discountPct).toFixed(1)}% markup` : `${r.discountPct.toFixed(1)}%`}
-              </td>
             </tr>
           ))}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={5} className="px-3 py-4 text-center text-sm text-ink-3">
+              <td colSpan={4} className="px-3 py-4 text-center text-sm text-ink-3">
                 {emptyLabel}
               </td>
             </tr>
@@ -106,13 +102,6 @@ function BreakdownTable({
               <td className="px-3 py-2 text-right font-mono">{fmtCount(totals.qty)}</td>
               <td className="px-3 py-2 text-right font-mono">{fmtInrAbbrev(totals.gross)}</td>
               <td className="px-3 py-2 text-right font-mono">{fmtInrAbbrev(totals.net)}</td>
-              <td className="px-3 py-2 text-right font-mono">
-                {totals.discountPct === null
-                  ? "—"
-                  : totals.discountPct < 0
-                    ? `${Math.abs(totals.discountPct).toFixed(1)}% markup`
-                    : `${totals.discountPct.toFixed(1)}%`}
-              </td>
             </tr>
           </tfoot>
         )}
@@ -275,12 +264,32 @@ export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]
             comparisonMonthRows.filter((r) => (r.channel_type ?? "(no channel type)") === top.key)
           )
         : null;
+    // Both aspects, per Pankaj — "growth to be measure for both aspect qty
+    // and value" (value = gross/taxable, not net; see comparison.ts header).
     const growthClause =
-      topTypeGrowth === null
+      !topTypeGrowth || (topTypeGrowth.qtyGrowthPct === null && topTypeGrowth.grossGrowthPct === null)
         ? ""
-        : ` — ${topTypeGrowth >= 0 ? "up" : "down"} ${Math.abs(topTypeGrowth).toFixed(1)}% ${COMPARISON_LABELS[comparisonType]} for ${latestMonth!.slice(0, 7)}`;
+        : ` — ${
+            topTypeGrowth.grossGrowthPct === null
+              ? ""
+              : `value ${topTypeGrowth.grossGrowthPct >= 0 ? "up" : "down"} ${Math.abs(topTypeGrowth.grossGrowthPct).toFixed(1)}%`
+          }${topTypeGrowth.grossGrowthPct !== null && topTypeGrowth.qtyGrowthPct !== null ? ", " : ""}${
+            topTypeGrowth.qtyGrowthPct === null
+              ? ""
+              : `qty ${topTypeGrowth.qtyGrowthPct >= 0 ? "up" : "down"} ${Math.abs(topTypeGrowth.qtyGrowthPct).toFixed(1)}%`
+          } ${COMPARISON_LABELS[comparisonType]} for ${latestMonth!.slice(0, 7)}`;
     return `${top.key} drove ${sharePct.toFixed(0)}% of net sales in this scope (${fmtInrAbbrev(top.net)})${growthClause}.`;
   }, [channelTypeRows, kpis.totalNet, latestMonth, comparisonMonthRows, currentMonthRows, comparisonType]);
+
+  // Shared "Comparing 2026-08 to 2025-08." caption — every table/card that
+  // shows a growth figure repeats this exact line so the comparison window
+  // is never implicit (per Pankaj: "this kind of details to be shown on
+  // every table top wherever there is comparison like growth").
+  const comparisonPeriodLabel = networkComparison.latestMonth
+    ? `Comparing ${networkComparison.latestMonth.slice(0, 7)} to ${
+        networkComparison.comparisonMonth ? networkComparison.comparisonMonth.slice(0, 7) : "—"
+      } (${COMPARISON_LABELS[comparisonType]})${networkComparison.comparisonGross === null ? " — no data for the comparison month in this scope" : ""}.`
+    : "No months in the current scope to compare.";
 
   const hasSearchActive = state.search.trim().length > 0;
 
@@ -290,19 +299,17 @@ export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]
         <div className="mb-4 rounded-md border border-line-soft bg-surface-2 px-3.5 py-2.5 text-[13px] text-ink-2">{insight}</div>
       )}
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      {
+        // Discount/Markup % KPI card removed 2026-08-31 — see aggregate.ts's
+        // header: gross is taxable value, net is after-tax, so (gross-net)/
+        // gross was a tax-rate artifact, not a real discount, and the
+        // correct basis differs party-by-party. Hidden everywhere on this
+        // page until a proper discount engine replaces it.
+      }
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <KpiCard label="Net sales" value={fmtInrAbbrev(kpis.totalNet)} sub={<Sparkline values={netSpark} />} />
-        <KpiCard label="Gross sales" value={fmtInrAbbrev(kpis.totalGross)} sub={<Sparkline values={grossSpark} />} />
+        <KpiCard label="Gross sales (taxable)" value={fmtInrAbbrev(kpis.totalGross)} sub={<Sparkline values={grossSpark} />} />
         <KpiCard label="Total qty" value={fmtCount(kpis.totalQty)} sub={<Sparkline values={qtySpark} />} />
-        <KpiCard
-          label={kpis.isMarkup ? "Markup %" : "Discount %"}
-          value={kpis.discountPct === null ? "—" : `${Math.abs(kpis.discountPct).toFixed(1)}%`}
-          sub={
-            kpis.isMarkup
-              ? "Net exceeds gross for this scope — expected for this channel, see docs."
-              : "Signed: positive = discount given (net < gross); flips to “Markup %” when net exceeds gross."
-          }
-        />
         <KpiCard
           label="Returns value"
           value={fmtInrAbbrev(kpis.returnsValue)}
@@ -315,7 +322,7 @@ export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]
         <div className="rounded-lg border border-line-soft bg-surface px-4 pb-4 pt-4 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="text-[10.5px] font-semibold uppercase tracking-[0.11em] text-ink-3">
-              {COMPARISON_LABELS[comparisonType]} growth — net sales
+              {COMPARISON_LABELS[comparisonType]} growth — qty &amp; value
             </div>
             {isPartialMonth && (
               <span className="rounded-full border border-dashed border-line px-2 py-0.5 text-[10.5px] text-ink-3" title="The latest month in scope is still accumulating data.">
@@ -323,18 +330,39 @@ export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]
               </span>
             )}
           </div>
-          <div className="font-mono font-tabular mt-2 text-[26px] leading-none tracking-tight text-ink">
-            {networkComparison.growthPct === null ? "—" : `${networkComparison.growthPct >= 0 ? "+" : ""}${networkComparison.growthPct.toFixed(1)}%`}
+          <p className="mt-1 text-[11px] text-ink-3">{comparisonPeriodLabel}</p>
+          <div className="mt-3 grid grid-cols-2 gap-4">
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-ink-3">Value (taxable)</div>
+              <div className="font-mono font-tabular mt-1 text-[22px] leading-none tracking-tight text-ink">
+                {networkComparison.grossGrowthPct === null ? "—" : `${networkComparison.grossGrowthPct >= 0 ? "+" : ""}${networkComparison.grossGrowthPct.toFixed(1)}%`}
+              </div>
+              <DeltaBadge
+                current={networkComparison.currentGross}
+                previous={networkComparison.comparisonGross}
+                baselineLabel={
+                  networkComparison.latestMonth && networkComparison.comparisonMonth
+                    ? `${networkComparison.comparisonMonth.slice(0, 7)} → ${networkComparison.latestMonth.slice(0, 7)}`
+                    : "vs comparison period"
+                }
+              />
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-ink-3">Qty</div>
+              <div className="font-mono font-tabular mt-1 text-[22px] leading-none tracking-tight text-ink">
+                {networkComparison.qtyGrowthPct === null ? "—" : `${networkComparison.qtyGrowthPct >= 0 ? "+" : ""}${networkComparison.qtyGrowthPct.toFixed(1)}%`}
+              </div>
+              <DeltaBadge
+                current={networkComparison.currentQty}
+                previous={networkComparison.comparisonQty}
+                baselineLabel={
+                  networkComparison.latestMonth && networkComparison.comparisonMonth
+                    ? `${networkComparison.comparisonMonth.slice(0, 7)} → ${networkComparison.latestMonth.slice(0, 7)}`
+                    : "vs comparison period"
+                }
+              />
+            </div>
           </div>
-          <DeltaBadge
-            current={networkComparison.currentNet}
-            previous={networkComparison.comparisonNet}
-            baselineLabel={
-              networkComparison.latestMonth && networkComparison.comparisonMonth
-                ? `${networkComparison.comparisonMonth.slice(0, 7)} → ${networkComparison.latestMonth.slice(0, 7)}`
-                : "vs comparison period"
-            }
-          />
           {likeToLike && networkComparison.likeToLike && (networkComparison.excludedNewChannels > 0 || networkComparison.excludedChurnedChannels > 0) && (
             <p className="mt-2 text-[11px] text-ink-3">
               Like-to-like: excluded {networkComparison.excludedNewChannels} new + {networkComparison.excludedChurnedChannels} discontinued channel
@@ -363,13 +391,7 @@ export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]
               Compare like-to-like only
             </label>
           </div>
-          <p className="mt-2 text-[11px] text-ink-3">
-            {networkComparison.latestMonth
-              ? `Comparing ${networkComparison.latestMonth.slice(0, 7)} to ${
-                  networkComparison.comparisonMonth ? networkComparison.comparisonMonth.slice(0, 7) : "—"
-                }${networkComparison.comparisonNet === null ? " (no data for the comparison month in this scope)" : ""}.`
-              : "No months in the current scope to compare."}
-          </p>
+          <p className="mt-2 text-[11px] text-ink-3">{comparisonPeriodLabel}</p>
         </div>
       </div>
 
@@ -393,8 +415,8 @@ export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]
         <div>
           <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Channel Model / Type / Name</span>
           <p className="mt-1 text-[11.5px] text-ink-3">
-            Collapsed to Channel Model + Channel Type by default — click a Channel Type row to reveal its Channel Name parties. Growth (
-            {COMPARISON_LABELS[comparisonType]}) reflects the latest month in scope, not the full range total above.
+            Collapsed to Channel Model + Channel Type by default — click a Channel Type row to reveal its Channel Name parties. The two
+            Growth columns reflect the latest month in scope, not the full range total above. {comparisonPeriodLabel}
           </p>
           <div className="mt-2">
             <HierarchyTable rows={hierarchyRows} forceExpandAll={hasSearchActive} emptyLabel="No rows match these filters." />

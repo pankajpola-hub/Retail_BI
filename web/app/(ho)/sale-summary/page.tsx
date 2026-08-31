@@ -132,18 +132,30 @@ export default async function SaleSummaryPage({
 
   return (
     <main className="py-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="font-serif text-2xl">Sale Summary</h1>
-          <p className="mt-1 max-w-2xl text-[12.5px] text-ink-3">
-            Wholesale / distribution-channel sales — agents, distributors, LFS (Shoppers Stop, Lifestyle), MBO, and
-            ecommerce marketplaces. Sourced from a monthly pre-aggregated upload, not day-level bills — see{" "}
-            <a href="/data-upload" className="underline">
-              Data Upload
-            </a>{" "}
-            to add a month.
-          </p>
-        </div>
+      <div>
+        <h1 className="font-serif text-2xl">Sale Summary</h1>
+        <p className="mt-1 max-w-2xl text-[12.5px] text-ink-3">
+          Wholesale / distribution-channel sales — agents, distributors, LFS (Shoppers Stop, Lifestyle), MBO, and
+          ecommerce marketplaces. Sourced from a monthly pre-aggregated upload, not day-level bills — see{" "}
+          <a href="/data-upload" className="underline">
+            Data Upload
+          </a>{" "}
+          to add a month.
+        </p>
+      </div>
+
+      {
+        // Frozen date filter (2026-08-31, per Pankaj: "freeze the date filter
+        // at the top so scrolled data can be referable"). AppShell's own
+        // fixed top bar is h-14 (56px, top-0, z-50 — components/ui/
+        // AppShell.tsx) and the page content already sits below it
+        // (pt-14 on the shell's content wrapper), so this bar's own sticky
+        // `top` is set to that same 56px rather than 0 — otherwise it would
+        // sit UNDER the app's own top bar while scrolled. z-30 keeps it
+        // above table content but below AppShell's top bar (z-50) and
+        // TopProgressBar (z-100).
+      }
+      <div className="sticky top-14 z-30 -mx-4 mt-4 border-b border-line-soft bg-ground/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-ground/80 sm:-mx-6 sm:px-6">
         <MonthRangePicker fromMonth={fromMonth} toMonth={toMonth} />
       </div>
 

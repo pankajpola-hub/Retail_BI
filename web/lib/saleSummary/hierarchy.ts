@@ -5,12 +5,11 @@
  * migration 0101's header) that the original flat "Channel Type breakdown"
  * table + separate "Top parties" table didn't expose at all.
  *
- * Every level's qty/gross/net is a SUM of its children (extensive columns),
- * and discountPct is RECOMPUTED from the summed gross/net at that level —
- * never averaged from the children's own percentages. Same hard convention
- * lib/saleSummary/aggregate.ts's computeBreakdown and every other faceted
- * table in this app (PeriodSalesFacetedTable's buildSubtotalRow,
- * ProductAttributeSalesTable's pinnedTotal) already follow.
+ * Every level's qty/gross/net is a SUM of its children (extensive columns).
+ * No discount/markup % here — removed 2026-08-31, see aggregate.ts's header
+ * for why (gross=taxable, net=after-tax; (gross-net)/gross is a tax-rate
+ * artifact, not a real discount, and the correct basis differs party-by-
+ * party) — do not reintroduce it on this table.
  *
  * `channel_name` is the hierarchy's leaf, NOT `party_name` — the screenshot
  * pivot table and migration 0101's header both describe the 3-level shape as
@@ -50,10 +49,6 @@ export function aggregateLeaves(rows: ChannelSalesRow[]): HierarchyLeafAgg[] {
   return [...map.values()];
 }
 
-function discountPctOf(gross: number, net: number): number | null {
-  return gross !== 0 ? ((gross - net) / gross) * 100 : null;
-}
-
 export type HierarchyRow = {
   id: string;
   level: 0 | 1 | 2; // 0 = Channel Model, 1 = Channel Type, 2 = Channel Name (leaf)
@@ -64,36 +59,52 @@ export type HierarchyRow = {
   qty: number;
   gross: number;
   net: number;
-  discountPct: number | null;
   /** Distinct Channel Name count under this node — 1 at leaf level, always shown so a collapsed row still says how much it's hiding. */
   childCount: number;
   /**
    * Latest-month-vs-comparison-month % change for THIS node (not the full
    * scope total) — see SaleSummaryClient/comparison.ts for why growth is
    * always a single-month read even though qty/gross/net above are summed
-   * over the whole selected month range. null when no comparison is active,
-   * the node didn't exist in the comparison month (a genuinely new channel —
-   * shown as "no comparison baseline", not 0%), or the comparison month's
-   * value for this node was exactly zero.
+   * over the whole selected month range. Measured on BOTH qty and gross
+   * (2026-08-31, per Pankaj: "growth to be measure for both aspect qty and
+   * value" — value here means TAXABLE value = gross_amount, not net, which
+   * is after-tax and channel-dependent — see aggregate.ts's header). null
+   * when no comparison is active, the node didn't exist in the comparison
+   * month (a genuinely new channel — shown as "no comparison baseline", not
+   * 0%), or the comparison month's value for this node was exactly zero.
    */
-  growthPct: number | null;
-  /** True once a comparison is active AND the comparison month had ANY data for this node's own scope (even if growthPct itself is null because that value was exactly 0) — lets the cell distinguish "0% change" from "nothing to compare against". */
+  qtyGrowthPct: number | null;
+  grossGrowthPct: number | null;
+  /** True once a comparison is active AND the comparison month had ANY data for this node's own scope (shared by both growth fields — presence/absence of the node in the comparison month doesn't depend on which metric you're looking at). Lets a cell distinguish "0% change" from "nothing to compare against". */
   hasComparisonBaseline: boolean;
 };
 
-/** Builds the growth% for one map key, from two (key -> net) maps. */
-function growthFor(key: string, currentByKey: Map<string, number>, comparisonByKey: Map<string, number> | null): { growthPct: number | null; hasComparisonBaseline: boolean } {
-  if (comparisonByKey === null) return { growthPct: null, hasComparisonBaseline: false };
-  const comparisonNet = comparisonByKey.get(key);
-  if (comparisonNet === undefined) return { growthPct: null, hasComparisonBaseline: false };
-  const currentNet = currentByKey.get(key) ?? 0;
-  if (comparisonNet === 0) return { growthPct: null, hasComparisonBaseline: true };
-  return { growthPct: ((currentNet - comparisonNet) / Math.abs(comparisonNet)) * 100, hasComparisonBaseline: true };
+/** Builds {qty, gross} growth% for one map key, from two (key -> {qty, gross}) maps. */
+function growthFor(
+  key: string,
+  currentByKey: Map<string, { qty: number; gross: number }>,
+  comparisonByKey: Map<string, { qty: number; gross: number }> | null
+): { qtyGrowthPct: number | null; grossGrowthPct: number | null; hasComparisonBaseline: boolean } {
+  if (comparisonByKey === null) return { qtyGrowthPct: null, grossGrowthPct: null, hasComparisonBaseline: false };
+  const comparison = comparisonByKey.get(key);
+  if (comparison === undefined) return { qtyGrowthPct: null, grossGrowthPct: null, hasComparisonBaseline: false };
+  const current = currentByKey.get(key) ?? { qty: 0, gross: 0 };
+  const pct = (curr: number, prev: number): number | null => (prev === 0 ? null : ((curr - prev) / Math.abs(prev)) * 100);
+  return {
+    qtyGrowthPct: pct(current.qty, comparison.qty),
+    grossGrowthPct: pct(current.gross, comparison.gross),
+    hasComparisonBaseline: true,
+  };
 }
 
-function sumNetByKey(leaves: HierarchyLeafAgg[], keyOf: (l: HierarchyLeafAgg) => string): Map<string, number> {
-  const map = new Map<string, number>();
-  for (const l of leaves) map.set(keyOf(l), (map.get(keyOf(l)) ?? 0) + l.net);
+function sumByKey(leaves: HierarchyLeafAgg[], keyOf: (l: HierarchyLeafAgg) => string): Map<string, { qty: number; gross: number }> {
+  const map = new Map<string, { qty: number; gross: number }>();
+  for (const l of leaves) {
+    const cur = map.get(keyOf(l)) ?? { qty: 0, gross: 0 };
+    cur.qty += l.qty;
+    cur.gross += l.gross;
+    map.set(keyOf(l), cur);
+  }
   return map;
 }
 
@@ -117,12 +128,12 @@ export function buildHierarchyRows(
   scopeLeaves: HierarchyLeafAgg[],
   growthLeaves: { currentMonthLeaves: HierarchyLeafAgg[]; comparisonMonthLeaves: HierarchyLeafAgg[] | null } | null
 ): HierarchyRow[] {
-  const currentByLeafKey = growthLeaves ? sumNetByKey(growthLeaves.currentMonthLeaves, leafKey) : new Map<string, number>();
-  const currentByTypeKey = growthLeaves ? sumNetByKey(growthLeaves.currentMonthLeaves, typeKey) : new Map<string, number>();
-  const currentByModelKey = growthLeaves ? sumNetByKey(growthLeaves.currentMonthLeaves, modelKey) : new Map<string, number>();
-  const comparisonByLeafKey = growthLeaves?.comparisonMonthLeaves ? sumNetByKey(growthLeaves.comparisonMonthLeaves, leafKey) : null;
-  const comparisonByTypeKey = growthLeaves?.comparisonMonthLeaves ? sumNetByKey(growthLeaves.comparisonMonthLeaves, typeKey) : null;
-  const comparisonByModelKey = growthLeaves?.comparisonMonthLeaves ? sumNetByKey(growthLeaves.comparisonMonthLeaves, modelKey) : null;
+  const currentByLeafKey = growthLeaves ? sumByKey(growthLeaves.currentMonthLeaves, leafKey) : new Map<string, { qty: number; gross: number }>();
+  const currentByTypeKey = growthLeaves ? sumByKey(growthLeaves.currentMonthLeaves, typeKey) : new Map<string, { qty: number; gross: number }>();
+  const currentByModelKey = growthLeaves ? sumByKey(growthLeaves.currentMonthLeaves, modelKey) : new Map<string, { qty: number; gross: number }>();
+  const comparisonByLeafKey = growthLeaves?.comparisonMonthLeaves ? sumByKey(growthLeaves.comparisonMonthLeaves, leafKey) : null;
+  const comparisonByTypeKey = growthLeaves?.comparisonMonthLeaves ? sumByKey(growthLeaves.comparisonMonthLeaves, typeKey) : null;
+  const comparisonByModelKey = growthLeaves?.comparisonMonthLeaves ? sumByKey(growthLeaves.comparisonMonthLeaves, modelKey) : null;
 
   // Group scopeLeaves into Model -> Type -> [leaves], summing as we go.
   type TypeBucket = { channelType: string; qty: number; gross: number; net: number; leaves: HierarchyLeafAgg[] };
@@ -165,9 +176,9 @@ export function buildHierarchyRows(
       qty: model.qty,
       gross: model.gross,
       net: model.net,
-      discountPct: discountPctOf(model.gross, model.net),
       childCount: modelChildCount,
-      growthPct: mg.growthPct,
+      qtyGrowthPct: mg.qtyGrowthPct,
+      grossGrowthPct: mg.grossGrowthPct,
       hasComparisonBaseline: mg.hasComparisonBaseline,
     });
 
@@ -185,9 +196,9 @@ export function buildHierarchyRows(
         qty: type.qty,
         gross: type.gross,
         net: type.net,
-        discountPct: discountPctOf(type.gross, type.net),
         childCount: type.leaves.length,
-        growthPct: tg.growthPct,
+        qtyGrowthPct: tg.qtyGrowthPct,
+        grossGrowthPct: tg.grossGrowthPct,
         hasComparisonBaseline: tg.hasComparisonBaseline,
       });
 
@@ -205,9 +216,9 @@ export function buildHierarchyRows(
           qty: leaf.qty,
           gross: leaf.gross,
           net: leaf.net,
-          discountPct: discountPctOf(leaf.gross, leaf.net),
           childCount: 1,
-          growthPct: lg.growthPct,
+          qtyGrowthPct: lg.qtyGrowthPct,
+          grossGrowthPct: lg.grossGrowthPct,
           hasComparisonBaseline: lg.hasComparisonBaseline,
         });
       }

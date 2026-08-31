@@ -7,14 +7,6 @@ import { DataGrid } from "@/components/ui/DataGrid";
 import type { HierarchyRow } from "@/lib/saleSummary/hierarchy";
 import { fmtInrAbbrev, fmtCount } from "@/lib/saleSummary/format";
 
-const PCT = (n: number | null) => (n === null ? "—" : `${n.toFixed(1)}%`);
-
-/** Same signed discount/markup convention every table on this page uses (see aggregate.ts's ChannelSalesKpis.discountPct doc). */
-function DiscountCell({ value }: { value: number | null }) {
-  if (value === null) return <span className="font-mono text-ink-3">—</span>;
-  return <span className="font-mono">{value < 0 ? `${Math.abs(value).toFixed(1)}% markup` : `${value.toFixed(1)}%`}</span>;
-}
-
 /** Growth% cell — trend glyph + colour, same ChangeCell convention PeriodSalesFacetedTable.tsx already establishes (never colour alone). "no baseline" (new/discontinued channel, or comparison off) reads as a plain dash, not a misleading 0%. */
 function GrowthCell({ value, hasBaseline }: { value: number | null; hasBaseline: boolean }) {
   if (!hasBaseline) return <span className="text-ink-3">—</span>;
@@ -68,8 +60,8 @@ function useReducedMotion(): boolean {
  * from the established convention: DataGrid for rendering/virtualization,
  * the level-based indent + colSpan-free label-column pattern those two
  * tables use for their own group headers, and — most importantly — the
- * "every ratio is recomputed from summed parts, never averaged" rule
- * (lib/saleSummary/hierarchy.ts's discountPctOf), which this table follows
+ * "every ratio/growth% is recomputed from summed parts, never averaged"
+ * rule (lib/saleSummary/hierarchy.ts's growthFor), which this table follows
  * exactly like they do.
  *
  * Expand/collapse animation: DataGrid's animateRows stays on (its default)
@@ -144,20 +136,22 @@ export function HierarchyTable({
         },
       },
       { field: "qty", headerName: "Qty", flex: 0.7, sortable: true, cellClass: "text-right font-mono", headerClass: "text-right", valueFormatter: (p) => fmtCount(p.value) },
-      { field: "gross", headerName: "Gross", flex: 0.9, sortable: true, cellClass: "text-right font-mono", headerClass: "text-right", valueFormatter: (p) => fmtInrAbbrev(p.value) },
+      { field: "gross", headerName: "Gross (taxable)", flex: 0.9, sortable: true, cellClass: "text-right font-mono", headerClass: "text-right", valueFormatter: (p) => fmtInrAbbrev(p.value) },
       { field: "net", headerName: "Net", flex: 0.9, sortable: true, cellClass: "text-right font-mono", headerClass: "text-right", valueFormatter: (p) => fmtInrAbbrev(p.value) },
       {
-        field: "discountPct",
-        headerName: "Discount / Markup %",
-        flex: 0.9,
+        field: "qtyGrowthPct",
+        headerName: "Growth (Qty)",
+        flex: 0.8,
         sortable: true,
         cellClass: "text-right",
         headerClass: "text-right",
-        cellRenderer: (p: ICellRendererParams<HierarchyRow, number | null>) => <DiscountCell value={p.value ?? null} />,
+        cellRenderer: (p: ICellRendererParams<HierarchyRow, number | null>) => (
+          <GrowthCell value={p.value ?? null} hasBaseline={p.data?.hasComparisonBaseline ?? false} />
+        ),
       },
       {
-        field: "growthPct",
-        headerName: "Growth",
+        field: "grossGrowthPct",
+        headerName: "Growth (Value)",
         flex: 0.8,
         sortable: true,
         cellClass: "text-right",
