@@ -6,6 +6,7 @@ import { KpiGridSkeleton, ChartSkeleton, TableSkeleton, SectionLabelSkeleton } f
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
 import { MonthRangePicker } from "./MonthRangePicker";
 import { SaleSummaryClient } from "./SaleSummaryClient";
+import { SaleSummaryShell } from "./SaleSummaryShell";
 import type { ChannelSalesRow } from "@/lib/saleSummary/aggregate";
 import { currentYm, shiftMonth, monthToFirstOfMonthDate, monthToExclusiveUpperBound } from "@/lib/saleSummary/month";
 
@@ -155,17 +156,27 @@ export default async function SaleSummaryPage({
         // above table content but below AppShell's top bar (z-50) and
         // TopProgressBar (z-100).
       }
-      <div className="sticky top-14 z-30 -mx-4 mt-4 border-b border-line-soft bg-ground/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-ground/80 sm:-mx-6 sm:px-6">
-        <MonthRangePicker fromMonth={fromMonth} toMonth={toMonth} />
-      </div>
+      {
+        // SaleSummaryShell wraps from here down — it's the STABLE ancestor
+        // (a Client Component holding facet/comparison/returns-only state in
+        // Context) that sits ABOVE the <Suspense> boundary below, so that
+        // state survives a fromMonth/toMonth navigation even though
+        // ChannelSalesSection/SaleSummaryClient underneath it remounts. See
+        // SaleSummaryShell.tsx's header for the full root-cause writeup.
+      }
+      <SaleSummaryShell>
+        <div className="sticky top-14 z-30 -mx-4 mt-4 border-b border-line-soft bg-ground/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-ground/80 sm:-mx-6 sm:px-6">
+          <MonthRangePicker fromMonth={fromMonth} toMonth={toMonth} />
+        </div>
 
-      <div className="mt-6">
-        <SectionErrorBoundary label="Sale Summary">
-          <Suspense fallback={<ChannelSalesSkeleton />}>
-            <ChannelSalesSection fromMonth={fromMonth} toMonth={toMonth} />
-          </Suspense>
-        </SectionErrorBoundary>
-      </div>
+        <div className="mt-6">
+          <SectionErrorBoundary label="Sale Summary">
+            <Suspense fallback={<ChannelSalesSkeleton />}>
+              <ChannelSalesSection fromMonth={fromMonth} toMonth={toMonth} />
+            </Suspense>
+          </SectionErrorBoundary>
+        </div>
+      </SaleSummaryShell>
     </main>
   );
 }

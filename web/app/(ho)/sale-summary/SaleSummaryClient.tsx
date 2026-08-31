@@ -1,14 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import {
-  FacetFilterBar,
-  applyFacetFilter,
-  emptyFilterState,
-  type FacetDef,
-  type AdvField,
-  type FacetFilterState,
-} from "@/components/ui/FacetFilterBar";
+import { useMemo } from "react";
+import { FacetFilterBar, applyFacetFilter, type FacetDef, type AdvField } from "@/components/ui/FacetFilterBar";
 import { KpiCard } from "@/components/ui/KpiCard";
 import { DeltaBadge } from "@/components/ui/DeltaBadge";
 import { TrendChart } from "@/components/ui/TrendChart";
@@ -33,6 +26,7 @@ import { fmtInrAbbrev, fmtCount } from "@/lib/saleSummary/format";
 import { HierarchyTable } from "./HierarchyTable";
 import { MixDonutChart } from "./MixDonutChart";
 import { Sparkline } from "./Sparkline";
+import { useSaleSummaryState } from "./SaleSummaryShell";
 
 const PAGE_KEY = "sale_summary";
 
@@ -113,20 +107,15 @@ function BreakdownTable({
 const COMPARISON_LABELS: Record<ComparisonType, string> = { mom: "MoM", yoy: "YoY" };
 
 export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]; priorRows: ChannelSalesRow[] }) {
-  const [state, setState] = useState<FacetFilterState>(emptyFilterState);
-  // Returns-only is a simple boolean toggle, deliberately kept OUTSIDE
-  // FacetFilterState (which models multi-select facets, free-text search,
-  // and advanced field conditions — a plain "show only negative-quantity
-  // rows" switch doesn't fit any of those shapes cleanly, and forcing it
-  // into an AdvField condition would make it removable/editable via the
-  // chip row like any other filter, which is confusing for what's meant to
-  // read as a single on/off switch).
-  const [returnsOnly, setReturnsOnly] = useState(false);
-  const [comparisonType, setComparisonType] = useState<ComparisonType>("mom");
-  // Default OFF per the redesign brief — a simple total-vs-total comparison
-  // (today's behavior) unless the user explicitly opts into excluding
-  // newly-onboarded/churned channels from skewing the delta.
-  const [likeToLike, setLikeToLike] = useState(false);
+  // Facet/search state, Returns-only, comparisonType and likeToLike ALL live
+  // in SaleSummaryShell's Context now, not local useState here — this
+  // component remounts on every date-range change (see SaleSummaryShell.tsx
+  // for the full root-cause writeup), so anything stored in local state here
+  // would silently reset on every such navigation. Reading them via context
+  // instead means they're simply re-read from a stable ancestor that never
+  // remounts, so they survive.
+  const { filterState: state, setFilterState: setState, returnsOnly, setReturnsOnly, comparisonType, setComparisonType, likeToLike, setLikeToLike } =
+    useSaleSummaryState();
 
   const facets = useMemo<FacetDef<ChannelSalesRow>[]>(
     () => [
