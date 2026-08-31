@@ -116,7 +116,15 @@ export function useThemeVersion(): number {
  * wheel over the plot = zoom X, drag in the plot = pan, drag the bottom time
  * axis = zoom X only, drag the right price axis = zoom Y only.
  */
-export function chartBaseOptions(p: ChartPalette): DeepPartial<ChartOptions> {
+/**
+ * `priceFormatter` override — added for /sale-summary's abbreviated
+ * Cr/L currency display (lib/saleSummary/format.ts's fmtInrAbbrev), which
+ * needs the right-hand price axis to read "₹2.21 Cr" instead of the
+ * app-wide comma-grouped ₹ this chart otherwise defaults to. Optional and
+ * defaulting to `inr`, so every other existing caller (HourlyBarChart,
+ * ComparisonTrendChart, and every other page's TrendChart) is unaffected.
+ */
+export function chartBaseOptions(p: ChartPalette, priceFormatter: (v: number) => string = inr): DeepPartial<ChartOptions> {
   return {
     layout: {
       background: { type: ColorType.Solid, color: p.surface },
@@ -157,8 +165,9 @@ export function chartBaseOptions(p: ChartPalette): DeepPartial<ChartOptions> {
     localization: {
       locale: "en-IN",
       // ₹ + en-IN grouping on the price axis and the crosshair price label,
-      // matching every other money figure in the app.
-      priceFormatter: inr,
+      // matching every other money figure in the app — unless a caller (see
+      // this function's own comment above) opted into a different formatter.
+      priceFormatter,
     },
     autoSize: true,
   };
@@ -170,6 +179,11 @@ export const INR_PRICE_FORMAT = {
   formatter: inr,
   minMove: 1,
 };
+
+/** Same shape as INR_PRICE_FORMAT, with a caller-supplied formatter — see chartBaseOptions' own comment for why (sale-summary's Cr/L display). */
+export function priceFormatWith(formatter: (v: number) => string) {
+  return { type: "custom" as const, formatter, minMove: 1 };
+}
 
 /**
  * Maps points to strictly-ascending 'YYYY-MM-DD' business days for the time
@@ -230,12 +244,15 @@ export function ChartTooltip({
   width,
   title,
   rows,
+  valueFormatter = inr,
 }: {
   x: number;
   y: number;
   width: number;
   title: string;
   rows: TooltipRow[];
+  /** Defaults to the app-wide `inr` — sale-summary's TrendChart passes fmtInrAbbrev instead. */
+  valueFormatter?: (v: number) => string;
 }) {
   const TIP_W = 150;
   const left = Math.min(Math.max(x + 12, 4), Math.max(width - TIP_W - 4, 4));
@@ -264,7 +281,7 @@ export function ChartTooltip({
                 {r.name}
               </span>
             )}
-            <span className="ml-auto tabular-nums font-medium text-ink-2">{inr(r.value)}</span>
+            <span className="ml-auto tabular-nums font-medium text-ink-2">{valueFormatter(r.value)}</span>
           </div>
         ))}
       </div>

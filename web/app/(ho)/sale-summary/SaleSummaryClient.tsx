@@ -29,13 +29,12 @@ import {
   type ComparisonType,
 } from "@/lib/saleSummary/comparison";
 import { currentYm } from "@/lib/saleSummary/month";
+import { fmtInrAbbrev, fmtCount } from "@/lib/saleSummary/format";
 import { HierarchyTable } from "./HierarchyTable";
 import { MixDonutChart } from "./MixDonutChart";
 import { Sparkline } from "./Sparkline";
 
 const PAGE_KEY = "sale_summary";
-
-const INR = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
 
 /**
  * Breakdown table with a subtotal/total footer — same "never average a
@@ -84,9 +83,9 @@ function BreakdownTable({
           {rows.map((r) => (
             <tr key={r.key} className="border-b border-line-soft last:border-0">
               <td className="px-3 py-2">{r.key}</td>
-              <td className="px-3 py-2 text-right font-mono">{Math.round(r.qty).toLocaleString("en-IN")}</td>
-              <td className="px-3 py-2 text-right font-mono">{INR(r.gross)}</td>
-              <td className="px-3 py-2 text-right font-mono">{INR(r.net)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmtCount(r.qty)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmtInrAbbrev(r.gross)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmtInrAbbrev(r.net)}</td>
               <td className="px-3 py-2 text-right font-mono">
                 {r.discountPct === null ? "—" : r.discountPct < 0 ? `${Math.abs(r.discountPct).toFixed(1)}% markup` : `${r.discountPct.toFixed(1)}%`}
               </td>
@@ -104,9 +103,9 @@ function BreakdownTable({
           <tfoot>
             <tr className="border-t-2 border-line bg-surface-2 font-bold">
               <td className="px-3 py-2">{footerLabel}</td>
-              <td className="px-3 py-2 text-right font-mono">{Math.round(totals.qty).toLocaleString("en-IN")}</td>
-              <td className="px-3 py-2 text-right font-mono">{INR(totals.gross)}</td>
-              <td className="px-3 py-2 text-right font-mono">{INR(totals.net)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmtCount(totals.qty)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmtInrAbbrev(totals.gross)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmtInrAbbrev(totals.net)}</td>
               <td className="px-3 py-2 text-right font-mono">
                 {totals.discountPct === null
                   ? "—"
@@ -280,7 +279,7 @@ export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]
       topTypeGrowth === null
         ? ""
         : ` — ${topTypeGrowth >= 0 ? "up" : "down"} ${Math.abs(topTypeGrowth).toFixed(1)}% ${COMPARISON_LABELS[comparisonType]} for ${latestMonth!.slice(0, 7)}`;
-    return `${top.key} drove ${sharePct.toFixed(0)}% of net sales in this scope (${INR(top.net)})${growthClause}.`;
+    return `${top.key} drove ${sharePct.toFixed(0)}% of net sales in this scope (${fmtInrAbbrev(top.net)})${growthClause}.`;
   }, [channelTypeRows, kpis.totalNet, latestMonth, comparisonMonthRows, currentMonthRows, comparisonType]);
 
   const hasSearchActive = state.search.trim().length > 0;
@@ -292,9 +291,9 @@ export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]
       )}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <KpiCard label="Net sales" value={INR(kpis.totalNet)} sub={<Sparkline values={netSpark} />} />
-        <KpiCard label="Gross sales" value={INR(kpis.totalGross)} sub={<Sparkline values={grossSpark} />} />
-        <KpiCard label="Total qty" value={Math.round(kpis.totalQty).toLocaleString("en-IN")} sub={<Sparkline values={qtySpark} />} />
+        <KpiCard label="Net sales" value={fmtInrAbbrev(kpis.totalNet)} sub={<Sparkline values={netSpark} />} />
+        <KpiCard label="Gross sales" value={fmtInrAbbrev(kpis.totalGross)} sub={<Sparkline values={grossSpark} />} />
+        <KpiCard label="Total qty" value={fmtCount(kpis.totalQty)} sub={<Sparkline values={qtySpark} />} />
         <KpiCard
           label={kpis.isMarkup ? "Markup %" : "Discount %"}
           value={kpis.discountPct === null ? "—" : `${Math.abs(kpis.discountPct).toFixed(1)}%`}
@@ -306,7 +305,7 @@ export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]
         />
         <KpiCard
           label="Returns value"
-          value={INR(kpis.returnsValue)}
+          value={fmtInrAbbrev(kpis.returnsValue)}
           sub="Σ net, negative-quantity rows"
         />
         <KpiCard label="Active channels" value={String(kpis.activeChannels)} />
@@ -417,7 +416,7 @@ export function SaleSummaryClient({ rows, priorRows }: { rows: ChannelSalesRow[]
           {trendPoints.length === 0 ? (
             <p className="py-10 text-center text-sm text-ink-3">No data in this month range / filter.</p>
           ) : (
-            <TrendChart points={trendPoints} ariaLabel="Net sales by month, wholesale/distribution channels" />
+            <TrendChart points={trendPoints} ariaLabel="Net sales by month, wholesale/distribution channels" valueFormatter={fmtInrAbbrev} />
           )}
         </div>
       </div>

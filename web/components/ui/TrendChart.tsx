@@ -16,6 +16,7 @@ import {
   ResetZoomButton,
   chartBaseOptions,
   inr,
+  priceFormatWith,
   readChartPalette,
   timeAxisFor,
   useThemeVersion,
@@ -42,7 +43,7 @@ import {
  */
 export type Point = { label: string; value: number; date?: string };
 
-function seriesColors(p: ChartPalette) {
+function seriesColors(p: ChartPalette, valueFormatter?: (v: number) => string) {
   return {
     // 2026-08-23 monochrome pass, carried over: this is a SINGLE-series
     // chart, so colour here is decoration, not meaning. --ink-3 exactly (the
@@ -57,11 +58,19 @@ function seriesColors(p: ChartPalette) {
     lineWidth: 2 as const,
     priceLineVisible: false,
     lastValueVisible: false,
-    priceFormat: INR_PRICE_FORMAT,
+    priceFormat: valueFormatter ? priceFormatWith(valueFormatter) : INR_PRICE_FORMAT,
   };
 }
 
-export function TrendChart({ points, ariaLabel }: { points: Point[]; ariaLabel: string }) {
+/**
+ * `valueFormatter` — optional, defaults to the app-wide `inr` (₹ + en-IN
+ * comma grouping) everywhere except /sale-summary, which passes
+ * lib/saleSummary/format.ts's fmtInrAbbrev so the axis/tooltip/screen-reader
+ * summary all read "₹2.21 Cr" instead. Every other existing caller is
+ * unaffected — this is additive and optional.
+ */
+export function TrendChart({ points, ariaLabel, valueFormatter }: { points: Point[]; ariaLabel: string; valueFormatter?: (v: number) => string }) {
+  const fmt = valueFormatter ?? inr;
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Area"> | null>(null);
@@ -87,8 +96,8 @@ export function TrendChart({ points, ariaLabel }: { points: Point[]; ariaLabel: 
     const el = containerRef.current;
     if (!el) return;
     const palette = readChartPalette();
-    const chart = createChart(el, chartBaseOptions(palette));
-    const series = chart.addSeries(AreaSeries, seriesColors(palette));
+    const chart = createChart(el, chartBaseOptions(palette, fmt));
+    const series = chart.addSeries(AreaSeries, seriesColors(palette, fmt));
     chartRef.current = chart;
     seriesRef.current = series;
 
@@ -136,8 +145,8 @@ export function TrendChart({ points, ariaLabel }: { points: Point[]; ariaLabel: 
     const series = seriesRef.current;
     if (!chart || !series) return;
     const palette = readChartPalette();
-    chart.applyOptions(chartBaseOptions(palette));
-    series.applyOptions(seriesColors(palette));
+    chart.applyOptions(chartBaseOptions(palette, fmt));
+    series.applyOptions(seriesColors(palette, fmt));
   }, [themeVersion]);
 
   const reset = () => {
@@ -147,7 +156,7 @@ export function TrendChart({ points, ariaLabel }: { points: Point[]; ariaLabel: 
 
   return (
     <div role="group" aria-label={ariaLabel} className="relative">
-      <ChartSrSummary ariaLabel={ariaLabel} rows={points.map((p) => `${p.label}: ${inr(p.value)}`)} />
+      <ChartSrSummary ariaLabel={ariaLabel} rows={points.map((p) => `${p.label}: ${fmt(p.value)}`)} />
       <ResetZoomButton onClick={reset} />
       <div ref={containerRef} className="h-40 w-full" aria-hidden />
       {tip && (
@@ -157,6 +166,7 @@ export function TrendChart({ points, ariaLabel }: { points: Point[]; ariaLabel: 
           width={containerRef.current?.clientWidth ?? 0}
           title={tip.title}
           rows={[{ value: tip.value }]}
+          valueFormatter={fmt}
         />
       )}
     </div>

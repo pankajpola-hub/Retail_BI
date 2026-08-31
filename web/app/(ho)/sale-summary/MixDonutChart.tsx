@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { BreakdownRow } from "@/lib/saleSummary/aggregate";
+import { fmtInrAbbrev } from "@/lib/saleSummary/format";
 
 /**
  * Channel Model / Channel Type mix — net-sales share donut (2026-08-31
@@ -17,8 +18,6 @@ import type { BreakdownRow } from "@/lib/saleSummary/aggregate";
  * never the only signal, same rule the rest of this app's charts follow.
  */
 const SEGMENT_COLORS = ["var(--ink)", "var(--accent-ink)", "var(--ink-3)", "var(--good)", "var(--warn)", "var(--ink-2)", "var(--crit)"];
-
-const INR = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
 
 function buildArcs(rows: BreakdownRow[]) {
   const total = rows.reduce((s, r) => s + Math.max(r.net, 0), 0);
@@ -89,13 +88,13 @@ export function MixDonutChart({ modelRows, typeRows }: { modelRows: BreakdownRow
                 <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: a.color }} />
                 <span className="flex-1 truncate text-ink-2">{a.key}</span>
                 <span className="font-mono text-ink-3">{(a.share * 100).toFixed(1)}%</span>
-                <span className="font-mono font-medium text-ink">{INR(a.net)}</span>
+                <span className="font-mono font-medium text-ink">{fmtInrAbbrev(a.net)}</span>
               </li>
             ))}
           </ul>
         </div>
       )}
-      <p className="mt-2 text-[11px] text-ink-3">{total > 0 ? `${INR(total)} total net sales across ${arcs.length} ${view === "model" ? "channel model" : "channel type"}${arcs.length === 1 ? "" : "s"}` : ""}</p>
+      <p className="mt-2 text-[11px] text-ink-3">{total > 0 ? `${fmtInrAbbrev(total)} total net sales across ${arcs.length} ${view === "model" ? "channel model" : "channel type"}${arcs.length === 1 ? "" : "s"}` : ""}</p>
     </div>
   );
 }

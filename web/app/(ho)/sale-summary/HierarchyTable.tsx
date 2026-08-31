@@ -5,6 +5,7 @@ import { ChevronRight, ChevronDown, TrendingUp, TrendingDown } from "lucide-reac
 import type { ColDef, ICellRendererParams, RowStyle } from "ag-grid-community";
 import { DataGrid } from "@/components/ui/DataGrid";
 import type { HierarchyRow } from "@/lib/saleSummary/hierarchy";
+import { fmtInrAbbrev, fmtCount } from "@/lib/saleSummary/format";
 
 const PCT = (n: number | null) => (n === null ? "—" : `${n.toFixed(1)}%`);
 
@@ -142,9 +143,9 @@ export function HierarchyTable({
           );
         },
       },
-      { field: "qty", headerName: "Qty", flex: 0.7, sortable: true, cellClass: "text-right font-mono", headerClass: "text-right", valueFormatter: (p) => Math.round(p.value).toLocaleString("en-IN") },
-      { field: "gross", headerName: "Gross", flex: 0.9, sortable: true, cellClass: "text-right font-mono", headerClass: "text-right", valueFormatter: (p) => `₹${Math.round(p.value).toLocaleString("en-IN")}` },
-      { field: "net", headerName: "Net", flex: 0.9, sortable: true, cellClass: "text-right font-mono", headerClass: "text-right", valueFormatter: (p) => `₹${Math.round(p.value).toLocaleString("en-IN")}` },
+      { field: "qty", headerName: "Qty", flex: 0.7, sortable: true, cellClass: "text-right font-mono", headerClass: "text-right", valueFormatter: (p) => fmtCount(p.value) },
+      { field: "gross", headerName: "Gross", flex: 0.9, sortable: true, cellClass: "text-right font-mono", headerClass: "text-right", valueFormatter: (p) => fmtInrAbbrev(p.value) },
+      { field: "net", headerName: "Net", flex: 0.9, sortable: true, cellClass: "text-right font-mono", headerClass: "text-right", valueFormatter: (p) => fmtInrAbbrev(p.value) },
       {
         field: "discountPct",
         headerName: "Discount / Markup %",
