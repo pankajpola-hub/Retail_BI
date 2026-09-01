@@ -603,6 +603,37 @@ revoking the grant — flagged as a follow-up, not folded into this pass.
 
 **Still needed**: deploy — production is well behind master.
 
+### 2026-08-31 — another concurrent session built Sale Summary + finished Workspace parity, pushed by this session
+
+Discovered mid-turn: another Claude Code session working in this SAME local checkout (same
+machine, same folder — visible in `git reflog`, not a separate clone) had already built, over 25
+local-only commits, both the "Sale Summary" wholesale/distribution-channel upload+dashboard page
+this session was about to start, AND finished Wave 3 (Workspace parity, all 4 steps) that this
+session's own PROGRESS.md had left as a "next step." Local was 25 commits ahead of `origin/master`
+with none of it pushed — a real loss-of-work risk on a single machine. Verified `tsc --noEmit` +
+full `next build` clean on that HEAD (`/sale-summary` and `/sales/stock-status` both compile),
+then pushed immediately (`01da2f7`) rather than re-doing any of this work.
+
+New page `/sale-summary` (migration `0101_channel_sales_summary.sql`, `ops.channel_sales_summary`
+table + upload RPC + page permission via the `sale-summary` PageKey), reusing/extending the
+generic upload pipeline for a new `channel_summary` report type. Also: Workspace parity 1-4
+(streaming/error boundaries, PeriodSalesFacetedTable swap, period comparison, product-attribute
+breakdown — migration `0102_workspace_product_attribute_table.sql`), a DB-layer role gate on
+`vw_channel_sales_summary` (explicitly citing the C-09 lesson from this session's earlier audit),
+and an upload-url auth fix for the new report type.
+
+**Not yet run against the live DB** (checked directly — neither table/function exists yet):
+```bash
+MSYS2_ARG_CONV_EXCL="*" PGPASSWORD='<pw>' "/d/Programs/pgsql/bin/psql.exe" -h aws-0-ap-southeast-1.pooler.supabase.com -p 5432 -U postgres.naukfqwjunorzntnzkok -d postgres -v ON_ERROR_STOP=1 -f "server/db/migrations/0101_channel_sales_summary.sql"
+MSYS2_ARG_CONV_EXCL="*" PGPASSWORD='<pw>' "/d/Programs/pgsql/bin/psql.exe" -h aws-0-ap-southeast-1.pooler.supabase.com -p 5432 -U postgres.naukfqwjunorzntnzkok -d postgres -v ON_ERROR_STOP=1 -f "server/db/migrations/0102_workspace_product_attribute_table.sql"
+```
+Then deploy — production is well behind master at this point (many sessions' worth).
+
+**Not deep-reviewed line-by-line here** (context-budget tradeoff, flagged explicitly rather than
+silently skipped) — only build/typecheck verified. Worth a closer read of the RLS/permission
+migrations (0101, the `vw_channel_sales_summary` role gate) next time there's headroom, same
+scrutiny this session gave `feat/marketplace-recon`'s migrations earlier.
+
 ## Next steps (in order)
 
 1. Wait for the 5 in-flight agents to report back (background notifications will arrive).
