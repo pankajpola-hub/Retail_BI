@@ -661,6 +661,25 @@ rate new orders get enriched going forward. `tsc`+`build` clean, pushed.
 frequent cron) or a manual backfill pass. Also worth watching `sync_runs` for a few days post-
 deploy to confirm no new timeouts at batch=60/concurrency=5 before raising further.
 
+### 2026-09-03 — Uniware sync moved to GitHub Actions (frequency fix) — DONE, MERGED (`bfc69a6`)
+
+Vercel Hobby plan caps cron at once/day platform-wide — the real reason the item-enrichment queue
+could never catch up (see `fbc0cd2` above). Extracted the sync logic into `lib/uniware/syncJob.ts`
+(one implementation, two callers): the Vercel route (kept for manual triggering, removed from
+`vercel.json`'s schedule) and new `scripts/uniware-sync-standalone.ts`, run via
+`node --conditions=react-server --import tsx` (neutralizes the `server-only` guard the same way
+Next's RSC bundler does — verified locally, script loads and reaches its own env-check cleanly).
+New `.github/workflows/uniware-sync.yml`, every 15 min, writes to the same Supabase DB — app stays
+a pure reader. Batch/concurrency higher on this path (200/8) than Vercel's (60/5), passed as
+params now. `tsc`+`build` clean, pushed.
+
+**Still needed, human action**: add these as GitHub repo secrets (Settings → Secrets and
+variables → Actions → New repository secret) — `NEXT_PUBLIC_SUPABASE_URL`,
+`SUPABASE_SERVICE_ROLE_KEY`, `UNIWARE_BASE_URL`, `UNIWARE_SEARCH_API_USERNAME`,
+`UNIWARE_SEARCH_API_KEY`, `UNIWARE_GETORDER_API_USERNAME`, `UNIWARE_GETORDER_API_KEY`, optionally
+`UNIWARE_REST_USERNAME`/`UNIWARE_REST_PASSWORD`/`UNIWARE_FACILITY_CODE`. Then trigger once manually
+(Actions tab → Uniware sync → Run workflow) to confirm it works before trusting the schedule.
+
 ## Next steps (in order)
 
 1. Wait for the 5 in-flight agents to report back (background notifications will arrive).
