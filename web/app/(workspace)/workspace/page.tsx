@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import { requirePageAccess, PAGE_ROLE_DEFAULTS } from "@/lib/auth/roles";
+import { resolveAccess } from "@/lib/auth/access";
 import { ownStores } from "@/lib/scope/ownStores";
 import { createClient } from "@/lib/data/client";
 import {
@@ -149,6 +150,14 @@ export default async function WorkspacePage({
   // per request) and keeps this page correct if it's ever reached from
   // somewhere other than this route group's own layout.
   const user = await requirePageAccess("workspace");
+  // Same key stock-details/page.tsx checks for its own capacity editor —
+  // this is the identical underlying capability (fetchStockComponentData's
+  // canEditCapacity), just reached from the Workspace stock tile instead.
+  // Was a bare role check with no access.can() consultation at all before
+  // 2026-08-31 — an admin grant via the Users page's Permissions tab had no
+  // effect here no matter what.
+  const access = await resolveAccess();
+  const canEditStockCapacity = access?.can("stock-details.capacity.edit") ?? (user.role === "ho_admin" || user.role === "super_admin");
 
   const supabase = await createClient();
 
@@ -303,7 +312,7 @@ export default async function WorkspacePage({
       )
     : null;
   const stockDataPromise: Promise<StockComponentData> | null = needsStockData
-    ? fetchStockComponentData({ supabase, storeIds, canEditCapacity: user.role === "ho_admin" || user.role === "super_admin" })
+    ? fetchStockComponentData({ supabase, storeIds, canEditCapacity: canEditStockCapacity })
     : null;
   const mixDataPromise: Promise<MixComponentData> | null = needsMixData ? fetchMixComponentData({ supabase, storeIds }) : null;
   const replenishmentDataPromise: Promise<ReplenishmentComponentData> | null = needsReplenishmentData

@@ -301,13 +301,16 @@ export default async function StockDetailsPage({
   // per-request-cached profile/store-id resolution — this "independent
   // re-check" costs nothing extra over the layout's own call.
   const user = await requirePageAccess("stock-details");
-  // 0079: role check ANDed with the permission key, not replaced — the key was
-  // seeded to every role that can reach this page, so replacing the role check
-  // would have silently widened capacity editing to store/regional roles.
+  // 2026-08-31: trusts access.can() directly instead of ANDing in a
+  // hardcoded ho_admin/super_admin check — core.role_permissions already
+  // grants "stock-details.capacity.edit" to every role that reaches this
+  // page (0079's own seed), so the hardcoded AND was silently overriding
+  // whatever an admin granted via the Users page's Permissions tab for this
+  // exact key. Same fix, same reasoning, as targets.monthly_targets.edit
+  // (see that file's own comment) — confirmed with Pankaj this should
+  // always be true, not just for this one case.
   const access = await resolveAccess();
-  const canEditCapacity =
-    (user.role === "ho_admin" || user.role === "super_admin") &&
-    (access?.can("stock-details.capacity.edit") ?? true);
+  const canEditCapacity = access?.can("stock-details.capacity.edit") ?? (user.role === "ho_admin" || user.role === "super_admin");
 
   const supabase = await createClient();
 

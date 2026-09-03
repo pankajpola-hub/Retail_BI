@@ -346,17 +346,22 @@ export default async function TargetsPage({
   // core.fn_user_store_ids() pattern used everywhere else).
   const user = await requirePageAccess("targets");
 
-  // 0079: the role-based defaults above are now expressible as permission
-  // keys, so an admin can grant or revoke each capability per user without a
-  // deploy. The role check is ANDed in rather than replaced — these keys were
-  // seeded to every role that can reach the page (0079's behaviour-neutral
-  // seed), so dropping the role check would have silently widened
-  // target-setting to ebo_manager/regional_manager on apply.
+  // 2026-08-31: every one of these now trusts access.can() directly instead
+  // of ANDing in a hardcoded ho_admin/super_admin check — core.role_permissions
+  // already grants all four targets.*.edit keys to every role that can reach
+  // this page (0079's own seed), so the hardcoded AND was silently
+  // overriding whatever an admin granted via the Users page's Permissions
+  // tab: it had no effect on any of these four decisions, ever. Confirmed
+  // with Pankaj (2026-08-31) — "no hardcoding, all should be handled by the
+  // rights-giving window" — a deliberate policy change, not an accident:
+  // this widens all four (monthly targets, bulk upload, incentive upload,
+  // remarks was already unrestricted) to every role the page admits, exactly
+  // as far as the Users page's own Permissions tab lets an admin dial it
+  // back down per user.
   const access = await resolveAccess();
-  const roleCanSetTargets = user.role === "ho_admin" || user.role === "super_admin";
-  const canSetTargets = roleCanSetTargets && (access?.can("targets.monthly_targets.edit") ?? true);
-  const canBulkUpload = roleCanSetTargets && (access?.can("targets.bulk_upload.edit") ?? true);
-  const canIncentiveUpload = roleCanSetTargets && (access?.can("targets.incentive_upload.edit") ?? true);
+  const canSetTargets = access?.can("targets.monthly_targets.edit") ?? (user.role === "ho_admin" || user.role === "super_admin");
+  const canBulkUpload = access?.can("targets.bulk_upload.edit") ?? (user.role === "ho_admin" || user.role === "super_admin");
+  const canIncentiveUpload = access?.can("targets.incentive_upload.edit") ?? (user.role === "ho_admin" || user.role === "super_admin");
   const canWriteRemarks = access?.can("targets.remarks.edit") ?? true;
   const canViewTracker = access?.can("targets.tracker.view") ?? true;
   const canExportAudit = access?.can("targets.audit_report.export") ?? true;
