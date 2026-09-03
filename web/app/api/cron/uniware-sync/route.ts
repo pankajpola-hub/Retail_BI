@@ -58,10 +58,54 @@ const HEADER_SAFETY_CAP = 5000; // orders per chunk; comfortably above any 30-da
 // Cut again, 60 -> 20 (still timed out at 60): Vercel's US datacenter to
 // this India-hosted Uniware tenant is a much slower round trip per call than
 // local dev's network path was — the real bottleneck is per-call latency,
-// not raw batch size arithmetic. 20 is a deliberately conservative starting
-// point; can be tuned up once real production timing is measured (the
-// sync_runs log, 0068, records started_at/finished_at for exactly this).
-const ITEM_ENRICHMENT_BATCH_SIZE = 20;
+// not raw batch size arithmetic.
+//
+// 2026-09-03: at 20/run x 1 run/day (vercel.json's old daily 3am schedule),
+// throughput was ~20 orders enriched/day against a measured ~500 NEW header
+// orders/day (sync_runs.header_orders_upserted) — the item queue could never
+// catch up, it grew by ~480/day forever. Confirmed live: this app's ecomm
+// revenue numbers were a small fraction of Uniware's own dashboard for the
+// same days, because most orders never had item-level data at all. Fixed on
+// two axes: (1) the sequential per-order loop below is now a bounded
+// concurrency pool (ITEM_ENRICHMENT_CONCURRENCY) instead of one call at a
+// time — wall-clock time for a batch is now bounded by the slowest call in
+// each wave, not the sum of every call's latency, which is what actually
+// caused the old 60-item batch to time out. (2) Batch size raised 20 -> 60:
+// the earlier "60 -> 20 (still timed out at 60)" finding was measured under
+// FULLY SEQUENTIAL execution; at concurrency=5, 60 items' wall-clock time is
+// ~12 items'-worth (60/5), well under the 20-sequential baseline already
+// confirmed to fit in 60s. A reasoned estimate, not measured live — check
+// sync_runs' started_at/finished_at (0068) after this deploys and tune
+// further from there, not blindly.
+//
+// vercel.json's schedule is UNCHANGED (still once daily) — Vercel's Hobby
+// plan (the tier this project's earlier 60s maxDuration ceiling already
+// establishes it's on) caps cron invocations at once per day platform-wide;
+// an hourly schedule in vercel.json would not actually run hourly. Closing
+// the remaining gap between ~500 new orders/day and whatever one daily run
+// can now process needs either a Vercel plan upgrade (unlocks more frequent
+// crons) or periodic manual backfill invocations — a product/cost decision,
+// not something this change silently assumes. This code fix also does not
+// touch the EXISTING backlog (only new incoming orders) — see this file's
+// own long-standing note on a separate one-off backfill invocation being
+// the right tool for that, not the scheduled cron.
+const ITEM_ENRICHMENT_BATCH_SIZE = 60;
+const ITEM_ENRICHMENT_CONCURRENCY = 5;
+
+/** Bounded-concurrency map — runs `worker` over `items` with at most
+ *  `concurrency` in flight at once, not one giant Promise.all (which would
+ *  fire every request simultaneously and risk the upstream tenant rate-
+ *  limiting or throttling a burst from one IP). */
+async function mapWithConcurrency<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>): Promise<void> {
+  let cursor = 0;
+  async function runOne(): Promise<void> {
+    while (cursor < items.length) {
+      const item = items[cursor++]!;
+      await worker(item);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, runOne));
+}
 
 // Returns sync — same rolling-window-not-cursor shape as the header sync
 // (Search Return has no "updated since" filter either, see
@@ -212,7 +256,7 @@ export async function GET(request: Request) {
       .rpc<{ code: string }[]>("fn_uniware_orders_needing_items", { p_limit: ITEM_ENRICHMENT_BATCH_SIZE });
     if (error) throw new Error(error.message);
 
-    for (const { code } of queued ?? []) {
+    await mapWithConcurrency(queued ?? [], ITEM_ENRICHMENT_CONCURRENCY, async ({ code }) => {
       try {
         const items = await getSaleOrderItems(code);
         const payload = items.map((it) => ({
@@ -246,7 +290,7 @@ export async function GET(request: Request) {
         const message = err instanceof UniwareSoapError ? err.message : err instanceof Error ? err.message : String(err);
         errors.push(`item sync (${code}): ${message}`);
       }
-    }
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     errors.push(`item sync queue read: ${message}`);
@@ -293,10 +337,12 @@ export async function GET(request: Request) {
     // Capped per invocation for the same duration-limit reason as
     // ITEM_ENRICHMENT_BATCH_SIZE — nothing is queued for "the rest", the next
     // run's Search Return pass simply re-finds whatever didn't fit this time.
-    for (const code of uniqueCodes.slice(0, RETURNS_DETAIL_BATCH_SIZE)) {
+    // Same bounded-concurrency fix as the item-enrichment phase above, same
+    // reasoning (2026-09-03).
+    await mapWithConcurrency(uniqueCodes.slice(0, RETURNS_DETAIL_BATCH_SIZE), ITEM_ENRICHMENT_CONCURRENCY, async (code) => {
       try {
         const detail = await getReturn(code);
-        if (!detail) continue;
+        if (!detail) return;
 
         const payload = [
           {
@@ -321,7 +367,7 @@ export async function GET(request: Request) {
         const message = err instanceof UniwareRestError ? err.message : err instanceof Error ? err.message : String(err);
         errors.push(`returns detail (${code}): ${message}`);
       }
-    }
+    });
   }
 
   const ok = errors.length === 0;
