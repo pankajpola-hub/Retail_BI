@@ -1,0 +1,60 @@
+name: Uniware sync
+
+# Runs the same job as web/app/api/cron/uniware-sync/route.ts
+# (web/lib/uniware/syncJob.ts), but from GitHub Actions instead of Vercel
+# Cron. Vercel's Hobby plan caps cron invocations at once per DAY,
+# platform-wide — with ~500 new Uniware orders/day, one run/day left the
+# item-enrichment queue permanently unable to catch up (this app's ecomm
+# revenue was reading ~1/4 of the real Uniware dashboard number for the same
+# day — see docs/audit/PROGRESS.md, 2026-09-03). GitHub Actions has no such
+# cap and no 60s function-duration ceiling.
+#
+# Data lands in the SAME Supabase database the Vercel-hosted app reads from
+# — this workflow only writes, it never serves any page. The app stays a
+# pure reader of whatever this (or the still-present Vercel cron route, kept
+# for manual triggering) last wrote.
+
+on:
+  schedule:
+    # Every 15 minutes. Tune via the Actions tab -> this workflow -> "..." ->
+    # if you need a different cadence, or just edit this line — GitHub
+    # re-reads the schedule from whatever's on the default branch.
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {} # manual "Run workflow" button in the Actions tab
+
+# Only one sync should ever be in flight at a time — a second run starting
+# before the first finishes would race the same upsert RPCs pointlessly.
+concurrency:
+  group: uniware-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run sync:uniware
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          UNIWARE_BASE_URL: ${{ secrets.UNIWARE_BASE_URL }}
+          UNIWARE_SEARCH_API_USERNAME: ${{ secrets.UNIWARE_SEARCH_API_USERNAME }}
+          UNIWARE_SEARCH_API_KEY: ${{ secrets.UNIWARE_SEARCH_API_KEY }}
+          UNIWARE_GETORDER_API_USERNAME: ${{ secrets.UNIWARE_GETORDER_API_USERNAME }}
+          UNIWARE_GETORDER_API_KEY: ${{ secrets.UNIWARE_GETORDER_API_KEY }}
+          UNIWARE_REST_USERNAME: ${{ secrets.UNIWARE_REST_USERNAME }}
+          UNIWARE_REST_PASSWORD: ${{ secrets.UNIWARE_REST_PASSWORD }}
+          UNIWARE_FACILITY_CODE: ${{ secrets.UNIWARE_FACILITY_CODE }}
