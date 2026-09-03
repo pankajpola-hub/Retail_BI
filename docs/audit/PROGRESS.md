@@ -645,6 +645,22 @@ window" — deliberate widening, confirmed). Also deleted `page-access-button.ts
 called the `@deprecated` `updateUserPageOverrides()` which writes a table nothing reads; the real
 working UI is `UserDetailDialog`'s Permissions tab. `tsc`+`build` clean, pushed.
 
+### 2026-09-03 — Uniware sync under-reporting ecomm revenue by ~4x — DONE, MERGED (`fbc0cd2`)
+
+User compared our Sep 2 ecomm total (₹32,018) against Uniware's own dashboard (₹129,910) — ~1/4.
+Root cause: item-level enrichment (revenue lives in `sale_order_items.total_price`) capped at
+20 orders/run, cron runs once/day, ~500 new header orders/day — queue grew ~480/day forever,
+never caught up. Fixed the one lever available without a Vercel plan upgrade: sequential
+per-order loop → bounded concurrency (5 in flight), batch size 20→60 (reasoned safe under the
+new concurrency, not live-measured — check `sync_runs.started_at/finished_at` after deploy).
+Schedule stays once-daily (Hobby plan caps cron frequency platform-wide; hourly wouldn't run
+hourly regardless of what's in `vercel.json`). Does NOT touch the existing backlog, only the
+rate new orders get enriched going forward. `tsc`+`build` clean, pushed.
+
+**Still open, needs a decision**: closing the gap fully needs either a Vercel plan upgrade (more
+frequent cron) or a manual backfill pass. Also worth watching `sync_runs` for a few days post-
+deploy to confirm no new timeouts at batch=60/concurrency=5 before raising further.
+
 ## Next steps (in order)
 
 1. Wait for the 5 in-flight agents to report back (background notifications will arrive).
