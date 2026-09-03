@@ -634,6 +634,17 @@ silently skipped) — only build/typecheck verified. Worth a closer read of the 
 migrations (0101, the `vw_channel_sales_summary` role gate) next time there's headroom, same
 scrutiny this session gave `feat/marketplace-recon`'s migrations earlier.
 
+### 2026-08-31 — hardcoded role gates were silently overriding Users-page rights — DONE, MERGED (`3a88090`)
+
+Reported: ebo_manager granted access via Users page still couldn't set monthly targets. Root
+cause: `/targets`, `/stock-details`, `/workspace` each hardcoded a `role === ho_admin/super_admin`
+check ANDed in front of (or instead of) the real `access.can()` permission lookup — DB already
+granted these edit keys broadly, so the hardcoded check silently overrode any admin grant. Fixed
+all four checks to trust `access.can()` directly (Pankaj: "no hardcoding, all handled by rights
+window" — deliberate widening, confirmed). Also deleted `page-access-button.tsx` — 0 imports,
+called the `@deprecated` `updateUserPageOverrides()` which writes a table nothing reads; the real
+working UI is `UserDetailDialog`'s Permissions tab. `tsc`+`build` clean, pushed.
+
 ## Next steps (in order)
 
 1. Wait for the 5 in-flight agents to report back (background notifications will arrive).
