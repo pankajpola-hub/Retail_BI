@@ -11,17 +11,13 @@ import { KpiCard } from "@/components/ui/KpiCard";
 import { TrendChart } from "@/components/ui/TrendChart";
 import { ComparisonTrendChart } from "@/components/ui/ComparisonTrendChart";
 import { DeltaBadge } from "@/components/ui/DeltaBadge";
-import { HourlyBarChart } from "@/components/ui/HourlyBarChart";
 import { MultiSelectFilter } from "@/components/ui/StoreFilter";
 import { KpiGridSkeleton, ChartSkeleton, TableSkeleton, SectionLabelSkeleton, MatrixSkeleton } from "@/components/ui/Skeleton";
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
 import { timeAll } from "@/lib/perf/timing";
 import {
   computeSalesTotals,
-  computeLeague,
   computeAgentRows,
-  computeSchemeRows,
-  computeHourlyPoints,
   buildWeekSeries,
   buildDailyPeriodSeries,
   buildMonthlyPeriodSeries,
@@ -29,7 +25,6 @@ import {
   type WeeklyRow,
   type AgentDailyRow,
   type SchemeDailyRow,
-  type HourlyRow,
   type DailyFullRow,
   type MonthlyRow,
 } from "@/lib/sales/aggregate";
@@ -40,6 +35,23 @@ import { PeriodSalesFacetedTable, type PeriodFacetedRow } from "./PeriodSalesFac
 import { EcommChannelFacetedTable, type EcommChannelRow } from "./EcommChannelFacetedTable";
 import { ProductAttributeSalesTable } from "./ProductAttributeSalesTable";
 import type { SaleAttributeLineRow } from "@/lib/sales/attributeBreakdown";
+import { AttributeFilterBar } from "./AttributeFilterBar";
+import { HourlyWithComparison, SchemePenetrationBars, StoreLeagueComparison } from "./EboAttributeBlockViews";
+import {
+  SALE_LINE_SELECT,
+  applyAttributeFilter,
+  buildAttributeOptions,
+  describeAttributeSelection,
+  isAttributeSelectionEmpty,
+  parseAttributeSelection,
+  type SaleLineRow,
+} from "@/lib/sales/attributeFilter";
+import {
+  computeHourlyFromLines,
+  computeLeagueFromLines,
+  computeSchemeFromLines,
+  computeTrendFromLines,
+} from "@/lib/sales/lineAggregates";
 
 /**
  * Card wrapper (2026-08-26 polish pass) — same token pattern KpiCard
@@ -84,6 +96,18 @@ import { AgentSalesFacetedTable } from "../network/AgentSalesFacetedTable";
 import { StoreDiagnosisFacetedTable } from "../network/StoreDiagnosisFacetedTable";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * URL param prefixes, one per independent filter surface on this page.
+ *
+ * Four AttributeFilterBar instances and three self-contained tables all write
+ * their state to the same URL, so each needs its own namespace or they clobber
+ * each other. Same fix and same reasoning as movement/page.tsx's `mix_` prefix
+ * — see AttributeFilterBar's header. Collected here rather than inlined so the
+ * whole set is visible at once and a new one can't accidentally duplicate an
+ * existing prefix.
+ */
+const SHARED_ATTR_PREFIX = "attr_";
 
 /**
  * Phase 2 of the unified Sales explore (see the plan file) — one page,
@@ -391,7 +415,7 @@ async function EboDetailSection({
   const monthlyStart = new Date(from);
   monthlyStart.setDate(monthlyStart.getDate() - 400);
 
-  const [{ data: weeks }, { data: agentDaily }, { data: hourly }, { data: dailyFull }, { data: monthly }, { data: compareWeeks }] = await timeAll(
+  const [{ data: weeks }, { data: agentDaily }, { data: dailyFull }, { data: monthly }, { data: compareWeeks }] = await timeAll(
     "sales:ebo_detail",
     [
       applyStore(
@@ -400,9 +424,6 @@ async function EboDetailSection({
       applyStore(
         supabase.schema("sales").from<AgentDailyRow>("vw_ebo_agent_daily").select("*").gte("bill_date", from).lte("bill_date", to)
       ) as unknown as QueryChain<AgentDailyRow>,
-      applyStore(
-        supabase.schema("sales").from<HourlyRow>("vw_ebo_sales_hourly").select("*").gte("bill_date", from).lte("bill_date", to)
-      ) as unknown as QueryChain<HourlyRow>,
       applyStore(
         supabase.schema("sales").from<DailyFullRow>("vw_ebo_sales_daily").select("*").gte("bill_date", isoDate(dailyStart)).lte("bill_date", to)
       ) as unknown as QueryChain<DailyFullRow>,
@@ -426,9 +447,7 @@ async function EboDetailSection({
   // Same helper, second window — the comparison numbers come from the exact
   // function that produces the current ones, never a parallel formula.
   const compareTotals = comparing ? computeSalesTotals(compareWeeks, compareFrom as string) : null;
-  const league = computeLeague(weekRows, storesInView, storeNames);
   const agentRows = computeAgentRows(agentDaily);
-  const hourlyPoints = computeHourlyPoints(hourly);
 
   // Flattened once here (server-side) into the shape
   // PeriodSalesFacetedTable actually renders — one row per (store, period),
@@ -531,27 +550,203 @@ async function EboDetailSection({
         <PeriodSalesFacetedTable daily={dailyFacetedRows} weekly={weeklyFacetedRows} monthly={monthlyFacetedRows} yearly={yearlyFacetedRows} />
       </SectionCard>
 
-      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <SectionCard icon={<Clock className="h-4 w-4" />} title="Net sales by hour of day — EBO">
-          <HourlyBarChart points={hourlyPoints} ariaLabel="Net sales by hour of day, EBO" />
-        </SectionCard>
-
-        <SectionCard icon={<Trophy className="h-4 w-4" />} title="Store league — EBO" subtitle="Click a row for that store's own daily trend.">
-          <StoreLeagueFacetedContent league={league} from={from} to={to} />
-        </SectionCard>
-      </div>
-
-      <SectionErrorBoundary label="Scheme penetration">
-        <Suspense fallback={<SchemePenetrationSkeleton />}>
-          <div className="mt-6">
-            <SchemePenetrationSection supabase={supabase} applyStore={applyStore} from={from} to={to} />
-          </div>
-        </Suspense>
-      </SectionErrorBoundary>
+      {/* Hour of day, Store league and Scheme penetration used to render here.
+          They moved into EboAttributeBlockSection (above the period table) so
+          all three could be driven by one shared product-attribute filter and
+          one shared comparison period — impossible while they read the
+          pre-aggregated hourly/weekly/scheme rollups, none of which carry a
+          product attribute. Their arithmetic is unchanged; see
+          lib/sales/lineAggregates.ts. */}
 
       <SectionCard icon={<Users className="h-4 w-4" />} title="Agent-wise sales — EBO" className="mt-6">
         <AgentSalesFacetedTable rows={agentRows} storeNames={Object.fromEntries(storeNames)} />
       </SectionCard>
+    </>
+  );
+}
+
+/**
+ * Fetches every sale LINE for a date window under the caller's store scope.
+ *
+ * Paged via fetchAllRows because this is line grain and PostgREST's project
+ * "Max Rows" caps every response at 1000 with no error — the failure mode that
+ * made a WIDER date range report LOWER sales. The .order() calls are
+ * load-bearing, not decoration: .range() paging is only a correct partition of
+ * the view if the server-side ordering is stable across the separate REST
+ * calls. Same discipline as ProductAttributeSection's own fetch.
+ */
+function fetchSaleLines(
+  supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never,
+  applyStore: ApplyStore,
+  from: string,
+  to: string
+) {
+  return fetchAllRows<SaleLineRow>(() =>
+    applyStore(
+      supabase
+        .schema("sales")
+        .from<SaleLineRow>("vw_ebo_sale_attribute_lines")
+        .select(SALE_LINE_SELECT)
+        .gte("bill_date", from)
+        .lte("bill_date", to)
+        .order("bill_date", { ascending: true })
+        .order("bill_no", { ascending: true })
+        .order("item_code", { ascending: true })
+    ) as unknown as QueryChain<SaleLineRow>
+  );
+}
+
+/**
+ * THE SHARED ATTRIBUTE BLOCK — Net sales by day, Hour of day, Store league and
+ * Scheme penetration, all four narrowed by ONE attribute filter and all four
+ * carrying the comparison period.
+ *
+ * WHY THESE FOUR MOVED HERE. Each used to read a different pre-aggregated
+ * rollup (vw_ebo_sales_hourly, vw_ebo_sales_weekly, vw_ebo_scheme_daily), and
+ * not one of those rollups carries a product attribute — so "net sales by hour
+ * for DRESSES" was unanswerable, whichever way the UI was arranged. Reading
+ * all four off the line-grain view instead is what makes one shared attribute
+ * filter possible at all. lib/sales/lineAggregates.ts reproduces each rollup's
+ * exact arithmetic so the numbers do not move just because the source did.
+ *
+ * ONE FETCH, TWO USES. The lines are fetched UNFILTERED for the window and the
+ * attribute filter is applied in memory. That is deliberate: the filter bar's
+ * cascading option counts must be computed over the rows that DON'T pass the
+ * filter as well as those that do (see FacetFilterBar's rowsExcludingFacet),
+ * so narrowing at the database would throw away exactly what the control needs
+ * to stay usable. It also means changing a filter re-renders from one fetch
+ * per window rather than issuing a new query per facet click.
+ *
+ * COMPARISON IS SCOPED TO THIS BLOCK. The comparison window drives only these
+ * four displays; the period table, agent-wise, product-attribute and footfall
+ * sections below each own their own comparison state and are unaffected by
+ * this one.
+ */
+async function EboAttributeBlockSection({
+  supabase,
+  applyStore,
+  from,
+  to,
+  compareFrom,
+  compareTo,
+  storeNames,
+  paramPrefix,
+  selection,
+}: {
+  supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
+  applyStore: ApplyStore;
+  from: string;
+  to: string;
+  compareFrom: string | null;
+  compareTo: string | null;
+  storeNames: Map<string, string>;
+  paramPrefix: string;
+  selection: ReturnType<typeof parseAttributeSelection>;
+}) {
+  const comparing = Boolean(compareFrom && compareTo);
+
+  const [lines, compareLines] = await timeAll("sales:ebo_attribute_block", [
+    fetchSaleLines(supabase, applyStore, from, to),
+    comparing
+      ? fetchSaleLines(supabase, applyStore, compareFrom as string, compareTo as string)
+      : Promise.resolve([] as SaleLineRow[]),
+  ] as const);
+
+  const allLines = lines ?? [];
+  // Options/counts come from the UNFILTERED lines — see this component's
+  // header. The figures below come from the filtered ones.
+  const options = buildAttributeOptions(allLines, selection);
+  const filtered = applyAttributeFilter(allLines, selection);
+  const filteredCompare = applyAttributeFilter(compareLines ?? [], selection);
+
+  const trend = computeTrendFromLines(filtered);
+  const compareTrend = comparing ? computeTrendFromLines(filteredCompare) : null;
+  const hourly = computeHourlyFromLines(filtered);
+  const compareHourly = comparing ? computeHourlyFromLines(filteredCompare) : null;
+  const league = computeLeagueFromLines(filtered, storeNames);
+  const compareLeague = comparing ? computeLeagueFromLines(filteredCompare, storeNames) : null;
+  const { schemeRows, schemeMaxQty } = computeSchemeFromLines(filtered);
+  const compareScheme = comparing ? computeSchemeFromLines(filteredCompare).schemeRows : null;
+
+  const activeAttrs = describeAttributeSelection(selection);
+  const filteredOut = allLines.length - filtered.length;
+
+  return (
+    <>
+      <AttributeFilterBar paramPrefix={paramPrefix} selection={selection} options={options} />
+
+      {/* States what the filter actually did, as a fact on screen rather than
+          something to infer from the bar — same "Showing:" convention the
+          page header uses for its own scope. */}
+      {!isAttributeSelectionEmpty(selection) && (
+        <p className="mt-1.5 text-[11.5px] text-ink-2">
+          Attribute filter: {activeAttrs} · {filtered.length.toLocaleString("en-IN")} of{" "}
+          {allLines.length.toLocaleString("en-IN")} lines ({filteredOut.toLocaleString("en-IN")} excluded)
+        </p>
+      )}
+
+      <SectionCard
+        icon={<TrendingUp className="h-4 w-4" />}
+        title="Net sales by day — EBO"
+        subtitle="EBO lines only, narrowed by the attribute filter above. The cross-vertical trend at the top of the page is unfiltered and includes every vertical in scope."
+        className="mt-3"
+      >
+        {trend.length === 0 && (!compareTrend || compareTrend.length === 0) ? (
+          <p className="py-10 text-center text-sm text-ink-3">No EBO sales match this filter in this window.</p>
+        ) : compareTrend ? (
+          <ComparisonTrendChart
+            current={trend}
+            comparison={compareTrend}
+            from={from}
+            to={to}
+            compareFrom={compareFrom as string}
+            compareTo={compareTo as string}
+            ariaLabel="Daily net sales for EBO under the current attribute filter, current period against the comparison period"
+          />
+        ) : (
+          <TrendChart points={trend} ariaLabel="Daily net sales for EBO under the current attribute filter" />
+        )}
+      </SectionCard>
+
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <SectionCard icon={<Clock className="h-4 w-4" />} title="Net sales by hour of day — EBO">
+          <HourlyWithComparison
+            points={hourly}
+            comparePoints={compareHourly}
+            ariaLabel="Net sales by hour of day, EBO, under the current attribute filter"
+          />
+        </SectionCard>
+
+        <SectionCard icon={<Trophy className="h-4 w-4" />} title="Store league — EBO" subtitle="Click a row for that store's own daily trend.">
+          <StoreLeagueFacetedContent league={league} from={from} to={to} />
+          {compareLeague && <StoreLeagueComparison current={league} comparison={compareLeague} />}
+        </SectionCard>
+      </div>
+
+      <SectionCard icon={<Tag className="h-4 w-4" />} title="Scheme penetration (by units sold) — EBO" className="mt-6">
+        <div className="border border-line-soft p-3">
+          <SchemePenetrationBars rows={schemeRows} maxQty={schemeMaxQty} compareRows={compareScheme} />
+        </div>
+      </SectionCard>
+    </>
+  );
+}
+
+function EboAttributeBlockSkeleton() {
+  return (
+    <>
+      <div className="h-10 border border-line-soft bg-surface-2" />
+      <div className="mt-3">
+        <ChartSkeleton height={160} />
+      </div>
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <ChartSkeleton height={220} />
+        <TableSkeleton rows={6} cols={7} />
+      </div>
+      <div className="mt-6">
+        <SectionLabelSkeleton />
+        <div className="mt-2 h-32 border border-line-soft" />
+      </div>
     </>
   );
 }
@@ -654,49 +849,6 @@ function ProductAttributeSkeleton() {
     <>
       <SectionLabelSkeleton />
       <TableSkeleton rows={6} cols={7} />
-    </>
-  );
-}
-
-/**
- * EBO-only — scheme penetration bar chart. Split from EboDetailSection
- * because it shares nothing with league/agents (a third, independent
- * vw_ebo_scheme_daily fetch) — same "own Suspense boundary so nothing waits
- * on anything else" reasoning /network's sections already establish.
- */
-async function SchemePenetrationSection({ supabase, applyStore, from, to }: { supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never; applyStore: ApplyStore; from: string; to: string }) {
-  const { data: schemeDaily } = await applyStore(
-    supabase.schema("sales").from<SchemeDailyRow>("vw_ebo_scheme_daily").select("*").gte("bill_date", from).lte("bill_date", to)
-  ) as unknown as { data: SchemeDailyRow[] | null };
-  const { schemeRows, schemeMaxQty } = computeSchemeRows(schemeDaily);
-
-  return (
-    <SectionCard icon={<Tag className="h-4 w-4" />} title="Scheme penetration (by units sold) — EBO">
-      <div className="border border-line-soft p-3">
-        <div className="flex flex-col gap-2">
-          {schemeRows.map(([group, v]) => (
-            <div key={group} className="grid grid-cols-[140px_1fr_auto] items-center gap-3 text-[12.5px]">
-              <span className="truncate">{group}</span>
-              <span className="h-4 overflow-hidden bg-surface-2">
-                <span className="block h-full bg-accent" style={{ width: `${Math.max(2, (v.qty / schemeMaxQty) * 100)}%` }} />
-              </span>
-              <span className="whitespace-nowrap font-mono text-ink-2">
-                {v.qty} units · {INR(v.net)}
-              </span>
-            </div>
-          ))}
-          {schemeRows.length === 0 && <p className="text-sm text-ink-3">No scheme data in this window.</p>}
-        </div>
-      </div>
-    </SectionCard>
-  );
-}
-
-function SchemePenetrationSkeleton() {
-  return (
-    <>
-      <SectionLabelSkeleton />
-      <div className="mt-2 h-32 border border-line-soft" />
     </>
   );
 }
@@ -1122,7 +1274,22 @@ function SharedCoreSkeleton() {
 export default async function SalesPage({
   searchParams,
 }: {
-  searchParams: { from?: string; to?: string; compareFrom?: string; compareTo?: string; store?: string; bu?: string; channel?: string; channels?: string };
+  // The index signature carries the PREFIXED params the four AttributeFilterBar
+  // instances and the three self-contained tables write (attr_cat,
+  // periodTable_from, ...). They are read through helpers keyed by prefix
+  // rather than declared one by one — eight facets x four instances plus each
+  // table's own scope controls is far past the point where naming every param
+  // in this type would help a reader.
+  searchParams: {
+    from?: string;
+    to?: string;
+    compareFrom?: string;
+    compareTo?: string;
+    store?: string;
+    bu?: string;
+    channel?: string;
+    channels?: string;
+  } & Record<string, string | string[] | undefined>;
 }) {
   // requirePageAccess (not the plain requireRole this used before
   // 2026-08-28) so a per-user override on the "sales" page key actually
@@ -1331,9 +1498,32 @@ export default async function SalesPage({
             <div className="h-px flex-1 bg-line-soft" />
           </div>
 
+          {/* The shared attribute block renders FIRST inside the EBO section —
+              i.e. immediately after the page's cross-vertical "Net sales by
+              day" trend — so the four displays that share one attribute filter
+              and one comparison period sit together, above the three
+              self-contained tables that each own their filters. */}
+          <SectionErrorBoundary label="EBO attribute block">
+            <Suspense fallback={<EboAttributeBlockSkeleton />}>
+              <div className="mt-4">
+                <EboAttributeBlockSection
+                  supabase={supabase}
+                  applyStore={applyStore}
+                  from={from}
+                  to={to}
+                  compareFrom={compareFrom}
+                  compareTo={compareTo}
+                  storeNames={storeNames}
+                  paramPrefix={SHARED_ATTR_PREFIX}
+                  selection={parseAttributeSelection(searchParams, SHARED_ATTR_PREFIX)}
+                />
+              </div>
+            </Suspense>
+          </SectionErrorBoundary>
+
           <SectionErrorBoundary label="EBO detail">
             <Suspense fallback={<EboDetailSkeleton />}>
-              <div className="mt-4">
+              <div className="mt-8">
                 <EboDetailSection
                   supabase={supabase}
                   applyStore={applyStore}

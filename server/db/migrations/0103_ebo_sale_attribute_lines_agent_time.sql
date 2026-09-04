@@ -1,5 +1,6 @@
 -- =============================================================================
--- 0103 · sales.vw_ebo_sale_attribute_lines — add agent_name, bill_time, size
+-- 0103 · sales.vw_ebo_sale_attribute_lines — add agent_name, bill_time, size,
+--        scheme_group_name
 -- =============================================================================
 -- 0092 created this view as the store-scoped, line-grain, PRODUCT-attribute
 -- carrying source for /sales' Season+Year breakdown. It is now being promoted
@@ -93,7 +94,19 @@ select
   -- NOW rather than the as-of-sale value — the one attribute here that cannot
   -- honour 0092's "line's own value first" rule, because there is no line
   -- value to prefer. Stated rather than silently coalesced to look uniform.
-  nullif(trim(im.size), '')                                        as size
+  nullif(trim(im.size), '')                                        as size,
+  -- 0103, appended. Scheme penetration is a BILL-grain idea: sales.vw_ebo_bill
+  -- picks each bill's `dominant_scheme_group` as the scheme_group_name with the
+  -- largest summed net_amount on that bill, and sales.vw_ebo_scheme_daily then
+  -- rolls bills up by it. Neither view carries a product attribute, so that
+  -- display cannot be attribute-filtered from them. Carrying the line's own
+  -- scheme group here lets the consumer reproduce exactly that dominant-by-net
+  -- rule over whichever lines survive the attribute filter. Same
+  -- nullif(trim(...)) derivation as sales.vw_ebo_sales_lines.
+  -- scheme_name (the individual scheme) is deliberately NOT carried: only the
+  -- GROUP participates in the dominant-scheme rule and in the penetration
+  -- figure, so adding it would widen the view for nothing.
+  nullif(trim(st.scheme_group_name), '')                           as scheme_group_name
 from raw_logic.sales_transactions st
   cross join lateral (
     select
@@ -118,7 +131,7 @@ where st.branch_name is not null
   and s.store_id = any (core.fn_user_store_ids());
 
 comment on view sales.vw_ebo_sale_attribute_lines is
-  'Line grain: store x date x bill x item. The single store-scoped, line-level source for /sales'' EBO analysis — it carries the PRODUCT attributes (season, market_segment, category, subcategory, gender, size_group, shade_name, pack_size, mrp) that sales.vw_ebo_sales_lines does not, plus agent_name, a parsed bill_time and size (0103) so agent-wise and hour-of-day displays can be narrowed by those same product attributes, which the pre-aggregated vw_ebo_agent_daily / vw_ebo_sales_hourly rollups cannot be. Each product attribute is the sale line''s own as-of-sale value (raw_logic.sales_transactions, 0030) with raw_logic.item_master (0054) as a per-column fallback for rows predating 0030 and for size_group/pack_size, which the sale_detail sync (0090) has no source for. agent_name is the line''s own value only. size comes from raw_logic.item_master ALONE and is therefore the value NOW, not the as-of-sale value — raw_logic.sales_transactions has no size column to prefer (0030 added shade_name/size_group/pack_size but not size; size arrived on item_master in 0087). bill_time is NULL for any row whose text time does not match the HH:MI:SS AM/PM shape — such rows are simply not placed on an hour-of-day axis, same as in vw_ebo_sales_lines. Amounts are UNSIGNED magnitudes with bill_type alongside, same contract as sales.vw_ebo_sales_lines — the consumer applies the SALE/RETURN treatment, this view does not. Store-scoped via core.fn_user_store_ids(); security_invoker = off + security_barrier = true for the reasons 0015 documents for sales.vw_ebo_sales_lines. Unlike sales.vw_sale_transactions_export, this view IS safe to expose to store-scoped roles (ebo_manager, marketing).';
+  'Line grain: store x date x bill x item. The single store-scoped, line-level source for /sales'' EBO analysis — it carries the PRODUCT attributes (season, market_segment, category, subcategory, gender, size_group, shade_name, pack_size, mrp) that sales.vw_ebo_sales_lines does not, plus agent_name, a parsed bill_time, size and scheme_group_name (0103) so agent-wise and hour-of-day displays can be narrowed by those same product attributes, which the pre-aggregated vw_ebo_agent_daily / vw_ebo_sales_hourly rollups cannot be. Each product attribute is the sale line''s own as-of-sale value (raw_logic.sales_transactions, 0030) with raw_logic.item_master (0054) as a per-column fallback for rows predating 0030 and for size_group/pack_size, which the sale_detail sync (0090) has no source for. agent_name is the line''s own value only. size comes from raw_logic.item_master ALONE and is therefore the value NOW, not the as-of-sale value — raw_logic.sales_transactions has no size column to prefer (0030 added shade_name/size_group/pack_size but not size; size arrived on item_master in 0087). bill_time is NULL for any row whose text time does not match the HH:MI:SS AM/PM shape — such rows are simply not placed on an hour-of-day axis, same as in vw_ebo_sales_lines. Amounts are UNSIGNED magnitudes with bill_type alongside, same contract as sales.vw_ebo_sales_lines — the consumer applies the SALE/RETURN treatment, this view does not. Store-scoped via core.fn_user_store_ids(); security_invoker = off + security_barrier = true for the reasons 0015 documents for sales.vw_ebo_sales_lines. Unlike sales.vw_sale_transactions_export, this view IS safe to expose to store-scoped roles (ebo_manager, marketing).';
 
 grant select on sales.vw_ebo_sale_attribute_lines to authenticated;
 

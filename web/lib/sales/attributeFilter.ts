@@ -67,7 +67,17 @@ export type SaleLineRow = SaleAttributeLineRow & {
   size: string | null;
   agent_name: string | null;
   bill_time: string | null;
+  /**
+   * The line's own scheme group. Scheme penetration resolves a single
+   * DOMINANT group per bill from these (see computeSchemeFromLines) — it is
+   * not itself one of the eight filter facets.
+   */
+  scheme_group_name: string | null;
 };
+
+/** The column list every /sales section selects from the view. */
+export const SALE_LINE_SELECT =
+  "store_id, bill_date, bill_no, bill_type, item_code, total_quantity, gross_amount, net_amount, season, market_segment, category, subcategory, gender, size_group, shade_name, mrp, size, agent_name, bill_time, scheme_group_name";
 
 /** Same sentinel, same meaning, as attributeBreakdown.ts's own UNCLASSIFIED. */
 export const UNCLASSIFIED = "—";
