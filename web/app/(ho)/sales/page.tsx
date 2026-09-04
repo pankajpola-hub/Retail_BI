@@ -11,27 +11,18 @@ import { KpiCard } from "@/components/ui/KpiCard";
 import { TrendChart } from "@/components/ui/TrendChart";
 import { ComparisonTrendChart } from "@/components/ui/ComparisonTrendChart";
 import { DeltaBadge } from "@/components/ui/DeltaBadge";
-import { HourlyBarChart } from "@/components/ui/HourlyBarChart";
 import { MultiSelectFilter } from "@/components/ui/StoreFilter";
 import { KpiGridSkeleton, ChartSkeleton, TableSkeleton, SectionLabelSkeleton, MatrixSkeleton } from "@/components/ui/Skeleton";
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
 import { timeAll } from "@/lib/perf/timing";
 import {
   computeSalesTotals,
-  computeLeague,
-  computeAgentRows,
-  computeSchemeRows,
-  computeHourlyPoints,
   buildWeekSeries,
   buildDailyPeriodSeries,
   buildMonthlyPeriodSeries,
   buildYearlyPeriodSeries,
   type WeeklyRow,
-  type AgentDailyRow,
   type SchemeDailyRow,
-  type HourlyRow,
-  type DailyFullRow,
-  type MonthlyRow,
 } from "@/lib/sales/aggregate";
 import { computeFootfallInsights, type ConversionRow, type CompletenessRow } from "@/lib/network/footfall";
 import { MatrixCell, TrafficSalesCell } from "@/components/ui/FootfallMatrixCells";
@@ -40,6 +31,28 @@ import { PeriodSalesFacetedTable, type PeriodFacetedRow } from "./PeriodSalesFac
 import { EcommChannelFacetedTable, type EcommChannelRow } from "./EcommChannelFacetedTable";
 import { ProductAttributeSalesTable } from "./ProductAttributeSalesTable";
 import type { SaleAttributeLineRow } from "@/lib/sales/attributeBreakdown";
+import { AttributeFilterBar } from "./AttributeFilterBar";
+import { HourlyWithComparison, SchemePenetrationBars, StoreLeagueComparison } from "./EboAttributeBlockViews";
+import {
+  SALE_LINE_SELECT,
+  applyAttributeFilter,
+  buildAttributeOptions,
+  describeAttributeSelection,
+  isAttributeSelectionEmpty,
+  parseAttributeSelection,
+  type SaleLineRow,
+} from "@/lib/sales/attributeFilter";
+import {
+  computeAgentRowsFromLines,
+  computeHourlyFromLines,
+  computeLeagueFromLines,
+  computeSchemeFromLines,
+  computeTotalsFromLines,
+  computeTrendFromLines,
+} from "@/lib/sales/lineAggregates";
+import { linesToDailyRows, linesToWeeklyRows, linesToMonthlyRows } from "@/lib/sales/lineRollups";
+import { resolveTableScope } from "@/lib/sales/tableScope";
+import { TableScopeBar } from "./TableScopeBar";
 
 /**
  * Card wrapper (2026-08-26 polish pass) — same token pattern KpiCard
@@ -86,6 +99,36 @@ import { StoreDiagnosisFacetedTable } from "../network/StoreDiagnosisFacetedTabl
 export const dynamic = "force-dynamic";
 
 /**
+ * URL param prefixes, one per independent filter surface on this page.
+ *
+ * Four AttributeFilterBar instances and three self-contained tables all write
+ * their state to the same URL, so each needs its own namespace or they clobber
+ * each other. Same fix and same reasoning as movement/page.tsx's `mix_` prefix
+ * — see AttributeFilterBar's header. Collected here rather than inlined so the
+ * whole set is visible at once and a new one can't accidentally duplicate an
+ * existing prefix.
+ */
+const SHARED_ATTR_PREFIX = "attr_";
+const PERIOD_TABLE_PREFIX = "periodTable_";
+const AGENT_TABLE_PREFIX = "agentTable_";
+const ATTR_TABLE_PREFIX = "attrTable_";
+const FOOTFALL_PREFIX = "footfall_";
+
+/**
+ * Builds an ApplyStore for a table's OWN store selection, independent of the
+ * page-level one. Same eq/in shape as the page-level applyStore — store
+ * scoping is never bypassed, it is only ever narrowed further; the underlying
+ * view is already RLS-scoped by core.fn_user_store_ids().
+ */
+function applyStoreFor(storeFilters: string[]): ApplyStore {
+  return (q, col = "store_id") => {
+    if (storeFilters.length === 0) return q;
+    if (storeFilters.length === 1) return q.eq(col, storeFilters[0] as string);
+    return q.in(col, storeFilters);
+  };
+}
+
+/**
  * Phase 2 of the unified Sales explore (see the plan file) — one page,
  * any vertical, instead of maintaining /network and /ecomm (soon +2 more
  * for MBO/LFS) as separate pages that each re-render the same KPI-row /
@@ -110,7 +153,13 @@ export const dynamic = "force-dynamic";
  * show, same as /network already handles zero-store scope.
  */
 
-type EboDailyRow = { store_id: string | null; bill_date: string | null; net_sales: number | string; gross_sales: number | string; discount: number | string };
+// sale_quantity (not net_quantity) is the units figure this page already
+// treats as "units" everywhere else — computeSalesTotals' totalSaleQty, the
+// EBO comparison strip's "Units" card and every buildPeriodSeries all sum
+// sale_quantity. Using it here too keeps the shared-core "EBO units" card
+// reconciling against the EBO block's own Units card rather than differing
+// from it by the returned quantity.
+type EboDailyRow = { store_id: string | null; bill_date: string | null; net_sales: number | string; gross_sales: number | string; discount: number | string; sale_quantity: number | string };
 // cancelled_orders comes from sales.vw_ecomm_daily's orders_agg
 // (`count(*) filter (where o.status = 'CANCELLED')`). It was always in the
 // view but was never selected or typed here, which is why the Ecomm "By
@@ -145,6 +194,7 @@ function rollUpCore(ebo: EboDailyRow[], ecomm: EcommDailyRow[]) {
   const eboNet = ebo.reduce((s, r) => s + num(r.net_sales), 0);
   const eboGross = ebo.reduce((s, r) => s + num(r.gross_sales), 0);
   const eboDiscount = ebo.reduce((s, r) => s + num(r.discount), 0);
+  const eboUnits = ebo.reduce((s, r) => s + num(r.sale_quantity ?? 0), 0);
 
   const ecommNet = ecomm.reduce((s, r) => s + num(r.net_selling_value), 0);
   const ecommGross = ecomm.reduce((s, r) => s + num(r.gross_mrp_value), 0);
@@ -172,6 +222,7 @@ function rollUpCore(ebo: EboDailyRow[], ecomm: EcommDailyRow[]) {
   return {
     eboNet,
     ecommNet,
+    eboUnits,
     ecommUnits,
     netSales,
     grossSales,
@@ -216,7 +267,7 @@ async function SharedCoreSection({
   // cosmetic: .range() paging is only a correct partition if the server-side
   // ordering is stable across the separate REST calls. Same pattern as the
   // attribute-lines query below.
-  const eboSelect = "store_id, bill_date, net_sales, gross_sales, discount";
+  const eboSelect = "store_id, bill_date, net_sales, gross_sales, discount, sale_quantity";
   const ecommSelect = "channel, order_date, total_orders, cancelled_orders, net_selling_value, gross_mrp_value, discount_value, units";
   const [eboDaily, ecommDaily, cmpEboDaily, cmpEcommDaily] = await timeAll("sales:shared_core", [
     showEbo
@@ -289,6 +340,18 @@ async function SharedCoreSection({
           }
           sub={INR(cur.discount) + " given"}
         />
+        {/* Two separate unit cards, not one combined "Units" — a bill's unit
+            and an order's unit are countable the same way, but the page has
+            never shown a cross-vertical unit total and inventing one here
+            would be a new metric. Same shape Net/Gross already use for
+            multi-vertical (one figure, per-vertical detail alongside). */}
+        {showEbo && (
+          <KpiCard
+            label="EBO units"
+            value={cur.eboUnits.toLocaleString("en-IN")}
+            delta={cmp && <DeltaBadge current={cur.eboUnits} previous={cmp.eboUnits} baselineLabel={`vs ${cmp.eboUnits.toLocaleString("en-IN")}`} />}
+          />
+        )}
         {showEcomm && (
           <KpiCard
             label="Ecomm units"
@@ -344,8 +407,6 @@ async function EboDetailSection({
   to,
   compareFrom,
   compareTo,
-  storeNames,
-  today,
 }: {
   supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
   applyStore: ApplyStore;
@@ -353,103 +414,33 @@ async function EboDetailSection({
   to: string;
   compareFrom: string | null;
   compareTo: string | null;
-  storeNames: Map<string, string>;
-  today: Date;
 }) {
   const comparing = Boolean(compareFrom && compareTo);
   const compareWeeklyStart = new Date(compareFrom ?? from);
   compareWeeklyStart.setDate(compareWeeklyStart.getDate() - 7);
   const weeklyStart = new Date(from);
   weeklyStart.setDate(weeklyStart.getDate() - 7);
-  // Daily grain only needs one prior day for a DoD baseline (same spirit as
-  // weeklyStart's -7 days). Monthly goes back much further (~400 days) so
-  // Monthly AND Yearly (derived from these same monthly rows, see below)
-  // both get a real prior-period baseline — monthly rows are cheap,
-  // pre-aggregated, one row per store per month, so this costs little.
-  const dailyStart = new Date(from);
-  dailyStart.setDate(dailyStart.getDate() - 1);
-  const monthlyStart = new Date(from);
-  monthlyStart.setDate(monthlyStart.getDate() - 400);
 
-  const [{ data: weeks }, { data: agentDaily }, { data: hourly }, { data: dailyFull }, { data: monthly }, { data: compareWeeks }] = await timeAll(
-    "sales:ebo_detail",
-    [
-      applyStore(
-        supabase.schema("sales").from<WeeklyRow>("vw_ebo_sales_weekly").select("*").gte("week_start", isoDate(weeklyStart)).lte("week_start", to)
-      ) as unknown as QueryChain<WeeklyRow>,
-      applyStore(
-        supabase.schema("sales").from<AgentDailyRow>("vw_ebo_agent_daily").select("*").gte("bill_date", from).lte("bill_date", to)
-      ) as unknown as QueryChain<AgentDailyRow>,
-      applyStore(
-        supabase.schema("sales").from<HourlyRow>("vw_ebo_sales_hourly").select("*").gte("bill_date", from).lte("bill_date", to)
-      ) as unknown as QueryChain<HourlyRow>,
-      applyStore(
-        supabase.schema("sales").from<DailyFullRow>("vw_ebo_sales_daily").select("*").gte("bill_date", isoDate(dailyStart)).lte("bill_date", to)
-      ) as unknown as QueryChain<DailyFullRow>,
-      applyStore(
-        supabase.schema("sales").from<MonthlyRow>("vw_ebo_sales_monthly").select("*").gte("month_start", isoDate(monthlyStart)).lte("month_start", to)
-      ) as unknown as QueryChain<MonthlyRow>,
-      // ONE extra query for the whole comparison strip below, and only when
-      // a comparison range is actually set — the weekly view already carries
-      // every metric that strip shows (net/gross/discount/bills/qty), so no
-      // second daily/agent/hourly/monthly fetch is needed to compare.
-      comparing
-        ? (applyStore(
-            supabase.schema("sales").from<WeeklyRow>("vw_ebo_sales_weekly").select("*").gte("week_start", isoDate(compareWeeklyStart)).lte("week_start", compareTo as string)
-          ) as unknown as QueryChain<WeeklyRow>)
-        : Promise.resolve({ data: [] as WeeklyRow[] }),
-    ] as const
-  );
+  // Only the weekly rows are still fetched here. The daily/monthly/agent
+  // queries this section used to run fed the period and agent-wise tables,
+  // which are now self-contained sections with their own scope and their own
+  // queries — leaving those fetches in place would have run four page-scoped
+  // queries per load whose results nothing rendered.
+  const [{ data: weeks }, { data: compareWeeks }] = await timeAll("sales:ebo_detail", [
+    applyStore(
+      supabase.schema("sales").from<WeeklyRow>("vw_ebo_sales_weekly").select("*").gte("week_start", isoDate(weeklyStart)).lte("week_start", to)
+    ) as unknown as QueryChain<WeeklyRow>,
+    comparing
+      ? (applyStore(
+          supabase.schema("sales").from<WeeklyRow>("vw_ebo_sales_weekly").select("*").gte("week_start", isoDate(compareWeeklyStart)).lte("week_start", compareTo as string)
+        ) as unknown as QueryChain<WeeklyRow>)
+      : Promise.resolve({ data: [] as WeeklyRow[] }),
+  ] as const);
 
   const totals = computeSalesTotals(weeks, from);
-  const { weekRows, storesInView } = totals;
   // Same helper, second window — the comparison numbers come from the exact
   // function that produces the current ones, never a parallel formula.
   const compareTotals = comparing ? computeSalesTotals(compareWeeks, compareFrom as string) : null;
-  const league = computeLeague(weekRows, storesInView, storeNames);
-  const agentRows = computeAgentRows(agentDaily);
-  const hourlyPoints = computeHourlyPoints(hourly);
-
-  // Flattened once here (server-side) into the shape
-  // PeriodSalesFacetedTable actually renders — one row per (store, period),
-  // "Network total" just another store-like bucket rather than a special
-  // case, per that component's own header. Four grains, one per builder in
-  // lib/sales/aggregate.ts, all fed by the queries above — no re-fetch when
-  // the user toggles grain client-side.
-  const todayStr = isoDate(today);
-  const todayMonthStart = todayStr.slice(0, 7) + "-01";
-  // "Current" fiscal year for the Yearly grain's isComplete flag — the FY
-  // on the most recent monthly row fetched (financial_year isn't on
-  // WeeklyRow, so this is derived from the monthly rows already in hand
-  // rather than a separate computation).
-  const latestMonthlyFy = [...(monthly ?? [])].sort((a, b) => (b.month_start ?? "").localeCompare(a.month_start ?? ""))[0]?.financial_year ?? "";
-  const buildRows = <T extends { periodKey: string }>(builder: (storeId: string | null) => T[]) => {
-    const perStore = storesInView.flatMap((sid) => builder(sid).map((r) => ({ ...r, storeId: sid, storeName: storeNames.get(sid) ?? sid })));
-    if (storesInView.length > 1) {
-      perStore.push(...builder(null).map((r) => ({ ...r, storeId: "__network__", storeName: "Network total" })));
-    }
-    return perStore;
-  };
-  const weeklyFacetedRows: PeriodFacetedRow[] = buildRows((sid) =>
-    buildWeekSeries(weekRows, sid).map((w) => ({
-      periodKey: w.weekStart,
-      periodLabel: `RW${String(w.retailWeek).padStart(2, "0")}`,
-      rangeLabel: `${weekDayLabel(w.weekStart)} – ${weekDayLabel(addDaysIso(w.weekStart, 6))}`,
-      net: w.net,
-      gross: w.gross,
-      discount: w.discount,
-      discountPct: w.gross > 0 ? (w.discount / w.gross) * 100 : null,
-      bills: w.bills,
-      qty: w.qty,
-      atv: w.bills > 0 ? w.net / w.bills : null,
-      netChangePct: w.netChangePct,
-      qtyChangePct: w.qtyChangePct,
-      isComplete: w.isCompleteWeek,
-    }))
-  );
-  const dailyFacetedRows: PeriodFacetedRow[] = buildRows((sid) => buildDailyPeriodSeries(dailyFull ?? [], sid, todayStr));
-  const monthlyFacetedRows: PeriodFacetedRow[] = buildRows((sid) => buildMonthlyPeriodSeries(monthly ?? [], sid, todayMonthStart));
-  const yearlyFacetedRows: PeriodFacetedRow[] = buildRows((sid) => buildYearlyPeriodSeries(monthly ?? [], sid, latestMonthlyFy));
 
   return (
     <>
@@ -507,31 +498,450 @@ async function EboDetailSection({
         </div>
       )}
 
-      <SectionCard icon={<CalendarRange className="h-4 w-4" />} title="Sales value & quantity by period — EBO">
-        <PeriodSalesFacetedTable daily={dailyFacetedRows} weekly={weeklyFacetedRows} monthly={monthlyFacetedRows} yearly={yearlyFacetedRows} />
+      {/* The period table and the agent-wise table used to render here. Both
+          moved out to their own self-contained sections (PeriodTableSection /
+          AgentTableSection), each with its own Location, Period, comparison
+          period and attribute filter and its own query — they no longer share
+          this section's single page-scoped fetch. What is left here is the
+          page-level comparison strip above.
+
+          Hour of day, Store league and Scheme penetration used to render here.
+          They moved into EboAttributeBlockSection (above the period table) so
+          all three could be driven by one shared product-attribute filter and
+          one shared comparison period — impossible while they read the
+          pre-aggregated hourly/weekly/scheme rollups, none of which carry a
+          product attribute. Their arithmetic is unchanged; see
+          lib/sales/lineAggregates.ts. */}
+    </>
+  );
+}
+
+/**
+ * Fetches every sale LINE for a date window under the caller's store scope.
+ *
+ * Paged via fetchAllRows because this is line grain and PostgREST's project
+ * "Max Rows" caps every response at 1000 with no error — the failure mode that
+ * made a WIDER date range report LOWER sales. The .order() calls are
+ * load-bearing, not decoration: .range() paging is only a correct partition of
+ * the view if the server-side ordering is stable across the separate REST
+ * calls. Same discipline as ProductAttributeSection's own fetch.
+ */
+function fetchSaleLines(
+  supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never,
+  applyStore: ApplyStore,
+  from: string,
+  to: string
+) {
+  return fetchAllRows<SaleLineRow>(() =>
+    applyStore(
+      supabase
+        .schema("sales")
+        .from<SaleLineRow>("vw_ebo_sale_attribute_lines")
+        .select(SALE_LINE_SELECT)
+        .gte("bill_date", from)
+        .lte("bill_date", to)
+        .order("bill_date", { ascending: true })
+        .order("bill_no", { ascending: true })
+        .order("item_code", { ascending: true })
+    ) as unknown as QueryChain<SaleLineRow>
+  );
+}
+
+/**
+ * THE SHARED ATTRIBUTE BLOCK — Net sales by day, Hour of day, Store league and
+ * Scheme penetration, all four narrowed by ONE attribute filter and all four
+ * carrying the comparison period.
+ *
+ * WHY THESE FOUR MOVED HERE. Each used to read a different pre-aggregated
+ * rollup (vw_ebo_sales_hourly, vw_ebo_sales_weekly, vw_ebo_scheme_daily), and
+ * not one of those rollups carries a product attribute — so "net sales by hour
+ * for DRESSES" was unanswerable, whichever way the UI was arranged. Reading
+ * all four off the line-grain view instead is what makes one shared attribute
+ * filter possible at all. lib/sales/lineAggregates.ts reproduces each rollup's
+ * exact arithmetic so the numbers do not move just because the source did.
+ *
+ * ONE FETCH, TWO USES. The lines are fetched UNFILTERED for the window and the
+ * attribute filter is applied in memory. That is deliberate: the filter bar's
+ * cascading option counts must be computed over the rows that DON'T pass the
+ * filter as well as those that do (see FacetFilterBar's rowsExcludingFacet),
+ * so narrowing at the database would throw away exactly what the control needs
+ * to stay usable. It also means changing a filter re-renders from one fetch
+ * per window rather than issuing a new query per facet click.
+ *
+ * COMPARISON IS SCOPED TO THIS BLOCK. The comparison window drives only these
+ * four displays; the period table, agent-wise, product-attribute and footfall
+ * sections below each own their own comparison state and are unaffected by
+ * this one.
+ */
+async function EboAttributeBlockSection({
+  supabase,
+  applyStore,
+  from,
+  to,
+  compareFrom,
+  compareTo,
+  storeNames,
+  paramPrefix,
+  selection,
+}: {
+  supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
+  applyStore: ApplyStore;
+  from: string;
+  to: string;
+  compareFrom: string | null;
+  compareTo: string | null;
+  storeNames: Map<string, string>;
+  paramPrefix: string;
+  selection: ReturnType<typeof parseAttributeSelection>;
+}) {
+  const comparing = Boolean(compareFrom && compareTo);
+
+  const [lines, compareLines] = await timeAll("sales:ebo_attribute_block", [
+    fetchSaleLines(supabase, applyStore, from, to),
+    comparing
+      ? fetchSaleLines(supabase, applyStore, compareFrom as string, compareTo as string)
+      : Promise.resolve([] as SaleLineRow[]),
+  ] as const);
+
+  const allLines = lines ?? [];
+  // Options/counts come from the UNFILTERED lines — see this component's
+  // header. The figures below come from the filtered ones.
+  const options = buildAttributeOptions(allLines, selection);
+  const filtered = applyAttributeFilter(allLines, selection);
+  const filteredCompare = applyAttributeFilter(compareLines ?? [], selection);
+
+  const trend = computeTrendFromLines(filtered);
+  const compareTrend = comparing ? computeTrendFromLines(filteredCompare) : null;
+  const hourly = computeHourlyFromLines(filtered);
+  const compareHourly = comparing ? computeHourlyFromLines(filteredCompare) : null;
+  const league = computeLeagueFromLines(filtered, storeNames);
+  const compareLeague = comparing ? computeLeagueFromLines(filteredCompare, storeNames) : null;
+  const { schemeRows, schemeMaxQty } = computeSchemeFromLines(filtered);
+  const compareScheme = comparing ? computeSchemeFromLines(filteredCompare).schemeRows : null;
+
+  const activeAttrs = describeAttributeSelection(selection);
+  const filteredOut = allLines.length - filtered.length;
+
+  return (
+    <>
+      <AttributeFilterBar paramPrefix={paramPrefix} selection={selection} options={options} />
+
+      {/* States what the filter actually did, as a fact on screen rather than
+          something to infer from the bar — same "Showing:" convention the
+          page header uses for its own scope. */}
+      {!isAttributeSelectionEmpty(selection) && (
+        <p className="mt-1.5 text-[11.5px] text-ink-2">
+          Attribute filter: {activeAttrs} · {filtered.length.toLocaleString("en-IN")} of{" "}
+          {allLines.length.toLocaleString("en-IN")} lines ({filteredOut.toLocaleString("en-IN")} excluded)
+        </p>
+      )}
+
+      <SectionCard
+        icon={<TrendingUp className="h-4 w-4" />}
+        title="Net sales by day — EBO"
+        subtitle="EBO lines only, narrowed by the attribute filter above. The cross-vertical trend at the top of the page is unfiltered and includes every vertical in scope."
+        className="mt-3"
+      >
+        {trend.length === 0 && (!compareTrend || compareTrend.length === 0) ? (
+          <p className="py-10 text-center text-sm text-ink-3">No EBO sales match this filter in this window.</p>
+        ) : compareTrend ? (
+          <ComparisonTrendChart
+            current={trend}
+            comparison={compareTrend}
+            from={from}
+            to={to}
+            compareFrom={compareFrom as string}
+            compareTo={compareTo as string}
+            ariaLabel="Daily net sales for EBO under the current attribute filter, current period against the comparison period"
+          />
+        ) : (
+          <TrendChart points={trend} ariaLabel="Daily net sales for EBO under the current attribute filter" />
+        )}
       </SectionCard>
 
       <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
         <SectionCard icon={<Clock className="h-4 w-4" />} title="Net sales by hour of day — EBO">
-          <HourlyBarChart points={hourlyPoints} ariaLabel="Net sales by hour of day, EBO" />
+          <HourlyWithComparison
+            points={hourly}
+            comparePoints={compareHourly}
+            ariaLabel="Net sales by hour of day, EBO, under the current attribute filter"
+          />
         </SectionCard>
 
         <SectionCard icon={<Trophy className="h-4 w-4" />} title="Store league — EBO" subtitle="Click a row for that store's own daily trend.">
           <StoreLeagueFacetedContent league={league} from={from} to={to} />
+          {compareLeague && <StoreLeagueComparison current={league} comparison={compareLeague} />}
         </SectionCard>
       </div>
 
-      <SectionErrorBoundary label="Scheme penetration">
-        <Suspense fallback={<SchemePenetrationSkeleton />}>
-          <div className="mt-6">
-            <SchemePenetrationSection supabase={supabase} applyStore={applyStore} from={from} to={to} />
-          </div>
-        </Suspense>
-      </SectionErrorBoundary>
-
-      <SectionCard icon={<Users className="h-4 w-4" />} title="Agent-wise sales — EBO" className="mt-6">
-        <AgentSalesFacetedTable rows={agentRows} storeNames={Object.fromEntries(storeNames)} />
+      <SectionCard icon={<Tag className="h-4 w-4" />} title="Scheme penetration (by units sold) — EBO" className="mt-6">
+        <div className="border border-line-soft p-3">
+          <SchemePenetrationBars rows={schemeRows} maxQty={schemeMaxQty} compareRows={compareScheme} />
+        </div>
       </SectionCard>
+    </>
+  );
+}
+
+/**
+ * Shared plumbing for the three self-contained tables: fetch this table's own
+ * line set, build its filter options from the unfiltered rows, and hand back
+ * both the filtered current and comparison sets.
+ *
+ * Each table issuing its OWN query is the point, not an oversight — that is
+ * what "independent Location/Period/Compare per table" means. The queries are
+ * the same cheap line-grain read the block above already does, each paged via
+ * fetchAllRows and each store-scoped through its own applyStore.
+ */
+async function loadTableLines(
+  supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never,
+  scope: ReturnType<typeof resolveTableScope>,
+  label: string
+) {
+  const applyStore = applyStoreFor(scope.storeFilters);
+  const [lines, compareLines] = await timeAll(label, [
+    fetchSaleLines(supabase, applyStore, scope.from, scope.to),
+    scope.comparing
+      ? fetchSaleLines(supabase, applyStore, scope.compareFrom as string, scope.compareTo as string)
+      : Promise.resolve([] as SaleLineRow[]),
+  ] as const);
+
+  const all = lines ?? [];
+  return {
+    options: buildAttributeOptions(all, scope.selection),
+    filtered: applyAttributeFilter(all, scope.selection),
+    filteredCompare: applyAttributeFilter(compareLines ?? [], scope.selection),
+    totalLines: all.length,
+  };
+}
+
+/** Stores that actually have activity in a line set — the axis the table's rows are built over. */
+const storesInLines = (lines: SaleLineRow[]) =>
+  [...new Set(lines.map((l) => l.store_id).filter((s): s is string => Boolean(s)))].sort();
+
+/**
+ * "Sales value & quantity by period — EBO", now self-contained: its own
+ * Location, Period, comparison period and attribute filter, its own query.
+ *
+ * The four grain builders in lib/sales/aggregate.ts are reused UNCHANGED —
+ * lib/sales/lineRollups.ts folds the filtered lines back into the exact row
+ * shapes the daily/weekly/monthly views emit, so the period labels,
+ * prior-period change %, complete-vs-partial flags and network-total bucket
+ * all keep their existing behaviour rather than being re-derived against a new
+ * source. Every feature of PeriodSalesFacetedTable (facets, group-by, saved
+ * views, sort, subtotal footers) is untouched: only where its rows come from
+ * has changed.
+ */
+async function PeriodTableSection({
+  supabase,
+  scope,
+  storeNames,
+  storeOptions,
+  today,
+}: {
+  supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
+  scope: ReturnType<typeof resolveTableScope>;
+  storeNames: Map<string, string>;
+  storeOptions: string[];
+  today: Date;
+}) {
+  const { options, filtered, filteredCompare } = await loadTableLines(supabase, scope, "sales:period_table");
+
+  const todayStr = isoDate(today);
+  const todayMonthStart = todayStr.slice(0, 7) + "-01";
+
+  const buildFor = (lines: SaleLineRow[]) => {
+    const daily = linesToDailyRows(lines);
+    const weekly = linesToWeeklyRows(lines, todayStr);
+    const monthly = linesToMonthlyRows(lines);
+    const stores = storesInLines(lines);
+    const latestFy = [...monthly].sort((a, b) => (b.month_start ?? "").localeCompare(a.month_start ?? ""))[0]?.financial_year ?? "";
+
+    // Same per-store + "Network total" shape EboDetailSection's own buildRows
+    // produced — the network bucket is just another store-like row, added only
+    // when there is more than one store to total.
+    const build = <T extends { periodKey: string }>(builder: (storeId: string | null) => T[]) => {
+      const perStore = stores.flatMap((sid) => builder(sid).map((r) => ({ ...r, storeId: sid, storeName: storeNames.get(sid) ?? sid })));
+      if (stores.length > 1) {
+        perStore.push(...builder(null).map((r) => ({ ...r, storeId: "__network__", storeName: "Network total" })));
+      }
+      return perStore;
+    };
+
+    return {
+      daily: build((sid) => buildDailyPeriodSeries(daily, sid, todayStr)) as PeriodFacetedRow[],
+      weekly: build((sid) =>
+        buildWeekSeries(weekly, sid).map((w) => ({
+          periodKey: w.weekStart,
+          periodLabel: `RW${String(w.retailWeek).padStart(2, "0")}`,
+          rangeLabel: `${weekDayLabel(w.weekStart)} – ${weekDayLabel(addDaysIso(w.weekStart, 6))}`,
+          net: w.net,
+          gross: w.gross,
+          discount: w.discount,
+          discountPct: w.gross > 0 ? (w.discount / w.gross) * 100 : null,
+          bills: w.bills,
+          qty: w.qty,
+          atv: w.bills > 0 ? w.net / w.bills : null,
+          netChangePct: w.netChangePct,
+          qtyChangePct: w.qtyChangePct,
+          isComplete: w.isCompleteWeek,
+        }))
+      ) as PeriodFacetedRow[],
+      monthly: build((sid) => buildMonthlyPeriodSeries(monthly, sid, todayMonthStart)) as PeriodFacetedRow[],
+      yearly: build((sid) => buildYearlyPeriodSeries(monthly, sid, latestFy)) as PeriodFacetedRow[],
+    };
+  };
+
+  const cur = buildFor(filtered);
+  const cmp = scope.comparing ? computeTotalsFromLines(filteredCompare) : null;
+  const curTotals = computeTotalsFromLines(filtered);
+
+  return (
+    <SectionCard icon={<CalendarRange className="h-4 w-4" />} title="Sales value & quantity by period — EBO">
+      <TableScopeBar
+        paramPrefix={PERIOD_TABLE_PREFIX}
+        from={scope.from}
+        to={scope.to}
+        compareFrom={scope.compareFrom}
+        compareTo={scope.compareTo}
+        storeOptions={storeOptions}
+        storeLabels={Object.fromEntries(storeNames)}
+        storeFilters={scope.storeFilters}
+        selection={scope.selection}
+        options={options}
+        overridden={scope.overridden}
+      />
+      {cmp && <TableCompareStrip current={curTotals} comparison={cmp} compareFrom={scope.compareFrom as string} compareTo={scope.compareTo as string} />}
+      <PeriodSalesFacetedTable daily={cur.daily} weekly={cur.weekly} monthly={cur.monthly} yearly={cur.yearly} />
+    </SectionCard>
+  );
+}
+
+/**
+ * "Agent-wise sales — EBO", self-contained. Reproduces vw_ebo_agent_daily's
+ * own aggregation over lines (see computeAgentRowsFromLines) so the table can
+ * be narrowed by product attribute — impossible against that rollup, which
+ * carries none. AgentSalesFacetedTable itself is unchanged.
+ */
+async function AgentTableSection({
+  supabase,
+  scope,
+  storeNames,
+  storeOptions,
+}: {
+  supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
+  scope: ReturnType<typeof resolveTableScope>;
+  storeNames: Map<string, string>;
+  storeOptions: string[];
+}) {
+  const { options, filtered, filteredCompare } = await loadTableLines(supabase, scope, "sales:agent_table");
+  const agentRows = computeAgentRowsFromLines(filtered);
+  const cmp = scope.comparing ? computeTotalsFromLines(filteredCompare) : null;
+
+  return (
+    <SectionCard icon={<Users className="h-4 w-4" />} title="Agent-wise sales — EBO" className="mt-6">
+      <TableScopeBar
+        paramPrefix={AGENT_TABLE_PREFIX}
+        from={scope.from}
+        to={scope.to}
+        compareFrom={scope.compareFrom}
+        compareTo={scope.compareTo}
+        storeOptions={storeOptions}
+        storeLabels={Object.fromEntries(storeNames)}
+        storeFilters={scope.storeFilters}
+        selection={scope.selection}
+        options={options}
+        overridden={scope.overridden}
+      />
+      {cmp && (
+        <TableCompareStrip
+          current={computeTotalsFromLines(filtered)}
+          comparison={cmp}
+          compareFrom={scope.compareFrom as string}
+          compareTo={scope.compareTo as string}
+        />
+      )}
+      <AgentSalesFacetedTable rows={agentRows} storeNames={Object.fromEntries(storeNames)} />
+    </SectionCard>
+  );
+}
+
+/**
+ * Totals strip shown above a self-contained table while ITS OWN comparison is
+ * active. Recomputed from summed parts for both windows by the same function
+ * (computeTotalsFromLines), never a second parallel formula — the rule
+ * rollUpCore and computeSalesTotals already follow for the page-level strips.
+ */
+function TableCompareStrip({
+  current,
+  comparison,
+  compareFrom,
+  compareTo,
+}: {
+  current: ReturnType<typeof computeTotalsFromLines>;
+  comparison: ReturnType<typeof computeTotalsFromLines>;
+  compareFrom: string;
+  compareTo: string;
+}) {
+  return (
+    <div className="mb-3">
+      <p className="mb-2 text-[11.5px] text-ink-3">
+        This table only — vs {compareFrom} – {compareTo}
+      </p>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <KpiCard
+          label="Net sales"
+          value={INR(current.net)}
+          delta={<DeltaBadge current={current.net} previous={comparison.net} baselineLabel={`vs ${INR(comparison.net)}`} />}
+        />
+        <KpiCard
+          label="Sale bills"
+          value={current.bills.toLocaleString("en-IN")}
+          delta={<DeltaBadge current={current.bills} previous={comparison.bills} baselineLabel={`vs ${comparison.bills.toLocaleString("en-IN")}`} />}
+        />
+        <KpiCard
+          label="Units"
+          value={current.qty.toLocaleString("en-IN")}
+          delta={<DeltaBadge current={current.qty} previous={comparison.qty} baselineLabel={`vs ${comparison.qty.toLocaleString("en-IN")}`} />}
+        />
+        <KpiCard
+          label="ATV"
+          value={current.atv !== null ? INR(current.atv) : "—"}
+          delta={<DeltaBadge current={current.atv} previous={comparison.atv} baselineLabel={comparison.atv !== null ? `vs ${INR(comparison.atv)}` : "vs —"} />}
+        />
+        <KpiCard
+          label="Discount %"
+          value={current.discountPct !== null ? `${current.discountPct.toFixed(1)}%` : "—"}
+          delta={
+            <DeltaBadge
+              current={current.discountPct}
+              previous={comparison.discountPct}
+              mode="pp"
+              invert
+              baselineLabel={comparison.discountPct !== null ? `vs ${comparison.discountPct.toFixed(1)}%` : "vs —"}
+            />
+          }
+        />
+      </div>
+    </div>
+  );
+}
+
+function EboAttributeBlockSkeleton() {
+  return (
+    <>
+      <div className="h-10 border border-line-soft bg-surface-2" />
+      <div className="mt-3">
+        <ChartSkeleton height={160} />
+      </div>
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <ChartSkeleton height={220} />
+        <TableSkeleton rows={6} cols={7} />
+      </div>
+      <div className="mt-6">
+        <SectionLabelSkeleton />
+        <div className="mt-2 h-32 border border-line-soft" />
+      </div>
     </>
   );
 }
@@ -586,37 +996,17 @@ function EboDetailSkeleton() {
  */
 async function ProductAttributeSection({
   supabase,
-  applyStore,
-  from,
-  to,
+  scope,
+  storeNames,
+  storeOptions,
 }: {
   supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
-  applyStore: ApplyStore;
-  from: string;
-  to: string;
+  scope: ReturnType<typeof resolveTableScope>;
+  storeNames: Map<string, string>;
+  storeOptions: string[];
 }) {
-  const lines = await fetchAllRows<SaleAttributeLineRow>(() =>
-    applyStore(
-      supabase
-        .schema("sales")
-        .from<SaleAttributeLineRow>("vw_ebo_sale_attribute_lines")
-        .select(
-          "store_id, bill_date, bill_no, bill_type, total_quantity, gross_amount, net_amount, season, market_segment, category, subcategory, gender, size_group, shade_name, mrp"
-        )
-        .gte("bill_date", from)
-        .lte("bill_date", to)
-        // .order() is required for .range()-based pagination to be a correct
-        // partition of the view across separate REST calls, not decoration —
-        // without a near-total ORDER BY, Postgres may return rows in a
-        // different order between the page-1 and page-2 requests against
-        // unchanged data, silently dropping or duplicating rows with no
-        // error. Same discipline (and the same confirmed 791-row undercount
-        // behind it) as lib/replenishment/mix.ts's own paginated fetches.
-        .order("bill_date", { ascending: true })
-        .order("bill_no", { ascending: true })
-        .order("item_code", { ascending: true })
-    ) as unknown as QueryChain<SaleAttributeLineRow>
-  );
+  const { options, filtered, filteredCompare } = await loadTableLines(supabase, scope, "sales:product_attribute");
+  const cmp = scope.comparing ? computeTotalsFromLines(filteredCompare) : null;
 
   return (
     <SectionCard
@@ -624,7 +1014,32 @@ async function ProductAttributeSection({
       title="Sales by product attribute — EBO"
       subtitle="Season + Year by default. Drag chips to combine attributes — e.g. Season + Gender. Bills count every bill containing the attribute, so they overlap across groups and do not sum to the network total; net sales, qty and gross do."
     >
-      <ProductAttributeSalesTable lines={lines} />
+      <TableScopeBar
+        paramPrefix={ATTR_TABLE_PREFIX}
+        from={scope.from}
+        to={scope.to}
+        compareFrom={scope.compareFrom}
+        compareTo={scope.compareTo}
+        storeOptions={storeOptions}
+        storeLabels={Object.fromEntries(storeNames)}
+        storeFilters={scope.storeFilters}
+        selection={scope.selection}
+        options={options}
+        overridden={scope.overridden}
+      />
+      {cmp && (
+        <TableCompareStrip
+          current={computeTotalsFromLines(filtered)}
+          comparison={cmp}
+          compareFrom={scope.compareFrom as string}
+          compareTo={scope.compareTo as string}
+        />
+      )}
+      {/* The attribute FILTER above narrows which lines are in play; the
+          attribute COMBO inside the table still chooses how they are grouped.
+          They compose — filter to one Category, then break it down by Season +
+          Gender — which is why both exist rather than one replacing the other. */}
+      <ProductAttributeSalesTable lines={filtered as SaleAttributeLineRow[]} />
     </SectionCard>
   );
 }
@@ -634,49 +1049,6 @@ function ProductAttributeSkeleton() {
     <>
       <SectionLabelSkeleton />
       <TableSkeleton rows={6} cols={7} />
-    </>
-  );
-}
-
-/**
- * EBO-only — scheme penetration bar chart. Split from EboDetailSection
- * because it shares nothing with league/agents (a third, independent
- * vw_ebo_scheme_daily fetch) — same "own Suspense boundary so nothing waits
- * on anything else" reasoning /network's sections already establish.
- */
-async function SchemePenetrationSection({ supabase, applyStore, from, to }: { supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never; applyStore: ApplyStore; from: string; to: string }) {
-  const { data: schemeDaily } = await applyStore(
-    supabase.schema("sales").from<SchemeDailyRow>("vw_ebo_scheme_daily").select("*").gte("bill_date", from).lte("bill_date", to)
-  ) as unknown as { data: SchemeDailyRow[] | null };
-  const { schemeRows, schemeMaxQty } = computeSchemeRows(schemeDaily);
-
-  return (
-    <SectionCard icon={<Tag className="h-4 w-4" />} title="Scheme penetration (by units sold) — EBO">
-      <div className="border border-line-soft p-3">
-        <div className="flex flex-col gap-2">
-          {schemeRows.map(([group, v]) => (
-            <div key={group} className="grid grid-cols-[140px_1fr_auto] items-center gap-3 text-[12.5px]">
-              <span className="truncate">{group}</span>
-              <span className="h-4 overflow-hidden bg-surface-2">
-                <span className="block h-full bg-accent" style={{ width: `${Math.max(2, (v.qty / schemeMaxQty) * 100)}%` }} />
-              </span>
-              <span className="whitespace-nowrap font-mono text-ink-2">
-                {v.qty} units · {INR(v.net)}
-              </span>
-            </div>
-          ))}
-          {schemeRows.length === 0 && <p className="text-sm text-ink-3">No scheme data in this window.</p>}
-        </div>
-      </div>
-    </SectionCard>
-  );
-}
-
-function SchemePenetrationSkeleton() {
-  return (
-    <>
-      <SectionLabelSkeleton />
-      <div className="mt-2 h-32 border border-line-soft" />
     </>
   );
 }
@@ -699,23 +1071,34 @@ function SchemePenetrationSkeleton() {
 async function FootfallDiagnosisSection({
   supabase,
   applyStore,
-  from,
-  to,
+  scope,
   storeNames,
   today,
 }: {
   supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
   applyStore: ApplyStore;
-  from: string;
-  to: string;
+  scope: ReturnType<typeof resolveTableScope>;
   storeNames: Map<string, string>;
   today: Date;
 }) {
+  // This section's OWN period and OWN comparison baseline, independent of the
+  // page-level ones — every figure below is a "this window vs that window"
+  // comparison, so which two windows they are is the section's main question,
+  // not a page-wide setting.
+  const from = scope.from;
+  const to = scope.to;
+
+  // The baseline was ALWAYS the immediately-preceding window of equal length,
+  // computed here with no way to change it. That default is kept exactly (so
+  // an untouched section reads as it always did), and is now overridable: when
+  // this section's own Compare is set, those dates become the baseline instead.
   const periodDays = Math.round((new Date(to).getTime() - new Date(from).getTime()) / 86400000) + 1;
-  const prevTo = new Date(from);
-  prevTo.setDate(prevTo.getDate() - 1);
-  const prevFrom = new Date(prevTo);
-  prevFrom.setDate(prevFrom.getDate() - (periodDays - 1));
+  const autoPrevTo = new Date(from);
+  autoPrevTo.setDate(autoPrevTo.getDate() - 1);
+  const autoPrevFrom = new Date(autoPrevTo);
+  autoPrevFrom.setDate(autoPrevFrom.getDate() - (periodDays - 1));
+  const prevFrom = scope.comparing ? new Date(scope.compareFrom as string) : autoPrevFrom;
+  const prevTo = scope.comparing ? new Date(scope.compareTo as string) : autoPrevTo;
   const weeklyStart = new Date(from);
   weeklyStart.setDate(weeklyStart.getDate() - 7);
 
@@ -747,6 +1130,22 @@ async function FootfallDiagnosisSection({
 
   return (
     <>
+      <TableScopeBar
+        paramPrefix={FOOTFALL_PREFIX}
+        from={from}
+        to={to}
+        compareFrom={scope.compareFrom}
+        compareTo={scope.compareTo}
+        overridden={scope.overridden}
+        showAttributes={false}
+        showLocation={false}
+        compareHint={
+          scope.comparing
+            ? undefined
+            : `Baseline defaults to the preceding ${periodDays} days (${isoDate(autoPrevFrom)} – ${isoDate(autoPrevTo)}). Set Compare to choose another.`
+        }
+      />
+
       <div className="flex items-baseline justify-between">
         <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
           Footfall × conversion matrix — EBO
@@ -1102,7 +1501,22 @@ function SharedCoreSkeleton() {
 export default async function SalesPage({
   searchParams,
 }: {
-  searchParams: { from?: string; to?: string; compareFrom?: string; compareTo?: string; store?: string; bu?: string; channel?: string; channels?: string };
+  // The index signature carries the PREFIXED params the four AttributeFilterBar
+  // instances and the three self-contained tables write (attr_cat,
+  // periodTable_from, ...). They are read through helpers keyed by prefix
+  // rather than declared one by one — eight facets x four instances plus each
+  // table's own scope controls is far past the point where naming every param
+  // in this type would help a reader.
+  searchParams: {
+    from?: string;
+    to?: string;
+    compareFrom?: string;
+    compareTo?: string;
+    store?: string;
+    bu?: string;
+    channel?: string;
+    channels?: string;
+  } & Record<string, string | string[] | undefined>;
 }) {
   // requirePageAccess (not the plain requireRole this used before
   // 2026-08-28) so a per-user override on the "sales" page key actually
@@ -1215,6 +1629,11 @@ export default async function SalesPage({
   // the scope summary means "all stores you hold" in the picker too.
   const activeStores = ownStores(stores, user.storeIds).filter((s) => s.is_active);
   const storeNames = new Map(activeStores.map((s) => [s.store_id, s.store_name]));
+  const storeOptionIds = activeStores.map((s) => s.store_id);
+
+  // What an untouched per-table control inherits — see resolveTableScope. A
+  // table only stops tracking this the moment its own param appears.
+  const pageScope = { from, to, compareFrom, compareTo, storeFilters };
 
   // Plain-language restatement of the active scope — "which numbers am I
   // looking at" as a fact on screen, not a guess from the filter bar alone
@@ -1311,10 +1730,15 @@ export default async function SalesPage({
             <div className="h-px flex-1 bg-line-soft" />
           </div>
 
-          <SectionErrorBoundary label="EBO detail">
-            <Suspense fallback={<EboDetailSkeleton />}>
+          {/* The shared attribute block renders FIRST inside the EBO section —
+              i.e. immediately after the page's cross-vertical "Net sales by
+              day" trend — so the four displays that share one attribute filter
+              and one comparison period sit together, above the three
+              self-contained tables that each own their filters. */}
+          <SectionErrorBoundary label="EBO attribute block">
+            <Suspense fallback={<EboAttributeBlockSkeleton />}>
               <div className="mt-4">
-                <EboDetailSection
+                <EboAttributeBlockSection
                   supabase={supabase}
                   applyStore={applyStore}
                   from={from}
@@ -1322,7 +1746,55 @@ export default async function SalesPage({
                   compareFrom={compareFrom}
                   compareTo={compareTo}
                   storeNames={storeNames}
+                  paramPrefix={SHARED_ATTR_PREFIX}
+                  selection={parseAttributeSelection(searchParams, SHARED_ATTR_PREFIX)}
+                />
+              </div>
+            </Suspense>
+          </SectionErrorBoundary>
+
+          <SectionErrorBoundary label="EBO detail">
+            <Suspense fallback={<EboDetailSkeleton />}>
+              <div className="mt-8">
+                <EboDetailSection
+                  supabase={supabase}
+                  applyStore={applyStore}
+                  from={from}
+                  to={to}
+                  compareFrom={compareFrom}
+                  compareTo={compareTo}
+                />
+              </div>
+            </Suspense>
+          </SectionErrorBoundary>
+
+          {/* The three self-contained tables. Each owns its Location, Period,
+              comparison period and attribute filter (own URL prefix), runs its
+              own query, and streams in its own Suspense boundary — so one
+              table's wide date range cannot hold up the others. An untouched
+              table still follows the page scope; see resolveTableScope. */}
+          <SectionErrorBoundary label="Period table">
+            <Suspense fallback={<ProductAttributeSkeleton />}>
+              <div className="mt-6">
+                <PeriodTableSection
+                  supabase={supabase}
+                  scope={resolveTableScope(searchParams, PERIOD_TABLE_PREFIX, pageScope)}
+                  storeNames={storeNames}
+                  storeOptions={storeOptionIds}
                   today={today}
+                />
+              </div>
+            </Suspense>
+          </SectionErrorBoundary>
+
+          <SectionErrorBoundary label="Agent-wise sales">
+            <Suspense fallback={<ProductAttributeSkeleton />}>
+              <div className="mt-6">
+                <AgentTableSection
+                  supabase={supabase}
+                  scope={resolveTableScope(searchParams, AGENT_TABLE_PREFIX, pageScope)}
+                  storeNames={storeNames}
+                  storeOptions={storeOptionIds}
                 />
               </div>
             </Suspense>
@@ -1331,7 +1803,12 @@ export default async function SalesPage({
           <SectionErrorBoundary label="Product attribute breakdown">
             <Suspense fallback={<ProductAttributeSkeleton />}>
               <div className="mt-6">
-                <ProductAttributeSection supabase={supabase} applyStore={applyStore} from={from} to={to} />
+                <ProductAttributeSection
+                  supabase={supabase}
+                  scope={resolveTableScope(searchParams, ATTR_TABLE_PREFIX, pageScope)}
+                  storeNames={storeNames}
+                  storeOptions={storeOptionIds}
+                />
               </div>
             </Suspense>
           </SectionErrorBoundary>
@@ -1339,7 +1816,13 @@ export default async function SalesPage({
           <SectionErrorBoundary label="Footfall & diagnosis">
             <Suspense fallback={<FootfallDiagnosisSkeleton />}>
               <div className="mt-8">
-                <FootfallDiagnosisSection supabase={supabase} applyStore={applyStore} from={from} to={to} storeNames={storeNames} today={today} />
+                <FootfallDiagnosisSection
+                  supabase={supabase}
+                  applyStore={applyStore}
+                  scope={resolveTableScope(searchParams, FOOTFALL_PREFIX, pageScope)}
+                  storeNames={storeNames}
+                  today={today}
+                />
               </div>
             </Suspense>
           </SectionErrorBoundary>

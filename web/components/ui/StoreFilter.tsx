@@ -143,6 +143,8 @@ export function MultiSelectFilter({
   label,
   allLabel = "All",
   clearAsEmptyParam = false,
+  searchable = false,
+  counts,
 }: {
   paramName: string;
   options: string[];
@@ -165,6 +167,30 @@ export function MultiSelectFilter({
    * default again instead of actually showing everything.
    */
   clearAsEmptyParam?: boolean;
+  /**
+   * Adds a type-to-narrow box above the checkbox list. Off by default, so
+   * every pre-existing caller renders exactly the list it always did. Added
+   * for /sales' attribute filter, where Color (~51 values) and Size (~42) are
+   * past the point of being scannable — scrolling a 51-item popover to find
+   * "MAROON" is the kind of control people give up on.
+   *
+   * Narrowing is display-only: it never changes `pending`, so a value already
+   * ticked stays ticked (and stays committed) while it is filtered out of
+   * view. Searching cannot silently drop a selection.
+   */
+  searchable?: boolean;
+  /**
+   * Optional per-value row count, rendered after the label and used to DIM
+   * (not remove) values at zero.
+   *
+   * Same rule FacetFilterBar's facetOptionCounts follows: an option the other
+   * active filters would give zero rows stays listed and stays clickable,
+   * dimmed, rather than vanishing — a value that disappears the moment it
+   * becomes empty is a control the user cannot reason about, and one they
+   * cannot use to UNDO the selection that emptied it. Absent counts render
+   * the plain label, unchanged.
+   */
+  counts?: Record<string, number>;
 }) {
   const labelFor = (value: string) => labels?.[value] ?? value;
   const router = useRouter();
@@ -177,7 +203,15 @@ export function MultiSelectFilter({
   // slow": picking 3 stores meant 3 full page navigations + server
   // re-fetches, one per click, instead of one.
   const [pending, setPending] = useState<string[]>(selected);
+  const [query, setQuery] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Display-only narrowing — see the `searchable` prop's note. `pending` is
+  // never touched here, so a ticked value filtered out of view stays ticked.
+  const visibleOptions =
+    searchable && query.trim() !== ""
+      ? options.filter((o) => labelFor(o).toLowerCase().includes(query.trim().toLowerCase()))
+      : options;
 
   function commit(values: string[]) {
     // The checkbox popover's Apply/outside-click commit is a <button>/click
@@ -199,6 +233,7 @@ export function MultiSelectFilter({
 
   function openDropdown() {
     setPending(selected); // start the draft from whatever's actually committed
+    setQuery(""); // every open starts on the full list, not last time's search
     setOpen(true);
   }
 
@@ -259,16 +294,49 @@ export function MultiSelectFilter({
             <button type="button" onClick={() => setPending([])} className="text-[11px] text-accent hover:underline">
               Clear ({allLabel})
             </button>
-            <button type="button" onClick={() => setPending(options)} className="text-[11px] text-accent hover:underline">
+            {/* Union with what's already ticked, so "Select all" while a
+                search is narrowing the list ADDS the matches instead of
+                replacing the selection with only them. With no search active
+                visibleOptions === options and pending is always a subset, so
+                this is exactly the "select every option" it always was. */}
+            <button
+              type="button"
+              onClick={() => setPending((prev) => [...new Set([...prev, ...visibleOptions])])}
+              className="text-[11px] text-accent hover:underline"
+            >
               Select all
             </button>
           </div>
-          {options.map((o) => (
-            <label key={o} className="flex items-center gap-2 py-1 text-[12.5px] text-ink-2 hover:bg-surface-2">
-              <input type="checkbox" checked={pending.includes(o)} onChange={() => toggle(o)} />
-              {labelFor(o)}
-            </label>
-          ))}
+          {searchable && (
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search…"
+              aria-label={`Search ${label ?? paramName} options`}
+              className="mb-1.5 w-full border border-line bg-surface px-2 py-1 text-[12px] text-ink-2"
+            />
+          )}
+          {visibleOptions.map((o) => {
+            const count = counts?.[o];
+            // Zero-count options are DIMMED, never removed — see the `counts`
+            // prop note. They stay clickable so a user can still untick the
+            // pick that emptied them.
+            const empty = count === 0;
+            return (
+              <label
+                key={o}
+                className={`flex items-center gap-2 py-1 text-[12.5px] hover:bg-surface-2 ${empty ? "text-ink-3 opacity-60" : "text-ink-2"}`}
+              >
+                <input type="checkbox" checked={pending.includes(o)} onChange={() => toggle(o)} />
+                <span className="flex-1">{labelFor(o)}</span>
+                {count !== undefined && <span className="font-mono text-[11px] text-ink-3">{count}</span>}
+              </label>
+            );
+          })}
+          {visibleOptions.length === 0 && (
+            <p className="py-2 text-center text-[11.5px] text-ink-3">No matching options.</p>
+          )}
           <button
             type="button"
             onClick={closeAndCommit}

@@ -40,6 +40,7 @@ export function ComparisonDateRangePicker({
   compareFrom,
   compareTo,
   onApply,
+  paramPrefix = "",
 }: {
   from: string;
   to: string;
@@ -55,6 +56,14 @@ export function ComparisonDateRangePicker({
    * change.
    */
   onApply?: (compareFrom: string | null, compareTo: string | null) => void;
+  /**
+   * Namespaces the params this picker writes, so several INDEPENDENT
+   * comparison periods can coexist on one URL — /sales gives its three
+   * self-contained tables their own compare each. Defaults to "" (plain
+   * ?compareFrom=&compareTo=), so every pre-existing caller is unchanged.
+   * Ignored when `onApply` is supplied, since that path writes no URL at all.
+   */
+  paramPrefix?: string;
 }) {
   const active = Boolean(compareFrom && compareTo);
   const [open, setOpen] = useState(false);
@@ -90,11 +99,11 @@ export function ComparisonDateRangePicker({
     }
     const params = new URLSearchParams(searchParams.toString());
     if (newFrom && newTo) {
-      params.set("compareFrom", newFrom);
-      params.set("compareTo", newTo);
+      params.set(`${paramPrefix}compareFrom`, newFrom);
+      params.set(`${paramPrefix}compareTo`, newTo);
     } else {
-      params.delete("compareFrom");
-      params.delete("compareTo");
+      params.delete(`${paramPrefix}compareFrom`);
+      params.delete(`${paramPrefix}compareTo`);
     }
     router.push(`${pathname}?${params.toString()}`);
     setOpen(false);
