@@ -726,6 +726,77 @@ MSYS2_ARG_CONV_EXCL="*" PGPASSWORD='<pw>' "/d/Programs/pgsql/bin/psql.exe" -h aw
 No browser verification was done (page would only show error boundaries pre-migration, so nothing to
 verify against) — do a full click-through pass after running 0103 and deploying.
 
+### 2026-09-04 — Sales page follow-up requests, DISCUSSED AND DESIGNED, NOT YET BUILT
+
+User reviewed the just-merged attribute-filter restructuring (`727250a`) live and raised 4 follow-up
+items. Worked through a real design conflict with the user (analyst-level back-and-forth, not a
+quick patch) before settling on a final direction. **None of this is built yet** — write it up here
+so a fresh session can pick it up without re-deriving the reasoning.
+
+**The conflict that had to be resolved first**: user's own two messages about the "shared block"
+(Net sales by day + Hourly + Store League + Scheme Penetration) contradicted each other — one asked
+to link Hourly/Store League/Scheme Penetration to the top block's Location+Period, the other said the
+top block's filter should apply "only to that part, not any other." Resolved by making EVERY
+filterable block on the page fully independent (no block shares another's filter scope) — this is
+also the cleanest, most consistent design and matches how real multi-widget BI dashboards
+(Shopify Analytics, Looker) are built.
+
+**Final todo list**:
+
+1. **Split "Sales value & quantity by period — EBO" into 2 separate tables** (user's own suggestion,
+   refined together):
+   - **Table 1 "Sales trend by period"** — own Location/Period/Attributes filter row, the existing
+     grain toggle (Daily/Weekly/Monthly/Yearly — smart-defaulted to the selected range's size, e.g.
+     a ≤60-day range defaults to Daily/Weekly, but every tab stays clickable, never hard-disabled),
+     rows are consecutive periods within ONE range with period-over-period % (DoD/WoW/MoM/YoY)
+     between adjacent rows — same shape as today, minus the comparison confusion.
+   - **Table 2 "Period comparison"** — own Location/Attributes filter row, a genuine Current-range +
+     Compare-range pair (free custom any-vs-any, plus "Previous period"/"Previous year" presets,
+     matching `ComparisonDateRangePicker`'s existing presets) — shows CLEAN total-vs-total rows
+     (whole-range sums, or broken down by whichever dimension is grouped), never a chronological
+     calendar-bucket list. This is what actually fixes the reported bug: comparing a full Aug 2026
+     to a 4-day Sept 2026 sliver produced a nonsensical "-94.4%" because the old single table's
+     "Net change%" column compared chronologically-ADJACENT rows, not the user's actual
+     current-range-vs-compare-range intent. Table 2 never buckets by calendar period at all, so that
+     mismatch becomes structurally impossible.
+   - Confirmed live in the mockups shown in-chat (not committed anywhere, just visualized): attribute
+     filtering on both tables shows an active-filter-chips row + a "filtered vs unfiltered" total
+     comparison, and BOTH ranges in Table 2 must be scoped by the SAME attribute selection so the
+     comparison stays apples-to-apples.
+
+2. **Fresh / EOSS / Total qty breakdown** — replace the single "Qty" column with three
+   (Fresh qty / EOSS qty / Total qty) in: both new tables from item 1, AND "Agent-wise sales — EBO"
+   (confirmed with user — same breakdown, per-agent). Classification rule: **discount % ≥ 50% = EOSS**
+   — reuse the Targets page's existing Fresh/Discounted classification logic verbatim (find it in
+   `app/(ho)/targets/**` — do not re-derive the threshold or the formula from scratch, the whole point
+   is consistency with what Targets already calls Fresh vs Discounted).
+
+3. **Hourly / Store League / Scheme Penetration get their own independent filter row** — Location +
+   Period + Compare + Attributes, decoupled from the page-level top block, matching the "every block
+   independent" resolution above. (The 3 already share ONE `AttributeFilterBar` instance among
+   themselves per the just-merged work — that part stays; what's missing is Location+Period+Compare
+   for that shared trio.)
+
+4. **No full-page reload on any filter change — architecture-level fix, not a UI patch.** Currently
+   every independent block's filters are page-level URL `searchParams` (prefixed per block), which
+   means ANY filter change anywhere triggers one Next.js navigation that can make the WHOLE page's
+   Server Component tree re-suspend, reading as a full-page flash even though only one block's data
+   actually changed. Real fix: each independently-filterable block becomes its own client-side data
+   fetch (a Server Action or route handler returning just that block's data) decoupled from the page's
+   own URL/searchParams navigation cycle — so changing one block's filter shows a loading state for
+   ONLY that block (plus the existing top `TopProgressBar`), the rest of the page stays static. This
+   is a genuinely large change (touches every block's data-fetching plumbing, not just item 1-3's new
+   pieces) — budget for it accordingly, don't bolt it on as an afterthought to items 1-3.
+
+**Suggested build order**: 3 and 4 first (both are foundational — 3 because Hourly/League/Scheme need
+the same independent-filter plumbing items 1's two new tables will need anyway, so building 3 first
+gives a proven pattern to copy; 4 because retrofitting client-side fetching onto already-built blocks
+is more work than building new ones that way from the start) — then 1 (the 2-table split, using the
+now-proven independent-block-with-client-fetch pattern) — then 2 (Fresh/EOSS/Total, a column addition
+layered on top of whatever's built by then, touching 3 places).
+
+Not yet scoped into an agent brief — do that fresh next session (this one is near its context limit).
+
 ## Next steps (in order)
 
 1. Wait for the 5 in-flight agents to report back (background notifications will arrive).
