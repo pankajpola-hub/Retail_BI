@@ -680,6 +680,35 @@ variables → Actions → New repository secret) — `NEXT_PUBLIC_SUPABASE_URL`,
 `UNIWARE_REST_USERNAME`/`UNIWARE_REST_PASSWORD`/`UNIWARE_FACILITY_CODE`. Then trigger once manually
 (Actions tab → Uniware sync → Run workflow) to confirm it works before trusting the schedule.
 
+### 2026-09-04 — Sales page: attribute filters + shared/independent filter blocks — LAUNCHED, not yet merged
+
+User's ask (confirmed after a back-and-forth on scope): agent `adc91e72ee315cd66`, isolated worktree,
+6 SEQUENTIAL steps (one file, `sales/page.tsx`, so not parallelized):
+0. Fix confirmed bug: "EBO units" KPI card missing (only "Ecomm units" exists; `rollUpCore()` never
+   computed `eboUnits`).
+1. New migration `0103_ebo_sale_attribute_lines_agent_time.sql` — widen `sales.vw_ebo_sale_attribute_lines`
+   (0092) with `agent_name`+`bill_time`, matching `vw_ebo_sales_lines`'s own derivation. This becomes
+   the single line-grain, store-scoped, attribute+agent+time-carrying source for everything below.
+2. New reusable `AttributeFilterBar` (8 filters off `raw_logic.item_master`: Category↔Subcategory
+   CASCADED — confirmed live, 0 subcategories span >1 category — Gender, Market Segment, Size Group,
+   Season+Year, Color, Size), param-prefixable so multiple independent instances can coexist (same
+   `mix_`-prefix precedent `movement/page.tsx` already established).
+3. Point 1: move Hourly/Store League/Scheme Penetration to render right after "Net sales by day,"
+   forming one block that shares the page-level Vertical/Location/Period + ONE shared AttributeFilterBar
+   + comparison-period (newly added to these 3, which didn't have it before) — scoped locally, doesn't
+   affect the rest of the page.
+4. Point 2: Period table / Agent-wise sales / Product-attribute breakdown each become fully independent
+   mini-dashboards — own Vertical/Location/Period row + own AttributeFilterBar + own compare-period,
+   decoupled from the page-level scope and from each other.
+5. Point 4: Footfall & diagnosis gets its own Date+Compare filter, independent of the page-level one.
+
+Told explicitly to commit after each step (6 commits) and stop-and-report rather than force a design
+that doesn't fit reality once reading real code/data.
+
+**When it reports back**: review each step's diff/commit, merge to `master` one step at a time (same
+procedure as every prior wave), `tsc`+`build` after each, delete worktree/branch. Migration 0103 needs
+the user to run it against the live DB (same DB-write restriction as always).
+
 ## Next steps (in order)
 
 1. Wait for the 5 in-flight agents to report back (background notifications will arrive).
