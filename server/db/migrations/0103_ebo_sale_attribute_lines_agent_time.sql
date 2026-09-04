@@ -1,6 +1,6 @@
 -- =============================================================================
 -- 0103 · sales.vw_ebo_sale_attribute_lines — add agent_name, bill_time, size,
---        scheme_group_name
+--        scheme_group_name and the retail calendar
 -- =============================================================================
 -- 0092 created this view as the store-scoped, line-grain, PRODUCT-attribute
 -- carrying source for /sales' Season+Year breakdown. It is now being promoted
@@ -106,7 +106,33 @@ select
   -- scheme_name (the individual scheme) is deliberately NOT carried: only the
   -- GROUP participates in the dominant-scheme rule and in the penetration
   -- figure, so adding it would widen the view for nothing.
-  nullif(trim(st.scheme_group_name), '')                           as scheme_group_name
+  nullif(trim(st.scheme_group_name), '')                           as scheme_group_name,
+  -- 0103, appended. The retail calendar, carried onto the line.
+  --
+  -- The Daily/Weekly/Monthly/Yearly period table is built by
+  -- lib/sales/aggregate.ts's buildWeekSeries / buildMonthlyPeriodSeries /
+  -- buildYearlyPeriodSeries, which need week_start, retail_week,
+  -- financial_year and month_start. Those are RETAIL calendar values, not
+  -- derivable from a date in JS: a retail week is not an ISO week and a
+  -- financial year is not a calendar year. core.retail_calendar is the single
+  -- definition of that mapping, and sales.vw_ebo_sales_daily already gets
+  -- these columns by joining it. Carrying them here is what lets the period
+  -- table read this view — and so be attribute-filterable — instead of
+  -- re-implementing the retail calendar in the browser and letting the two
+  -- definitions drift.
+  --
+  -- LEFT join: a bill dated outside the calendar's range must still appear in
+  -- the line-level figures with a null period, never be silently dropped from
+  -- sales because the calendar has not been extended yet.
+  rc.day_name                                                      as day_name,
+  rc.week_start                                                    as week_start,
+  rc.retail_week                                                   as retail_week,
+  rc.retail_year                                                   as retail_year,
+  rc.retail_month                                                  as retail_month,
+  rc.retail_quarter                                                as retail_quarter,
+  rc.financial_year                                                as financial_year,
+  rc.month_start                                                   as month_start,
+  rc.is_weekend                                                    as is_weekend
 from raw_logic.sales_transactions st
   cross join lateral (
     select
@@ -126,6 +152,7 @@ from raw_logic.sales_transactions st
   ) parsed
   join core.stores s on s.branch_name_erp = st.branch_name and s.is_active
   left join raw_logic.item_master im on im.item_code = st.item_code
+  left join core.retail_calendar rc on rc.date = parsed.branch_date
 where st.branch_name is not null
   and st.bill_no not in ('BRANCH WISE TOTALS', 'GRAND TOTALS')
   and s.store_id = any (core.fn_user_store_ids());

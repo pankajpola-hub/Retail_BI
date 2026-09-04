@@ -39,7 +39,22 @@ function presets(today: Date): Preset[] {
  * so the page stays a normal server-rendered fetch — no client-side data
  * fetching here, just navigation.
  */
-export function DateRangePicker({ from, to }: { from: string; to: string }) {
+export function DateRangePicker({
+  from,
+  to,
+  paramPrefix = "",
+}: {
+  from: string;
+  to: string;
+  /**
+   * Namespaces the params this picker writes, so several INDEPENDENT date
+   * ranges can coexist on one URL — /sales gives its three self-contained
+   * tables their own period each. Defaults to "" (plain ?from=&to=), so every
+   * pre-existing caller is byte-for-byte unchanged. Same prefixing convention
+   * as movement/page.tsx's `mix_`.
+   */
+  paramPrefix?: string;
+}) {
   const [open, setOpen] = useState(false);
   const [customFrom, setCustomFrom] = useState(from);
   const [customTo, setCustomTo] = useState(to);
@@ -67,8 +82,8 @@ export function DateRangePicker({ from, to }: { from: string; to: string }) {
 
   function apply(newFrom: string, newTo: string) {
     const params = new URLSearchParams(searchParams.toString());
-    params.set("from", newFrom);
-    params.set("to", newTo);
+    params.set(`${paramPrefix}from`, newFrom);
+    params.set(`${paramPrefix}to`, newTo);
     // Deliberately push() ONLY, no refresh() — see StoreFilter.tsx's
     // onChange for the full writeup. A prior version here called
     // router.refresh() right after push() (even tried wrapping both in one

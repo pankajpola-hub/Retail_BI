@@ -73,11 +73,23 @@ export type SaleLineRow = SaleAttributeLineRow & {
    * not itself one of the eight filter facets.
    */
   scheme_group_name: string | null;
+  /**
+   * Retail calendar, carried onto the line by 0103. A retail week is not an
+   * ISO week and a financial year is not a calendar year, so these are read
+   * from core.retail_calendar rather than derived from bill_date — see
+   * lib/sales/lineRollups.ts. Nullable because the join is a LEFT join: a bill
+   * dated past the end of the seeded calendar still counts in the money
+   * figures, it just has no period.
+   */
+  week_start: string | null;
+  retail_week: number | null;
+  financial_year: string | null;
+  month_start: string | null;
 };
 
 /** The column list every /sales section selects from the view. */
 export const SALE_LINE_SELECT =
-  "store_id, bill_date, bill_no, bill_type, item_code, total_quantity, gross_amount, net_amount, season, market_segment, category, subcategory, gender, size_group, shade_name, mrp, size, agent_name, bill_time, scheme_group_name";
+  "store_id, bill_date, bill_no, bill_type, item_code, total_quantity, gross_amount, net_amount, season, market_segment, category, subcategory, gender, size_group, shade_name, mrp, size, agent_name, bill_time, scheme_group_name, week_start, retail_week, financial_year, month_start";
 
 /** Same sentinel, same meaning, as attributeBreakdown.ts's own UNCLASSIFIED. */
 export const UNCLASSIFIED = "—";
