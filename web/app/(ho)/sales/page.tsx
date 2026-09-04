@@ -110,7 +110,13 @@ export const dynamic = "force-dynamic";
  * show, same as /network already handles zero-store scope.
  */
 
-type EboDailyRow = { store_id: string | null; bill_date: string | null; net_sales: number | string; gross_sales: number | string; discount: number | string };
+// sale_quantity (not net_quantity) is the units figure this page already
+// treats as "units" everywhere else — computeSalesTotals' totalSaleQty, the
+// EBO comparison strip's "Units" card and every buildPeriodSeries all sum
+// sale_quantity. Using it here too keeps the shared-core "EBO units" card
+// reconciling against the EBO block's own Units card rather than differing
+// from it by the returned quantity.
+type EboDailyRow = { store_id: string | null; bill_date: string | null; net_sales: number | string; gross_sales: number | string; discount: number | string; sale_quantity: number | string };
 // cancelled_orders comes from sales.vw_ecomm_daily's orders_agg
 // (`count(*) filter (where o.status = 'CANCELLED')`). It was always in the
 // view but was never selected or typed here, which is why the Ecomm "By
@@ -145,6 +151,7 @@ function rollUpCore(ebo: EboDailyRow[], ecomm: EcommDailyRow[]) {
   const eboNet = ebo.reduce((s, r) => s + num(r.net_sales), 0);
   const eboGross = ebo.reduce((s, r) => s + num(r.gross_sales), 0);
   const eboDiscount = ebo.reduce((s, r) => s + num(r.discount), 0);
+  const eboUnits = ebo.reduce((s, r) => s + num(r.sale_quantity ?? 0), 0);
 
   const ecommNet = ecomm.reduce((s, r) => s + num(r.net_selling_value), 0);
   const ecommGross = ecomm.reduce((s, r) => s + num(r.gross_mrp_value), 0);
@@ -172,6 +179,7 @@ function rollUpCore(ebo: EboDailyRow[], ecomm: EcommDailyRow[]) {
   return {
     eboNet,
     ecommNet,
+    eboUnits,
     ecommUnits,
     netSales,
     grossSales,
@@ -216,7 +224,7 @@ async function SharedCoreSection({
   // cosmetic: .range() paging is only a correct partition if the server-side
   // ordering is stable across the separate REST calls. Same pattern as the
   // attribute-lines query below.
-  const eboSelect = "store_id, bill_date, net_sales, gross_sales, discount";
+  const eboSelect = "store_id, bill_date, net_sales, gross_sales, discount, sale_quantity";
   const ecommSelect = "channel, order_date, total_orders, cancelled_orders, net_selling_value, gross_mrp_value, discount_value, units";
   const [eboDaily, ecommDaily, cmpEboDaily, cmpEcommDaily] = await timeAll("sales:shared_core", [
     showEbo
@@ -289,6 +297,18 @@ async function SharedCoreSection({
           }
           sub={INR(cur.discount) + " given"}
         />
+        {/* Two separate unit cards, not one combined "Units" — a bill's unit
+            and an order's unit are countable the same way, but the page has
+            never shown a cross-vertical unit total and inventing one here
+            would be a new metric. Same shape Net/Gross already use for
+            multi-vertical (one figure, per-vertical detail alongside). */}
+        {showEbo && (
+          <KpiCard
+            label="EBO units"
+            value={cur.eboUnits.toLocaleString("en-IN")}
+            delta={cmp && <DeltaBadge current={cur.eboUnits} previous={cmp.eboUnits} baselineLabel={`vs ${cmp.eboUnits.toLocaleString("en-IN")}`} />}
+          />
+        )}
         {showEcomm && (
           <KpiCard
             label="Ecomm units"
