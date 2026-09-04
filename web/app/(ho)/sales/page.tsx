@@ -112,6 +112,7 @@ const SHARED_ATTR_PREFIX = "attr_";
 const PERIOD_TABLE_PREFIX = "periodTable_";
 const AGENT_TABLE_PREFIX = "agentTable_";
 const ATTR_TABLE_PREFIX = "attrTable_";
+const FOOTFALL_PREFIX = "footfall_";
 
 /**
  * Builds an ApplyStore for a table's OWN store selection, independent of the
@@ -1070,23 +1071,34 @@ function ProductAttributeSkeleton() {
 async function FootfallDiagnosisSection({
   supabase,
   applyStore,
-  from,
-  to,
+  scope,
   storeNames,
   today,
 }: {
   supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
   applyStore: ApplyStore;
-  from: string;
-  to: string;
+  scope: ReturnType<typeof resolveTableScope>;
   storeNames: Map<string, string>;
   today: Date;
 }) {
+  // This section's OWN period and OWN comparison baseline, independent of the
+  // page-level ones — every figure below is a "this window vs that window"
+  // comparison, so which two windows they are is the section's main question,
+  // not a page-wide setting.
+  const from = scope.from;
+  const to = scope.to;
+
+  // The baseline was ALWAYS the immediately-preceding window of equal length,
+  // computed here with no way to change it. That default is kept exactly (so
+  // an untouched section reads as it always did), and is now overridable: when
+  // this section's own Compare is set, those dates become the baseline instead.
   const periodDays = Math.round((new Date(to).getTime() - new Date(from).getTime()) / 86400000) + 1;
-  const prevTo = new Date(from);
-  prevTo.setDate(prevTo.getDate() - 1);
-  const prevFrom = new Date(prevTo);
-  prevFrom.setDate(prevFrom.getDate() - (periodDays - 1));
+  const autoPrevTo = new Date(from);
+  autoPrevTo.setDate(autoPrevTo.getDate() - 1);
+  const autoPrevFrom = new Date(autoPrevTo);
+  autoPrevFrom.setDate(autoPrevFrom.getDate() - (periodDays - 1));
+  const prevFrom = scope.comparing ? new Date(scope.compareFrom as string) : autoPrevFrom;
+  const prevTo = scope.comparing ? new Date(scope.compareTo as string) : autoPrevTo;
   const weeklyStart = new Date(from);
   weeklyStart.setDate(weeklyStart.getDate() - 7);
 
@@ -1118,6 +1130,22 @@ async function FootfallDiagnosisSection({
 
   return (
     <>
+      <TableScopeBar
+        paramPrefix={FOOTFALL_PREFIX}
+        from={from}
+        to={to}
+        compareFrom={scope.compareFrom}
+        compareTo={scope.compareTo}
+        overridden={scope.overridden}
+        showAttributes={false}
+        showLocation={false}
+        compareHint={
+          scope.comparing
+            ? undefined
+            : `Baseline defaults to the preceding ${periodDays} days (${isoDate(autoPrevFrom)} – ${isoDate(autoPrevTo)}). Set Compare to choose another.`
+        }
+      />
+
       <div className="flex items-baseline justify-between">
         <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
           Footfall × conversion matrix — EBO
@@ -1788,7 +1816,13 @@ export default async function SalesPage({
           <SectionErrorBoundary label="Footfall & diagnosis">
             <Suspense fallback={<FootfallDiagnosisSkeleton />}>
               <div className="mt-8">
-                <FootfallDiagnosisSection supabase={supabase} applyStore={applyStore} from={from} to={to} storeNames={storeNames} today={today} />
+                <FootfallDiagnosisSection
+                  supabase={supabase}
+                  applyStore={applyStore}
+                  scope={resolveTableScope(searchParams, FOOTFALL_PREFIX, pageScope)}
+                  storeNames={storeNames}
+                  today={today}
+                />
               </div>
             </Suspense>
           </SectionErrorBoundary>

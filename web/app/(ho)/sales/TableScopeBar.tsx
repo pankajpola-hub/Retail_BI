@@ -38,24 +38,41 @@ export function TableScopeBar({
   to,
   compareFrom,
   compareTo,
-  storeOptions,
-  storeLabels,
-  storeFilters,
+  storeOptions = [],
+  storeLabels = {},
+  storeFilters = [],
   selection,
   options,
   overridden,
+  showAttributes = true,
+  showLocation = true,
+  compareHint,
 }: {
   paramPrefix: string;
   from: string;
   to: string;
   compareFrom: string | null;
   compareTo: string | null;
-  storeOptions: string[];
-  storeLabels: Record<string, string>;
-  storeFilters: string[];
-  selection: AttributeSelection;
-  options: AttributeOptions;
+  // Optional because a bar with showLocation/showAttributes off has nothing to
+  // do with them — better than making callers pass empty placeholders.
+  storeOptions?: string[];
+  storeLabels?: Record<string, string>;
+  storeFilters?: string[];
+  selection?: AttributeSelection;
+  options?: AttributeOptions;
   overridden: boolean;
+  /**
+   * Footfall opts BOTH of these out. Its figures come from
+   * ops.vw_ebo_conversion_daily and ops.vw_footfall_completeness — a store x
+   * day count of people through the door, with no item and therefore no
+   * product attribute to filter by, and it is already scoped by the page's
+   * store picker. Rendering an attribute bar there would be a control that
+   * silently does nothing, which is worse than not offering it.
+   */
+  showAttributes?: boolean;
+  showLocation?: boolean;
+  /** Overrides the "Compare to…" copy where the baseline means something more specific. */
+  compareHint?: string;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -74,6 +91,7 @@ export function TableScopeBar({
   return (
     <div className="mb-3">
       <div className="flex flex-wrap items-end gap-5 border border-line-soft bg-surface px-3 py-2">
+        {showLocation && (
         <div>
           <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-3">Location</div>
           <MultiSelectFilter
@@ -90,8 +108,9 @@ export function TableScopeBar({
             clearAsEmptyParam
           />
         </div>
+        )}
 
-        <div className="hidden self-stretch border-l border-line-soft sm:block" />
+        {showLocation && <div className="hidden self-stretch border-l border-line-soft sm:block" />}
 
         <div>
           <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-3">Period</div>
@@ -105,6 +124,7 @@ export function TableScopeBar({
               paramPrefix={paramPrefix}
             />
           </div>
+          {compareHint && <p className="mt-1 text-[11px] text-ink-3">{compareHint}</p>}
         </div>
 
         <div className="ml-auto flex items-center gap-2 text-[11px]">
@@ -119,9 +139,11 @@ export function TableScopeBar({
         </div>
       </div>
 
-      <div className="mt-1.5">
-        <AttributeFilterBar paramPrefix={paramPrefix} selection={selection} options={options} />
-      </div>
+      {showAttributes && selection && options && (
+        <div className="mt-1.5">
+          <AttributeFilterBar paramPrefix={paramPrefix} selection={selection} options={options} />
+        </div>
+      )}
     </div>
   );
 }
