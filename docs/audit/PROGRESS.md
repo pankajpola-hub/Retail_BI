@@ -680,7 +680,7 @@ variables → Actions → New repository secret) — `NEXT_PUBLIC_SUPABASE_URL`,
 `UNIWARE_REST_USERNAME`/`UNIWARE_REST_PASSWORD`/`UNIWARE_FACILITY_CODE`. Then trigger once manually
 (Actions tab → Uniware sync → Run workflow) to confirm it works before trusting the schedule.
 
-### 2026-09-04 — Sales page: attribute filters + shared/independent filter blocks — LAUNCHED, not yet merged
+### 2026-09-04 — Sales page: attribute filters + shared/independent filter blocks — DONE, MERGED (`2121b72`)
 
 User's ask (confirmed after a back-and-forth on scope): agent `adc91e72ee315cd66`, isolated worktree,
 6 SEQUENTIAL steps (one file, `sales/page.tsx`, so not parallelized):
@@ -705,9 +705,26 @@ User's ask (confirmed after a back-and-forth on scope): agent `adc91e72ee315cd66
 Told explicitly to commit after each step (6 commits) and stop-and-report rather than force a design
 that doesn't fit reality once reading real code/data.
 
-**When it reports back**: review each step's diff/commit, merge to `master` one step at a time (same
-procedure as every prior wave), `tsc`+`build` after each, delete worktree/branch. Migration 0103 needs
-the user to run it against the live DB (same DB-write restriction as always).
+**Result**: 7 commits, merged clean, `tsc`+`build` green. Notable reasoned deviations from the brief
+(all measured, not guessed): migration 0103 ended up appending 13 columns not 2 — `size` (only exists
+on `item_master`, no as-of-sale fallback, documented not silently coalesced), `scheme_group_name`
+(Scheme Penetration needs `vw_ebo_bill`'s dominant-scheme rule), and 9 retail-calendar columns (a
+retail week/financial year isn't a calendar one — deriving in JS would've forked `core.retail_calendar`).
+Attribute options are read from the store-scoped view, not raw `item_master` directly (`authenticated`
+has no grant on `raw_logic` — the reason 0092 exists at all). Only Category→Subcategory cascades
+structurally (full 8-way cascade needs 37k+ distinct combinations client-side); the other 6 attributes
+still get cascading counts. `MultiSelectFilter` gained optional `searchable`/`counts` props (additive,
+default-off) rather than a fork. The 3 independent tables have no Vertical selector — confirmed EBO-only
+by data (ecomm views carry no product attributes at all). One self-caught bug: a bill-key built with
+literal NUL byte separators (git was treating the file as binary, no diff/review possible) — fixed.
+
+**CRITICAL — `/sales` will show error boundaries until migration 0103 is run** (queries select columns
+that don't exist yet):
+```bash
+MSYS2_ARG_CONV_EXCL="*" PGPASSWORD='<pw>' "/d/Programs/pgsql/bin/psql.exe" -h aws-0-ap-southeast-1.pooler.supabase.com -p 5432 -U postgres.naukfqwjunorzntnzkok -d postgres -v ON_ERROR_STOP=1 -f "server/db/migrations/0103_ebo_sale_attribute_lines_agent_time.sql"
+```
+No browser verification was done (page would only show error boundaries pre-migration, so nothing to
+verify against) — do a full click-through pass after running 0103 and deploying.
 
 ## Next steps (in order)
 
