@@ -521,6 +521,14 @@ async function EboDetailSection({
         </SectionCard>
       </div>
 
+      <SectionErrorBoundary label="Scheme penetration">
+        <Suspense fallback={<SchemePenetrationSkeleton />}>
+          <div className="mt-6">
+            <SchemePenetrationSection supabase={supabase} applyStore={applyStore} from={from} to={to} />
+          </div>
+        </Suspense>
+      </SectionErrorBoundary>
+
       <SectionCard icon={<Users className="h-4 w-4" />} title="Agent-wise sales — EBO" className="mt-6">
         <AgentSalesFacetedTable rows={agentRows} storeNames={Object.fromEntries(storeNames)} />
       </SectionCard>
@@ -1332,14 +1340,6 @@ export default async function SalesPage({
             <Suspense fallback={<FootfallDiagnosisSkeleton />}>
               <div className="mt-8">
                 <FootfallDiagnosisSection supabase={supabase} applyStore={applyStore} from={from} to={to} storeNames={storeNames} today={today} />
-              </div>
-            </Suspense>
-          </SectionErrorBoundary>
-
-          <SectionErrorBoundary label="Scheme penetration">
-            <Suspense fallback={<SchemePenetrationSkeleton />}>
-              <div className="mt-8">
-                <SchemePenetrationSection supabase={supabase} applyStore={applyStore} from={from} to={to} />
               </div>
             </Suspense>
           </SectionErrorBoundary>
