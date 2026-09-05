@@ -29,6 +29,7 @@
  */
 
 import type { SaleLineRow } from "./attributeFilter";
+import { isEossLine } from "./lineAggregates";
 import type { DailyFullRow, WeeklyRow, MonthlyRow } from "./aggregate";
 
 const numOf = (v: number | string | null | undefined): number => {
@@ -44,10 +45,12 @@ type Bucket = {
   gross: number;
   saleNet: number;
   saleQty: number;
+  freshQty: number;
+  eossQty: number;
   billKeys: Set<string>;
 };
 
-const newBucket = (): Bucket => ({ net: 0, gross: 0, saleNet: 0, saleQty: 0, billKeys: new Set() });
+const newBucket = (): Bucket => ({ net: 0, gross: 0, saleNet: 0, saleQty: 0, freshQty: 0, eossQty: 0, billKeys: new Set() });
 
 function accumulate(b: Bucket, l: SaleLineRow) {
   const net = numOf(l.net_amount);
@@ -55,7 +58,14 @@ function accumulate(b: Bucket, l: SaleLineRow) {
   b.gross += numOf(l.gross_amount);
   if (l.bill_type === "SALE") {
     b.saleNet += net;
-    b.saleQty += numOf(l.total_quantity);
+    const q = numOf(l.total_quantity);
+    b.saleQty += q;
+    // Classified PER LINE (0058's discount_ratio rule) and only then summed —
+    // a bucket whose overall discount is 40% can still be half EOSS units.
+    // SALE lines only, same as saleQty; see computeQtySplitFromLines' note on
+    // why returns are excluded rather than netted.
+    if (isEossLine(l)) b.eossQty += q;
+    else b.freshQty += q;
     b.billKeys.add(billKeyOf(l));
   }
 }
@@ -72,6 +82,8 @@ function finish(b: Bucket) {
     atv: bills > 0 ? b.saleNet / bills : null,
     discount_pct: b.gross > 0 ? (100 * discount) / b.gross : null,
     sale_quantity: b.saleQty,
+    fresh_quantity: b.freshQty,
+    eoss_quantity: b.eossQty,
   };
 }
 
@@ -136,6 +148,8 @@ export function linesToWeeklyRows(lines: SaleLineRow[], today: string): WeeklyRo
         discount: f.discount,
         sale_bills: f.sale_bills,
         sale_quantity: f.sale_quantity,
+        fresh_quantity: f.fresh_quantity,
+        eoss_quantity: f.eoss_quantity,
         is_complete_week: week_start ? addDays(week_start, 6) <= today : false,
       };
     })

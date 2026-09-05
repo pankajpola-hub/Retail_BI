@@ -823,6 +823,8 @@ async function TrendTableSection({
           discountPct: w.gross > 0 ? (w.discount / w.gross) * 100 : null,
           bills: w.bills,
           qty: w.qty,
+          freshQty: w.freshQty,
+          eossQty: w.eossQty,
           atv: w.bills > 0 ? w.net / w.bills : null,
           netChangePct: w.netChangePct,
           qtyChangePct: w.qtyChangePct,
@@ -863,6 +865,9 @@ async function TrendTableSection({
         yearly={cur.yearly}
         pageKey="sales_trend"
         defaultGrain={grainForRange(rangeDays(scope.from, scope.to))}
+        // These rows came from LINE grain (lineRollups), so each line was
+        // classified Fresh/EOSS before it was summed — the split is real here.
+        showQtySplit
       />
     </SectionCard>
   );

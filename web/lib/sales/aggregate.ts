@@ -24,6 +24,18 @@ export type WeeklyRow = {
   sale_bills: number | string;
   sale_quantity: number | string;
   is_complete_week: boolean;
+  /**
+   * Fresh / EOSS unit split (2026-09-05). OPTIONAL because the DB views these
+   * types also describe (sales.vw_ebo_sales_daily / _weekly / _monthly) carry
+   * no such column — only lib/sales/lineRollups.ts, which classifies each LINE
+   * by 0058's discount_ratio rule before summing, can supply them. A caller
+   * reading a view leaves them undefined and the builders below treat that as
+   * 0, which is why every /network and Workspace caller is unaffected.
+   *
+   * fresh + eoss = sale_quantity when they are present at all.
+   */
+  fresh_quantity?: number | string;
+  eoss_quantity?: number | string;
 };
 // Full-column daily/monthly rows (2026-08-26, date-grain toggle) — richer
 // than the narrow `DailyRow` above (which only ever fed the trend chart).
@@ -42,6 +54,18 @@ export type DailyFullRow = {
   atv: number | string | null;
   discount_pct: number | string | null;
   sale_quantity: number | string;
+  /**
+   * Fresh / EOSS unit split (2026-09-05). OPTIONAL because the DB views these
+   * types also describe (sales.vw_ebo_sales_daily / _weekly / _monthly) carry
+   * no such column — only lib/sales/lineRollups.ts, which classifies each LINE
+   * by 0058's discount_ratio rule before summing, can supply them. A caller
+   * reading a view leaves them undefined and the builders below treat that as
+   * 0, which is why every /network and Workspace caller is unaffected.
+   *
+   * fresh + eoss = sale_quantity when they are present at all.
+   */
+  fresh_quantity?: number | string;
+  eoss_quantity?: number | string;
 };
 export type MonthlyRow = {
   store_id: string | null;
@@ -54,6 +78,18 @@ export type MonthlyRow = {
   atv: number | string | null;
   discount_pct: number | string | null;
   sale_quantity: number | string;
+  /**
+   * Fresh / EOSS unit split (2026-09-05). OPTIONAL because the DB views these
+   * types also describe (sales.vw_ebo_sales_daily / _weekly / _monthly) carry
+   * no such column — only lib/sales/lineRollups.ts, which classifies each LINE
+   * by 0058's discount_ratio rule before summing, can supply them. A caller
+   * reading a view leaves them undefined and the builders below treat that as
+   * 0, which is why every /network and Workspace caller is unaffected.
+   *
+   * fresh + eoss = sale_quantity when they are present at all.
+   */
+  fresh_quantity?: number | string;
+  eoss_quantity?: number | string;
 };
 export type SchemeDailyRow = { scheme_group: string | null; quantity: number | string | null; net_sales: number | string | null };
 export type HourlyRow = { bill_hour: number | null; net_sales: number | string };
@@ -254,6 +290,9 @@ export type WeekRow = {
   gross: number;
   discount: number;
   bills: number;
+  /** Fresh/EOSS unit split; 0 when the source rows carry none. See WeeklyRow. */
+  freshQty: number;
+  eossQty: number;
   isCompleteWeek: boolean;
   netChangePct: number | null;
   qtyChangePct: number | null;
@@ -263,16 +302,18 @@ export type WeekRow = {
 export function buildWeekSeries(weekRows: WeeklyRow[], storeId: string | null): WeekRow[] {
   const acc = new Map<
     string,
-    { retailWeek: number; weekStart: string; net: number; qty: number; gross: number; discount: number; bills: number; isCompleteWeek: boolean }
+    { retailWeek: number; weekStart: string; net: number; qty: number; freshQty: number; eossQty: number; gross: number; discount: number; bills: number; isCompleteWeek: boolean }
   >();
   for (const w of weekRows) {
     if (!w.week_start || w.retail_week === null || !w.store_id) continue;
     if (storeId !== null && w.store_id !== storeId) continue;
     const cur =
       acc.get(w.week_start) ??
-      { retailWeek: w.retail_week, weekStart: w.week_start, net: 0, qty: 0, gross: 0, discount: 0, bills: 0, isCompleteWeek: w.is_complete_week };
+      { retailWeek: w.retail_week, weekStart: w.week_start, net: 0, qty: 0, freshQty: 0, eossQty: 0, gross: 0, discount: 0, bills: 0, isCompleteWeek: w.is_complete_week };
     cur.net += Number(w.net_sales);
     cur.qty += Number(w.sale_quantity);
+    cur.freshQty += Number(w.fresh_quantity ?? 0);
+    cur.eossQty += Number(w.eoss_quantity ?? 0);
     cur.gross += Number(w.gross_sales);
     cur.discount += Number(w.discount);
     cur.bills += Number(w.sale_bills);
@@ -305,6 +346,9 @@ export type PeriodRow = {
   discountPct: number | null;
   bills: number;
   qty: number;
+  /** Fresh/EOSS unit split of `qty`; both 0 when the source rows carry none. */
+  freshQty: number;
+  eossQty: number;
   atv: number | null;
   netChangePct: number | null;
   qtyChangePct: number | null;
@@ -325,16 +369,18 @@ function periodOverPeriodPct(rows: { net: number; qty: number }[]): { netChangeP
 
 /** One store's (or, storeId=null, network's) day-by-day series with DoD%, from vw_ebo_sales_daily's own already-full rows. */
 export function buildDailyPeriodSeries(dailyRows: DailyFullRow[], storeId: string | null, today: string): PeriodRow[] {
-  const acc = new Map<string, { bills: number; gross: number; discount: number; net: number; qty: number }>();
+  const acc = new Map<string, { bills: number; gross: number; discount: number; net: number; qty: number; freshQty: number; eossQty: number }>();
   for (const d of dailyRows) {
     if (!d.bill_date || !d.store_id) continue;
     if (storeId !== null && d.store_id !== storeId) continue;
-    const cur = acc.get(d.bill_date) ?? { bills: 0, gross: 0, discount: 0, net: 0, qty: 0 };
+    const cur = acc.get(d.bill_date) ?? { bills: 0, gross: 0, discount: 0, net: 0, qty: 0, freshQty: 0, eossQty: 0 };
     cur.bills += Number(d.sale_bills);
     cur.gross += Number(d.gross_sales);
     cur.discount += Number(d.discount);
     cur.net += Number(d.net_sales);
     cur.qty += Number(d.sale_quantity);
+    cur.freshQty += Number(d.fresh_quantity ?? 0);
+    cur.eossQty += Number(d.eoss_quantity ?? 0);
     acc.set(d.bill_date, cur);
   }
   const sorted = [...acc.entries()].sort(([a], [b]) => a.localeCompare(b));
@@ -349,6 +395,8 @@ export function buildDailyPeriodSeries(dailyRows: DailyFullRow[], storeId: strin
     discountPct: v.gross > 0 ? (v.discount / v.gross) * 100 : null,
     bills: v.bills,
     qty: v.qty,
+    freshQty: v.freshQty,
+    eossQty: v.eossQty,
     atv: v.bills > 0 ? v.net / v.bills : null,
     isComplete: date < today,
     ...deltas[i]!,
@@ -357,16 +405,18 @@ export function buildDailyPeriodSeries(dailyRows: DailyFullRow[], storeId: strin
 
 /** One store's (or, storeId=null, network's) month-by-month series with MoM%, from vw_ebo_sales_monthly's own already-full rows. */
 export function buildMonthlyPeriodSeries(monthlyRows: MonthlyRow[], storeId: string | null, todayMonthStart: string): PeriodRow[] {
-  const acc = new Map<string, { bills: number; gross: number; discount: number; net: number; qty: number }>();
+  const acc = new Map<string, { bills: number; gross: number; discount: number; net: number; qty: number; freshQty: number; eossQty: number }>();
   for (const m of monthlyRows) {
     if (!m.month_start || !m.store_id) continue;
     if (storeId !== null && m.store_id !== storeId) continue;
-    const cur = acc.get(m.month_start) ?? { bills: 0, gross: 0, discount: 0, net: 0, qty: 0 };
+    const cur = acc.get(m.month_start) ?? { bills: 0, gross: 0, discount: 0, net: 0, qty: 0, freshQty: 0, eossQty: 0 };
     cur.bills += Number(m.sale_bills);
     cur.gross += Number(m.gross_sales);
     cur.discount += Number(m.discount);
     cur.net += Number(m.net_sales);
     cur.qty += Number(m.sale_quantity);
+    cur.freshQty += Number(m.fresh_quantity ?? 0);
+    cur.eossQty += Number(m.eoss_quantity ?? 0);
     acc.set(m.month_start, cur);
   }
   const sorted = [...acc.entries()].sort(([a], [b]) => a.localeCompare(b));
@@ -381,6 +431,8 @@ export function buildMonthlyPeriodSeries(monthlyRows: MonthlyRow[], storeId: str
     discountPct: v.gross > 0 ? (v.discount / v.gross) * 100 : null,
     bills: v.bills,
     qty: v.qty,
+    freshQty: v.freshQty,
+    eossQty: v.eossQty,
     atv: v.bills > 0 ? v.net / v.bills : null,
     isComplete: monthStart < todayMonthStart,
     ...deltas[i]!,
@@ -396,16 +448,18 @@ export function buildMonthlyPeriodSeries(monthlyRows: MonthlyRow[], storeId: str
  * season across two buckets).
  */
 export function buildYearlyPeriodSeries(monthlyRows: MonthlyRow[], storeId: string | null, currentFinancialYear: string): PeriodRow[] {
-  const acc = new Map<string, { bills: number; gross: number; discount: number; net: number; qty: number }>();
+  const acc = new Map<string, { bills: number; gross: number; discount: number; net: number; qty: number; freshQty: number; eossQty: number }>();
   for (const m of monthlyRows) {
     if (!m.financial_year || !m.store_id) continue;
     if (storeId !== null && m.store_id !== storeId) continue;
-    const cur = acc.get(m.financial_year) ?? { bills: 0, gross: 0, discount: 0, net: 0, qty: 0 };
+    const cur = acc.get(m.financial_year) ?? { bills: 0, gross: 0, discount: 0, net: 0, qty: 0, freshQty: 0, eossQty: 0 };
     cur.bills += Number(m.sale_bills);
     cur.gross += Number(m.gross_sales);
     cur.discount += Number(m.discount);
     cur.net += Number(m.net_sales);
     cur.qty += Number(m.sale_quantity);
+    cur.freshQty += Number(m.fresh_quantity ?? 0);
+    cur.eossQty += Number(m.eoss_quantity ?? 0);
     acc.set(m.financial_year, cur);
   }
   const sorted = [...acc.entries()].sort(([a], [b]) => a.localeCompare(b));
@@ -420,6 +474,8 @@ export function buildYearlyPeriodSeries(monthlyRows: MonthlyRow[], storeId: stri
     discountPct: v.gross > 0 ? (v.discount / v.gross) * 100 : null,
     bills: v.bills,
     qty: v.qty,
+    freshQty: v.freshQty,
+    eossQty: v.eossQty,
     atv: v.bills > 0 ? v.net / v.bills : null,
     isComplete: fy < currentFinancialYear,
     ...deltas[i]!,

@@ -226,7 +226,16 @@ export function computeSchemeFromLines(lines: SaleLineRow[]): SchemeAgg {
 // Agent-wise
 // ---------------------------------------------------------------------------
 
-export type LineAgentRow = { storeId: string; agent: string; bills: number; qty: number; net: number };
+export type LineAgentRow = {
+  storeId: string;
+  agent: string;
+  bills: number;
+  qty: number;
+  net: number;
+  /** Fresh/EOSS split of `qty`, classified per line (see computeQtySplitFromLines). */
+  freshQty: number;
+  eossQty: number;
+};
 
 /**
  * Reproduces sales.vw_ebo_agent_daily + computeAgentRows over lines.
@@ -240,7 +249,10 @@ export type LineAgentRow = { storeId: string; agent: string; bills: number; qty:
  */
 export function computeAgentRowsFromLines(lines: SaleLineRow[]): LineAgentRow[] {
   const cleanAgentName = (name: string) => name.replace(/^\d+\s*-\s*/, "").trim();
-  const byAgent = new Map<string, { storeId: string; agent: string; qty: number; net: number; billKeys: Set<string> }>();
+  const byAgent = new Map<
+    string,
+    { storeId: string; agent: string; qty: number; freshQty: number; eossQty: number; net: number; billKeys: Set<string> }
+  >();
 
   for (const l of lines) {
     if (!isSale(l)) continue;
@@ -250,16 +262,23 @@ export function computeAgentRowsFromLines(lines: SaleLineRow[]): LineAgentRow[] 
     const key = `${sid}::${rawName}`;
     let cur = byAgent.get(key);
     if (!cur) {
-      cur = { storeId: sid, agent: cleanAgentName(rawName), qty: 0, net: 0, billKeys: new Set() };
+      cur = { storeId: sid, agent: cleanAgentName(rawName), qty: 0, freshQty: 0, eossQty: 0, net: 0, billKeys: new Set() };
       byAgent.set(key, cur);
     }
-    cur.qty += numOf(l.total_quantity);
+    const q = numOf(l.total_quantity);
+    cur.qty += q;
+    // Per-line classification, summed per agent — "which of my agents actually
+    // moves full-price stock" is precisely the question an aggregate-then-
+    // classify split would answer wrongly. This loop is already SALE-only, so
+    // the returns treatment matches computeQtySplitFromLines exactly.
+    if (isEossLine(l)) cur.eossQty += q;
+    else cur.freshQty += q;
     cur.net += numOf(l.net_amount);
     cur.billKeys.add(billKeyOf(l));
   }
 
   return [...byAgent.values()]
-    .map(({ storeId, agent, qty, net, billKeys }) => ({ storeId, agent, qty, net, bills: billKeys.size }))
+    .map(({ storeId, agent, qty, freshQty, eossQty, net, billKeys }) => ({ storeId, agent, qty, freshQty, eossQty, net, bills: billKeys.size }))
     .sort((a, b) => b.net - a.net)
     .slice(0, 12);
 }

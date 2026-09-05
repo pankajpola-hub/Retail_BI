@@ -40,20 +40,25 @@ function isSubtotalRow(row: GridRow | undefined): boolean {
   return !!row && !isGroupHeader(row) && (row as PeriodFacetedRow).periodKey === SUBTOTAL_PERIOD_KEY;
 }
 
-function sumPeriodRows(rows: PeriodFacetedRow[]): Pick<PeriodFacetedRow, "net" | "gross" | "discount" | "bills" | "qty"> {
-  let net = 0, gross = 0, discount = 0, bills = 0, qty = 0;
+function sumPeriodRows(rows: PeriodFacetedRow[]): Pick<PeriodFacetedRow, "net" | "gross" | "discount" | "bills" | "qty" | "freshQty" | "eossQty"> {
+  let net = 0, gross = 0, discount = 0, bills = 0, qty = 0, freshQty = 0, eossQty = 0;
   for (const r of rows) {
     net += r.net;
     gross += r.gross;
     discount += r.discount;
     bills += r.bills;
     qty += r.qty;
+    // Already classified per line upstream (lib/sales/lineRollups.ts) — a
+    // subtotal only ever ADDS two already-correct buckets, it never
+    // re-classifies an aggregate.
+    freshQty += r.freshQty;
+    eossQty += r.eossQty;
   }
-  return { net, gross, discount, bills, qty };
+  return { net, gross, discount, bills, qty, freshQty, eossQty };
 }
 
 function buildSubtotalRow(rows: PeriodFacetedRow[], seq: number): PeriodFacetedRow {
-  const { net, gross, discount, bills, qty } = sumPeriodRows(rows);
+  const { net, gross, discount, bills, qty, freshQty, eossQty } = sumPeriodRows(rows);
   return {
     storeId: `${SUBTOTAL_PERIOD_KEY}:${seq}`,
     storeName: "Subtotal",
@@ -66,6 +71,8 @@ function buildSubtotalRow(rows: PeriodFacetedRow[], seq: number): PeriodFacetedR
     discountPct: gross > 0 ? (discount / gross) * 100 : null,
     bills,
     qty,
+    freshQty,
+    eossQty,
     atv: bills > 0 ? net / bills : null,
     netChangePct: null,
     qtyChangePct: null,
@@ -196,6 +203,7 @@ export function PeriodSalesFacetedTable({
   yearly,
   pageKey = PAGE_KEY,
   defaultGrain = "weekly",
+  showQtySplit = false,
 }: {
   daily: PeriodFacetedRow[];
   weekly: PeriodFacetedRow[];
@@ -209,6 +217,18 @@ export function PeriodSalesFacetedTable({
    * ever disabled.
    */
   defaultGrain?: Grain;
+  /**
+   * Split the Qty column into Fresh / EOSS / Total.
+   *
+   * OFF by default and an explicit prop rather than "do the rows carry a
+   * non-zero split": a row-set can legitimately be 100% EOSS, so zero Fresh
+   * units is a real answer, indistinguishable by inspection from "this source
+   * cannot classify". Only a caller reading LINE grain (/sales' trend table,
+   * via lib/sales/lineRollups.ts) can classify at all; the Workspace caller
+   * reads the pre-aggregated weekly view, which carries no per-line discount,
+   * so it leaves this off and keeps the single Qty column.
+   */
+  showQtySplit?: boolean;
   /**
    * Keys saved facet/group-by views (FacetFilterBar). Optional, defaults to
    * this file's own PAGE_KEY ("sales_period") so the one existing caller
@@ -240,12 +260,18 @@ export function PeriodSalesFacetedTable({
       { key: "discount", label: "Discount", get: (r) => r.discount, numeric: true },
       { key: "discountPct", label: "Discount %", get: (r) => r.discountPct, numeric: true },
       { key: "bills", label: "Sale Bills", get: (r) => r.bills, numeric: true },
-      { key: "qty", label: "Qty", get: (r) => r.qty, numeric: true },
+      ...(showQtySplit
+        ? ([
+            { key: "freshQty", label: "Fresh qty", get: (r: PeriodFacetedRow) => r.freshQty, numeric: true },
+            { key: "eossQty", label: "EOSS qty", get: (r: PeriodFacetedRow) => r.eossQty, numeric: true },
+          ] as AdvField<PeriodFacetedRow>[])
+        : []),
+      { key: "qty", label: showQtySplit ? "Total qty" : "Qty", get: (r) => r.qty, numeric: true },
       { key: "qtyChangePct", label: "Qty change %", get: (r) => r.qtyChangePct, numeric: true },
       { key: "atv", label: "ATV", get: (r) => r.atv, numeric: true },
       { key: "isComplete", label: "Period complete?", get: (r) => (r.isComplete ? "Yes" : "No") },
     ],
-    []
+    [showQtySplit]
   );
 
   const groupByOptions = useMemo(() => [{ key: "store", label: "Store" }], []);
@@ -286,12 +312,16 @@ export function PeriodSalesFacetedTable({
     let discount = 0;
     let bills = 0;
     let qty = 0;
+    let freshQty = 0;
+    let eossQty = 0;
     for (const r of source) {
       net += r.net;
       gross += r.gross;
       discount += r.discount;
       bills += r.bills;
       qty += r.qty;
+      freshQty += r.freshQty;
+      eossQty += r.eossQty;
     }
 
     return [
@@ -307,6 +337,8 @@ export function PeriodSalesFacetedTable({
         discountPct: gross > 0 ? (discount / gross) * 100 : null,
         bills,
         qty,
+        freshQty,
+        eossQty,
         atv: bills > 0 ? net / bills : null,
         netChangePct: null,
         qtyChangePct: null,
@@ -362,7 +394,42 @@ export function PeriodSalesFacetedTable({
       { field: "gross", headerName: "Gross", flex: 0.9, sortable: true, cellClass: "text-right font-mono", headerClass: "text-right", valueFormatter: (p) => INR(p.value) },
       { field: "discountPct", headerName: "Discount %", flex: 0.8, sortable: true, cellClass: "text-right font-mono", headerClass: "text-right", valueFormatter: (p) => (p.value === null ? "—" : `${p.value.toFixed(1)}%`) },
       { field: "bills", headerName: "Bills", flex: 0.6, sortable: true, cellClass: "text-right font-mono", headerClass: "text-right" },
-      { field: "qty", headerName: "Qty", flex: 0.6, sortable: true, cellClass: "text-right font-mono", headerClass: "text-right" },
+      // Fresh / EOSS / Total (2026-09-05) replacing the single Qty column
+      // wherever the rows came from LINE grain. Classification is 0058's
+      // default discount_ratio rule applied to each LINE before it reaches
+      // this table (lib/sales/lineRollups.ts); nothing here re-derives it, and
+      // Fresh + EOSS always equals Total.
+      ...(showQtySplit
+        ? ([
+            {
+              field: "freshQty",
+              headerName: "Fresh qty",
+              flex: 0.65,
+              sortable: true,
+              cellClass: "text-right font-mono",
+              headerClass: "text-right",
+              headerTooltip: "Units on lines discounted less than 49.5% of gross — the same Fresh rule the Targets tracker uses.",
+            },
+            {
+              field: "eossQty",
+              headerName: "EOSS qty",
+              flex: 0.65,
+              sortable: true,
+              cellClass: "text-right font-mono",
+              headerClass: "text-right",
+              headerTooltip: "Units on lines discounted 49.5% of gross or more — what Targets calls Discounted.",
+            },
+          ] as ColDef<PeriodFacetedRow>[])
+        : []),
+      {
+        field: "qty",
+        headerName: showQtySplit ? "Total qty" : "Qty",
+        flex: showQtySplit ? 0.65 : 0.6,
+        sortable: true,
+        cellClass: "text-right font-mono",
+        headerClass: "text-right",
+        headerTooltip: showQtySplit ? "Fresh + EOSS. Sale bills only, not netted against returns." : undefined,
+      },
       {
         field: "qtyChangePct",
         headerName: "Qty change",
@@ -375,7 +442,7 @@ export function PeriodSalesFacetedTable({
       { field: "atv", headerName: "ATV", flex: 0.8, sortable: true, cellClass: "text-right font-mono", headerClass: "text-right", valueFormatter: (p) => (p.value === null ? "—" : INR(p.value)) },
     ];
     return defs;
-  }, []);
+  }, [showQtySplit]);
 
   return (
     <>

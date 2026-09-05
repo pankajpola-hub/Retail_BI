@@ -357,6 +357,15 @@ function deriveSalesComponentData(
       discountPct: w.gross > 0 ? (w.discount / w.gross) * 100 : null,
       bills: w.bills,
       qty: w.qty,
+      // 0 here, not a computed split: this path reads the pre-aggregated
+      // sales.vw_ebo_sales_weekly, which carries no discount per LINE, so
+      // there is nothing to classify. buildWeekSeries passes 0 through, and
+      // this caller leaves PeriodSalesFacetedTable's showQtySplit off, so the
+      // table renders the single "Qty" column it always did rather than an
+      // invented "all Fresh" reading. /sales' own trend table reads lines and
+      // does get the real split. (Workspace parity is tracked as D-05.)
+      freshQty: w.freshQty,
+      eossQty: w.eossQty,
       atv: w.bills > 0 ? w.net / w.bills : null,
       netChangePct: w.netChangePct,
       qtyChangePct: w.qtyChangePct,
