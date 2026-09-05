@@ -21,13 +21,14 @@ import {
   buildDailyPeriodSeries,
   buildMonthlyPeriodSeries,
   buildYearlyPeriodSeries,
+  grainForRange,
   type WeeklyRow,
   type SchemeDailyRow,
 } from "@/lib/sales/aggregate";
 import { computeFootfallInsights, type ConversionRow, type CompletenessRow } from "@/lib/network/footfall";
 import { MatrixCell, TrafficSalesCell } from "@/components/ui/FootfallMatrixCells";
 import { Pill } from "@/components/ui/Pill";
-import { PeriodSalesFacetedTable, grainForRange, type PeriodFacetedRow } from "./PeriodSalesFacetedTable";
+import { PeriodSalesFacetedTable, type PeriodFacetedRow } from "./PeriodSalesFacetedTable";
 import { EcommChannelFacetedTable, type EcommChannelRow } from "./EcommChannelFacetedTable";
 import { ProductAttributeSalesTable } from "./ProductAttributeSalesTable";
 import type { SaleAttributeLineRow } from "@/lib/sales/attributeBreakdown";

@@ -13,6 +13,36 @@
  * ground truth it cross-derives the semantic layer's catalogue against.
  */
 
+/**
+ * Period-table grain, and the "which grain should this range open on"
+ * heuristic. Lives here — a plain library module — rather than in
+ * PeriodSalesFacetedTable.tsx (its original home): that file is "use client",
+ * and app/(ho)/sales/page.tsx's TrendTableSection is a SERVER component that
+ * calls grainForRange() at render time. Importing a plain function from a
+ * "use client" module into server code gets you a client-reference proxy,
+ * not the function itself — it type-checks and builds fine, then throws
+ * "TypeError: ... is not a function" the moment a real request executes it
+ * (confirmed live on /sales, 2026-09-05). Pure helpers callable from both
+ * server and client code must not live in a "use client" file.
+ */
+export type Grain = "daily" | "weekly" | "monthly" | "yearly";
+
+/**
+ * Which grain to OPEN on for a range of `days` — a starting point, never a
+ * restriction. Every tab stays clickable at every range size: a 7-day range
+ * shown Yearly is a legitimate thing to ask for (one row, the FY-to-date
+ * slice of it), and hard-disabling tabs would take that away to prevent
+ * nothing. The thresholds are the point at which the NEXT grain up stops
+ * producing a readable number of rows (≈14 daily rows, ≈13 weekly, ≈13
+ * monthly) rather than a rule about the data.
+ */
+export function grainForRange(days: number): Grain {
+  if (days <= 14) return "daily";
+  if (days <= 92) return "weekly";
+  if (days <= 400) return "monthly";
+  return "yearly";
+}
+
 export type DailyRow = { store_id: string | null; bill_date: string | null; net_sales: number | string };
 export type WeeklyRow = {
   week_start: string | null;

@@ -14,7 +14,7 @@ import {
   type FacetFilterState,
   type GroupHeaderRow,
 } from "@/components/ui/FacetFilterBar";
-import type { PeriodRow } from "@/lib/sales/aggregate";
+import type { PeriodRow, Grain } from "@/lib/sales/aggregate";
 
 const PAGE_KEY = "sales_period";
 const INR = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
@@ -154,25 +154,8 @@ function networkGroupLast(rows: GridRow[]): GridRow[] {
   return network.length > 0 ? [...rest, ...network] : rows;
 }
 
-export type Grain = "daily" | "weekly" | "monthly" | "yearly";
 const GRAIN_LABELS: Record<Grain, string> = { daily: "Daily", weekly: "Weekly", monthly: "Monthly", yearly: "Yearly" };
 const GRAINS: Grain[] = ["daily", "weekly", "monthly", "yearly"];
-
-/**
- * Which grain to OPEN on for a range of `days` — a starting point, never a
- * restriction. Every tab stays clickable at every range size: a 7-day range
- * shown Yearly is a legitimate thing to ask for (one row, the FY-to-date
- * slice of it), and hard-disabling tabs would take that away to prevent
- * nothing. The thresholds are the point at which the NEXT grain up stops
- * producing a readable number of rows (≈14 daily rows, ≈13 weekly, ≈13
- * monthly) rather than a rule about the data.
- */
-export function grainForRange(days: number): Grain {
-  if (days <= 14) return "daily";
-  if (days <= 92) return "weekly";
-  if (days <= 400) return "monthly";
-  return "yearly";
-}
 
 /** WoW/DoD/MoM/YoY% cell — trend glyph alongside color, not color alone. */
 function ChangeCell({ value }: { value: number | null }) {
