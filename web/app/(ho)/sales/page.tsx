@@ -31,7 +31,6 @@ import { PeriodSalesFacetedTable, type PeriodFacetedRow } from "./PeriodSalesFac
 import { EcommChannelFacetedTable, type EcommChannelRow } from "./EcommChannelFacetedTable";
 import { ProductAttributeSalesTable } from "./ProductAttributeSalesTable";
 import type { SaleAttributeLineRow } from "@/lib/sales/attributeBreakdown";
-import { AttributeFilterBar } from "./AttributeFilterBar";
 import { HourlyWithComparison, SchemePenetrationBars, StoreLeagueComparison } from "./EboAttributeBlockViews";
 import {
   SALE_LINE_SELECT,
@@ -39,7 +38,6 @@ import {
   buildAttributeOptions,
   describeAttributeSelection,
   isAttributeSelectionEmpty,
-  parseAttributeSelection,
   type SaleLineRow,
 } from "@/lib/sales/attributeFilter";
 import {
@@ -101,14 +99,23 @@ export const dynamic = "force-dynamic";
 /**
  * URL param prefixes, one per independent filter surface on this page.
  *
- * Four AttributeFilterBar instances and three self-contained tables all write
- * their state to the same URL, so each needs its own namespace or they clobber
- * each other. Same fix and same reasoning as movement/page.tsx's `mix_` prefix
+ * Every independently-filterable block writes its state to the same URL, so
+ * each needs its own namespace or they clobber each other. Same fix and same reasoning as movement/page.tsx's `mix_` prefix
  * — see AttributeFilterBar's header. Collected here rather than inlined so the
  * whole set is visible at once and a new one can't accidentally duplicate an
  * existing prefix.
  */
 const SHARED_ATTR_PREFIX = "attr_";
+/**
+ * The shared block (Net sales by day / Hour of day / Store league / Scheme
+ * penetration) owns a full scope of its own — Location + Period + Compare +
+ * Attributes — rather than only the attribute bar SHARED_ATTR_PREFIX used to
+ * carry. SHARED_ATTR_PREFIX is kept as that block's prefix so a URL already
+ * carrying `attr_cat=...` keeps working; the new date/store/compare params
+ * land in the SAME namespace, which is what lets one TableScopeBar drive all
+ * four controls for the block. See resolveTableScope's fallback rule.
+ */
+const SHARED_BLOCK_PREFIX = SHARED_ATTR_PREFIX;
 const PERIOD_TABLE_PREFIX = "periodTable_";
 const AGENT_TABLE_PREFIX = "agentTable_";
 const ATTR_TABLE_PREFIX = "attrTable_";
@@ -568,33 +575,29 @@ function fetchSaleLines(
  * to stay usable. It also means changing a filter re-renders from one fetch
  * per window rather than issuing a new query per facet click.
  *
- * COMPARISON IS SCOPED TO THIS BLOCK. The comparison window drives only these
- * four displays; the period table, agent-wise, product-attribute and footfall
- * sections below each own their own comparison state and are unaffected by
- * this one.
+ * SCOPE IS SCOPED TO THIS BLOCK. Location, Period, Compare and Attributes are
+ * all this block's own (2026-09-05, item 3) — it used to take the PAGE-level
+ * dates and store selection as props and own only the attribute bar. The
+ * period table, agent-wise, product-attribute and footfall sections below each
+ * own their own and are unaffected by this one. ONE TableScopeBar drives all
+ * four sub-displays, deliberately: they are read as one block, and forking the
+ * bar per sub-display was explicitly not the merged design.
  */
 async function EboAttributeBlockSection({
   supabase,
-  applyStore,
-  from,
-  to,
-  compareFrom,
-  compareTo,
+  scope,
   storeNames,
+  storeOptions,
   paramPrefix,
-  selection,
 }: {
   supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
-  applyStore: ApplyStore;
-  from: string;
-  to: string;
-  compareFrom: string | null;
-  compareTo: string | null;
+  scope: ReturnType<typeof resolveTableScope>;
   storeNames: Map<string, string>;
+  storeOptions: string[];
   paramPrefix: string;
-  selection: ReturnType<typeof parseAttributeSelection>;
 }) {
-  const comparing = Boolean(compareFrom && compareTo);
+  const { from, to, compareFrom, compareTo, comparing, selection } = scope;
+  const applyStore = applyStoreFor(scope.storeFilters);
 
   const [lines, compareLines] = await timeAll("sales:ebo_attribute_block", [
     fetchSaleLines(supabase, applyStore, from, to),
@@ -624,7 +627,21 @@ async function EboAttributeBlockSection({
 
   return (
     <>
-      <AttributeFilterBar paramPrefix={paramPrefix} selection={selection} options={options} />
+      {/* ONE bar for all four sub-displays — Location, Period, Compare and the
+          eight attribute facets, all in this block's own param namespace. */}
+      <TableScopeBar
+        paramPrefix={paramPrefix}
+        from={from}
+        to={to}
+        compareFrom={compareFrom}
+        compareTo={compareTo}
+        storeOptions={storeOptions}
+        storeLabels={Object.fromEntries(storeNames)}
+        storeFilters={scope.storeFilters}
+        selection={selection}
+        options={options}
+        overridden={scope.overridden}
+      />
 
       {/* States what the filter actually did, as a fact on screen rather than
           something to infer from the bar — same "Showing:" convention the
@@ -1740,14 +1757,10 @@ export default async function SalesPage({
               <div className="mt-4">
                 <EboAttributeBlockSection
                   supabase={supabase}
-                  applyStore={applyStore}
-                  from={from}
-                  to={to}
-                  compareFrom={compareFrom}
-                  compareTo={compareTo}
+                  scope={resolveTableScope(searchParams, SHARED_BLOCK_PREFIX, pageScope)}
                   storeNames={storeNames}
-                  paramPrefix={SHARED_ATTR_PREFIX}
-                  selection={parseAttributeSelection(searchParams, SHARED_ATTR_PREFIX)}
+                  storeOptions={storeOptionIds}
+                  paramPrefix={SHARED_BLOCK_PREFIX}
                 />
               </div>
             </Suspense>
