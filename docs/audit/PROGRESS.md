@@ -797,6 +797,97 @@ layered on top of whatever's built by then, touching 3 places).
 
 Not yet scoped into an agent brief — do that fresh next session (this one is near its context limit).
 
+### 2026-09-05 — Sales page follow-up: all 4 items built (item 4 for one block, by design)
+
+Agent worktree `.claude/worktrees/agent-a28e5db143a496f71`, branch `master` (worktree-local),
+4 commits, `tsc --noEmit` + `next build` clean after each. NOT merged, NOT pushed.
+
+**Built**
+
+1. **Item 3 — shared block gets its own scope** (`38d58a1`). The Hourly / Store League / Scheme
+   Penetration block (plus Net sales by day) took the PAGE-level dates and store selection as props
+   and owned only its attribute bar. It now resolves a full `TableScope` of its own and renders ONE
+   `TableScopeBar` carrying Location + Period + Compare + the eight attribute facets for all four
+   sub-displays — one bar, not one per sub-display, per the merged design.
+
+2. **Item 1 — the period table split in two** (`1858751`). `PeriodTableSection` became
+   "Sales trend by period" (grain toggle, adjacent-row change %, comparison control removed
+   OUTRIGHT including the inherited page-level one) and "Period comparison" (no grain toggle, no
+   calendar buckets at all, whole-range total vs whole-range total, both ranges through the SAME
+   attribute selection). This is what structurally kills the "-94.4%" reading. The trend table
+   opens on the grain that suits its range (`grainForRange`) but no tab is ever disabled.
+
+3. **Item 2 — Fresh / EOSS / Total qty** (`d22c800`). Three columns replacing the single Qty, on
+   "Sales trend by period" and "Agent-wise sales"; three cards on "Period comparison". 0058's
+   DEFAULT `discount_ratio` branch verbatim (`gross = 0 or discount/gross < 0.495` -> Fresh),
+   classified PER LINE then summed.
+
+4. **Item 4 — client-fetched block, one block** (`d3b373d`). "Period comparison" commits filter
+   changes to local state and reloads only itself through a Server Action
+   (`web/app/(ho)/sales/actions.ts`); nothing else on the page re-renders.
+
+**Deviations from the brief, all measured**
+
+* **NO MIGRATION 0104. Step 0 was dropped after checking the schema, not skipped.**
+  `raw_logic.sales_transactions` has NO `discount_amount` column — it never did (0004's CREATE
+  TABLE, +0024/0030/0090's ALTERs). Every `discount_amount` in this schema is DERIVED, and the
+  canonical form (0094's `vw_ebo_sales_lines`, which is exactly what 0058 reads as
+  `l.discount_amount`) is `gross_amount - coalesce(net_amount, gross_amount)`. The attribute-lines
+  view's `net_amount` column is ALREADY `coalesce(st.net_amount, st.gross_amount)` (0092), and
+  `SALE_LINE_SELECT` already selects both — so `gross - net` computed in TS is that expression
+  byte-for-byte, not an approximation. A stored column would have been a second definition of a
+  pure function of two columns already fetched, and — the practical half — it would have put
+  `/sales` behind an unrun migration again, exactly as 0103 did. **There is no migration to run for
+  this work. `/sales` works against the live DB as soon as it is deployed.**
+* **`sharedBlock_` prefix not introduced.** The shared block reuses its existing `attr_` namespace
+  for its new date/store/compare params. A new prefix would have orphaned the attribute params
+  already living there, and one namespace is what lets a single `TableScopeBar` own all four
+  controls for that block.
+* **`periodTable_` kept for the trend half** rather than a new `TREND_TABLE_PREFIX` value, so an
+  existing bookmarked URL still lands on the half that kept the old behaviour. The comparison half
+  is new and gets `compareTable_`.
+* **"Period comparison" renders `TableCompareStrip`, not a table.** The brief asked for a single
+  total-vs-total row by default and pointed at that component; a grouped-by-attribute variant is
+  NOT built (noted below).
+* **RETURN lines are EXCLUDED from the Fresh/EOSS split, not netted.** Stated in
+  `computeQtySplitFromLines`' own comment as required. Two reasons: (a) `totalQty` must equal the
+  Qty column it replaces, which has always been SALE-only (`vw_ebo_sales_daily.sale_quantity`,
+  `computeTotalsFromLines`, `lineRollups.accumulate`), so netting would silently move a published
+  number while appearing to only add columns beside it; (b) a return's own discount ratio can
+  classify it into the OPPOSITE bucket from the unit it reverses, and there is no
+  bill-to-original-bill link in this view to do it correctly — netting would add a unit to one
+  bucket while removing one from the other.
+* The `scheme_lookup` branch of `fresh_disc_classification_source` is NOT implemented (out of
+  scope, and this view carries no `raw_logic.scheme_lookup` join). Called out in code as a known
+  divergence if an admin ever switches that setting on.
+
+**NOT done / follow-ups**
+
+* **Item 4 is done for ONE block only**, as the brief permitted. Still searchParams-driven, each
+  fully working the old way (no block is half-converted): the shared EBO block, Sales trend by
+  period, Agent-wise sales, Product attribute breakdown, Footfall & diagnosis. The pattern is
+  proven and reusable — `onCommit` already exists on `DateRangePicker`,
+  `ComparisonDateRangePicker`, `MultiSelectFilter`, `AttributeFilterBar` and `TableScopeBar`, and
+  the wire format (the params the controls already build -> `resolveTableScope` server-side) means
+  no second scope parser. What each remaining block needs is its own action returning its own
+  (much larger) row payload. Stopped here because those payloads, not the plumbing, are the work.
+* **"Period comparison" has no dimension breakdown.** Brief said default to one total row and group
+  by a selected attribute "if the user wants" — only the default is built.
+* **Workspace's period table still shows a single Qty column.** It reads the pre-aggregated
+  `vw_ebo_sales_weekly`, which carries no per-line discount, so it CANNOT classify;
+  `PeriodSalesFacetedTable`'s `showQtySplit` is off there rather than showing an invented
+  "all Fresh". Same for /network's agent table. Tracked with D-05 (Workspace parity).
+* **No browser verification.** Not possible from the agent worktree (no dev server, no session);
+  `tsc` + `next build` are clean and there is no migration gating the page this time, so a normal
+  click-through after merge + deploy is all that is needed.
+* Confirmed no other consumer breaks: the view definition is UNCHANGED, so
+  `lib/workspace/renderProductAttributeComponent.tsx` and every other reader are untouched.
+  `lib/sales/aggregate.ts`'s row types gained OPTIONAL `fresh_quantity`/`eoss_quantity` and its
+  `PeriodRow`/`WeekRow` gained required `freshQty`/`eossQty` (defaulted to 0 from view-backed
+  sources); the one other producer, `lib/workspace/renderSalesComponents.tsx`, was updated.
+* The worktree has `web/node_modules` as a junction to the main repo's copy so the agent could
+  build. It is gitignored; delete it if it gets in the way.
+
 ## Next steps (in order)
 
 1. Wait for the 5 in-flight agents to report back (background notifications will arrive).
