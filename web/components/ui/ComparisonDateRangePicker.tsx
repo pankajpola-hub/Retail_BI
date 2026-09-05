@@ -41,6 +41,7 @@ export function ComparisonDateRangePicker({
   compareTo,
   onApply,
   paramPrefix = "",
+  onCommit,
 }: {
   from: string;
   to: string;
@@ -64,6 +65,14 @@ export function ComparisonDateRangePicker({
    * Ignored when `onApply` is supplied, since that path writes no URL at all.
    */
   paramPrefix?: string;
+  /**
+   * Like `onApply`, but hands over the whole prefixed URLSearchParams this
+   * picker would have navigated to rather than the two dates (2026-09-05, for
+   * /sales' client-fetched blocks — see DateRangePicker's own note). `onApply`
+   * wins if both are given; Workspace's saved-filter path predates this and
+   * stays exactly as it was.
+   */
+  onCommit?: (params: URLSearchParams) => void;
 }) {
   const active = Boolean(compareFrom && compareTo);
   const [open, setOpen] = useState(false);
@@ -105,7 +114,8 @@ export function ComparisonDateRangePicker({
       params.delete(`${paramPrefix}compareFrom`);
       params.delete(`${paramPrefix}compareTo`);
     }
-    router.push(`${pathname}?${params.toString()}`);
+    if (onCommit) onCommit(params);
+    else router.push(`${pathname}?${params.toString()}`);
     setOpen(false);
   }
 

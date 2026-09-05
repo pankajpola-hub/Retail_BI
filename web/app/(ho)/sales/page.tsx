@@ -45,13 +45,15 @@ import {
   computeHourlyFromLines,
   computeLeagueFromLines,
   computeSchemeFromLines,
-  computeQtySplitFromLines,
   computeTotalsFromLines,
   computeTrendFromLines,
 } from "@/lib/sales/lineAggregates";
 import { linesToDailyRows, linesToWeeklyRows, linesToMonthlyRows } from "@/lib/sales/lineRollups";
-import { resolveTableScope } from "@/lib/sales/tableScope";
+import { resolveTableScope, type SearchParamsShape } from "@/lib/sales/tableScope";
 import { TableScopeBar } from "./TableScopeBar";
+import { TableCompareStrip } from "./TableCompareStrip";
+import { PeriodComparisonBlock } from "./PeriodComparisonBlock";
+import { loadPeriodComparison, type PageScopeInput } from "./actions";
 
 /**
  * Card wrapper (2026-08-26 polish pass) — same token pattern KpiCard
@@ -872,9 +874,8 @@ async function TrendTableSection({
     </SectionCard>
   );
 }
-
 /**
- * "Period comparison — EBO" (2026-09-05, item 1, second half): a genuine
+ * "Period comparison — EBO" (2026-09-05, items 1 + 4): a genuine
  * Current-range vs Compare-range reading, and NOTHING ELSE.
  *
  * No grain toggle and no calendar buckets AT ALL — that is the whole design.
@@ -883,89 +884,37 @@ async function TrendTableSection({
  * user actually meant when the old table's adjacent-row change column answered
  * a different question with a confident-looking "-94.4%".
  *
- * BOTH RANGES ARE SCOPED BY THE SAME ATTRIBUTE SELECTION (scope.selection,
- * applied to both line sets by loadTableLines) — a hard requirement, not a
- * nicety: comparing "DRESSES this month" against "everything last month"
+ * BOTH RANGES ARE SCOPED BY THE SAME ATTRIBUTE SELECTION — a hard requirement,
+ * not a nicety: comparing "DRESSES this month" against "everything last month"
  * would be a wrong number with nothing visibly broken.
  *
- * The rows are TableCompareStrip, the same total-vs-total shape the other
- * tables' compare strips already render, rather than a new table component:
- * one total row is the default the brief asked for, and a fifth bespoke
- * rendering of "two totals side by side" would be one more thing to keep in
- * step with DeltaBadge's pp/invert conventions.
+ * THIS IS THE ONE CLIENT-FETCHED BLOCK ON THE PAGE (item 4). All this server
+ * component does is produce the block's INITIAL data — through the very same
+ * Server Action the block calls on every later filter change, so there is one
+ * definition of this block's data rather than a server one and a client one.
+ * See PeriodComparisonBlock.tsx and actions.ts for the pattern and its
+ * trade-offs; every other block on this page is still searchParams-driven.
  */
 async function PeriodComparisonSection({
-  supabase,
-  scope,
+  searchParams,
+  pageScope,
   storeNames,
   storeOptions,
 }: {
-  supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
-  scope: ReturnType<typeof resolveTableScope>;
+  searchParams: SearchParamsShape;
+  pageScope: PageScopeInput;
   storeNames: Map<string, string>;
   storeOptions: string[];
 }) {
-  const { options, filtered, filteredCompare } = await loadTableLines(supabase, scope, "sales:period_comparison");
-  const curTotals = computeTotalsFromLines(filtered);
-  const curSplit = computeQtySplitFromLines(filtered);
-  const cmpTotals = scope.comparing ? computeTotalsFromLines(filteredCompare) : null;
-  const cmpSplit = scope.comparing ? computeQtySplitFromLines(filteredCompare) : null;
-
+  const initial = await loadPeriodComparison(searchParams, COMPARE_TABLE_PREFIX, pageScope);
   return (
-    <SectionCard
-      icon={<CalendarRange className="h-4 w-4" />}
-      title="Period comparison — EBO"
-      subtitle="Whole-range total vs whole-range total. Never bucketed by calendar period, so a full month and a part month compare as the two totals they are."
-      className="mt-6"
-    >
-      <TableScopeBar
-        paramPrefix={COMPARE_TABLE_PREFIX}
-        from={scope.from}
-        to={scope.to}
-        compareFrom={scope.compareFrom}
-        compareTo={scope.compareTo}
-        storeOptions={storeOptions}
-        storeLabels={Object.fromEntries(storeNames)}
-        storeFilters={scope.storeFilters}
-        selection={scope.selection}
-        options={options}
-        overridden={scope.overridden}
-        compareHint="Both ranges are narrowed by the SAME attribute filter above, so the comparison stays like-for-like."
-      />
-      {cmpTotals && cmpSplit ? (
-        <>
-          <TableCompareStrip
-            current={curTotals}
-            comparison={cmpTotals}
-            compareFrom={scope.compareFrom as string}
-            compareTo={scope.compareTo as string}
-          />
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <KpiCard
-              label="Fresh qty"
-              value={curSplit.freshQty.toLocaleString("en-IN")}
-              delta={<DeltaBadge current={curSplit.freshQty} previous={cmpSplit.freshQty} baselineLabel={`vs ${cmpSplit.freshQty.toLocaleString("en-IN")}`} />}
-            />
-            <KpiCard
-              label="EOSS qty"
-              value={curSplit.eossQty.toLocaleString("en-IN")}
-              delta={<DeltaBadge current={curSplit.eossQty} previous={cmpSplit.eossQty} baselineLabel={`vs ${cmpSplit.eossQty.toLocaleString("en-IN")}`} />}
-            />
-            <KpiCard
-              label="Total qty"
-              value={curSplit.totalQty.toLocaleString("en-IN")}
-              delta={<DeltaBadge current={curSplit.totalQty} previous={cmpSplit.totalQty} baselineLabel={`vs ${cmpSplit.totalQty.toLocaleString("en-IN")}`} />}
-              sub="Fresh + EOSS"
-            />
-          </div>
-        </>
-      ) : (
-        <p className="border border-line-soft bg-surface-2 px-3 py-6 text-center text-[12.5px] text-ink-3">
-          Set a <strong>Compare</strong> range above (Previous period, Previous year, or any custom range) to see this
-          range&apos;s totals against it.
-        </p>
-      )}
-    </SectionCard>
+    <PeriodComparisonBlock
+      initial={initial}
+      prefix={COMPARE_TABLE_PREFIX}
+      pageScope={pageScope}
+      storeOptions={storeOptions}
+      storeLabels={Object.fromEntries(storeNames)}
+    />
   );
 }
 
@@ -1015,67 +964,6 @@ async function AgentTableSection({
       )}
       <AgentSalesFacetedTable rows={agentRows} storeNames={Object.fromEntries(storeNames)} />
     </SectionCard>
-  );
-}
-
-/**
- * Totals strip shown above a self-contained table while ITS OWN comparison is
- * active. Recomputed from summed parts for both windows by the same function
- * (computeTotalsFromLines), never a second parallel formula — the rule
- * rollUpCore and computeSalesTotals already follow for the page-level strips.
- */
-function TableCompareStrip({
-  current,
-  comparison,
-  compareFrom,
-  compareTo,
-}: {
-  current: ReturnType<typeof computeTotalsFromLines>;
-  comparison: ReturnType<typeof computeTotalsFromLines>;
-  compareFrom: string;
-  compareTo: string;
-}) {
-  return (
-    <div className="mb-3">
-      <p className="mb-2 text-[11.5px] text-ink-3">
-        This table only — vs {compareFrom} – {compareTo}
-      </p>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <KpiCard
-          label="Net sales"
-          value={INR(current.net)}
-          delta={<DeltaBadge current={current.net} previous={comparison.net} baselineLabel={`vs ${INR(comparison.net)}`} />}
-        />
-        <KpiCard
-          label="Sale bills"
-          value={current.bills.toLocaleString("en-IN")}
-          delta={<DeltaBadge current={current.bills} previous={comparison.bills} baselineLabel={`vs ${comparison.bills.toLocaleString("en-IN")}`} />}
-        />
-        <KpiCard
-          label="Units"
-          value={current.qty.toLocaleString("en-IN")}
-          delta={<DeltaBadge current={current.qty} previous={comparison.qty} baselineLabel={`vs ${comparison.qty.toLocaleString("en-IN")}`} />}
-        />
-        <KpiCard
-          label="ATV"
-          value={current.atv !== null ? INR(current.atv) : "—"}
-          delta={<DeltaBadge current={current.atv} previous={comparison.atv} baselineLabel={comparison.atv !== null ? `vs ${INR(comparison.atv)}` : "vs —"} />}
-        />
-        <KpiCard
-          label="Discount %"
-          value={current.discountPct !== null ? `${current.discountPct.toFixed(1)}%` : "—"}
-          delta={
-            <DeltaBadge
-              current={current.discountPct}
-              previous={comparison.discountPct}
-              mode="pp"
-              invert
-              baselineLabel={comparison.discountPct !== null ? `vs ${comparison.discountPct.toFixed(1)}%` : "vs —"}
-            />
-          }
-        />
-      </div>
-    </div>
   );
 }
 
@@ -1939,8 +1827,8 @@ export default async function SalesPage({
             <Suspense fallback={<ProductAttributeSkeleton />}>
               <div className="mt-6">
                 <PeriodComparisonSection
-                  supabase={supabase}
-                  scope={resolveTableScope(searchParams, COMPARE_TABLE_PREFIX, pageScope)}
+                  searchParams={searchParams}
+                  pageScope={pageScope}
                   storeNames={storeNames}
                   storeOptions={storeOptionIds}
                 />

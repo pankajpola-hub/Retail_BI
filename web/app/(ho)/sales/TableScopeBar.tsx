@@ -48,6 +48,8 @@ export function TableScopeBar({
   showLocation = true,
   showCompare = true,
   compareHint,
+  onCommit,
+  pending = false,
 }: {
   paramPrefix: string;
   from: string;
@@ -83,6 +85,19 @@ export function TableScopeBar({
   showCompare?: boolean;
   /** Overrides the "Compare to…" copy where the baseline means something more specific. */
   compareHint?: string;
+  /**
+   * Turns this bar from a NAVIGATING control into a CONTROLLED one
+   * (2026-09-05). Every control below builds the same prefixed
+   * URLSearchParams it always did; with `onCommit` it hands that over instead
+   * of calling router.push, so the owning block can re-fetch just itself
+   * through a Server Action. The params are still the interchange format on
+   * purpose: the block passes them straight back to resolveTableScope
+   * server-side, so there is exactly ONE parser for a block's scope whether it
+   * came from the URL or from a click.
+   */
+  onCommit?: (params: URLSearchParams) => void;
+  /** Shows a "Updating…" note in the bar while an onCommit fetch is in flight. */
+  pending?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -90,10 +105,14 @@ export function TableScopeBar({
 
   /** Drops every param this bar owns, returning the table to the page scope. */
   function resetToPageScope() {
-    window.dispatchEvent(new Event("progressbar:start"));
+    if (!onCommit) window.dispatchEvent(new Event("progressbar:start"));
     const params = new URLSearchParams(searchParams.toString());
     for (const key of ["from", "to", "store", "compareFrom", "compareTo"]) params.delete(`${paramPrefix}${key}`);
     for (const facet of ATTRIBUTE_FACETS) params.delete(`${paramPrefix}${facet.param}`);
+    if (onCommit) {
+      onCommit(params);
+      return;
+    }
     // push() only — see StoreFilter's onChange for the refresh() race.
     router.push(`${pathname}?${params.toString()}`);
   }
@@ -116,6 +135,7 @@ export function TableScopeBar({
             // this, clearing the picker would silently snap back to the
             // page's store selection instead of clearing.
             clearAsEmptyParam
+            onCommit={onCommit}
           />
         </div>
         )}
@@ -125,7 +145,7 @@ export function TableScopeBar({
         <div>
           <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-3">Period</div>
           <div className="flex flex-wrap items-center gap-2">
-            <DateRangePicker from={from} to={to} paramPrefix={paramPrefix} />
+            <DateRangePicker from={from} to={to} paramPrefix={paramPrefix} onCommit={onCommit} />
             {showCompare && (
               <ComparisonDateRangePicker
                 from={from}
@@ -133,6 +153,7 @@ export function TableScopeBar({
                 compareFrom={compareFrom}
                 compareTo={compareTo}
                 paramPrefix={paramPrefix}
+                onCommit={onCommit}
               />
             )}
           </div>
@@ -140,6 +161,7 @@ export function TableScopeBar({
         </div>
 
         <div className="ml-auto flex items-center gap-2 text-[11px]">
+          {pending && <span className="text-ink-3">Updating…</span>}
           <span className={overridden ? "text-accent-ink" : "text-ink-3"}>
             {overridden ? "Independent scope" : "Following page scope"}
           </span>
@@ -153,7 +175,7 @@ export function TableScopeBar({
 
       {showAttributes && selection && options && (
         <div className="mt-1.5">
-          <AttributeFilterBar paramPrefix={paramPrefix} selection={selection} options={options} />
+          <AttributeFilterBar paramPrefix={paramPrefix} selection={selection} options={options} onCommit={onCommit} />
         </div>
       )}
     </div>

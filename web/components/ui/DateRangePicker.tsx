@@ -43,6 +43,7 @@ export function DateRangePicker({
   from,
   to,
   paramPrefix = "",
+  onCommit,
 }: {
   from: string;
   to: string;
@@ -54,6 +55,15 @@ export function DateRangePicker({
    * as movement/page.tsx's `mix_`.
    */
   paramPrefix?: string;
+  /**
+   * Intercepts the commit (2026-09-05). When supplied, this picker builds the
+   * SAME URLSearchParams it would have navigated to and hands it over instead
+   * of calling router.push — so a block that fetches its own data through a
+   * Server Action can read its new range out of it without a page navigation,
+   * and without this component growing a second, parallel notion of "what
+   * changed". Absent (every pre-existing caller), behaviour is unchanged.
+   */
+  onCommit?: (params: URLSearchParams) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [customFrom, setCustomFrom] = useState(from);
@@ -84,6 +94,11 @@ export function DateRangePicker({
     const params = new URLSearchParams(searchParams.toString());
     params.set(`${paramPrefix}from`, newFrom);
     params.set(`${paramPrefix}to`, newTo);
+    if (onCommit) {
+      onCommit(params);
+      setOpen(false);
+      return;
+    }
     // Deliberately push() ONLY, no refresh() — see StoreFilter.tsx's
     // onChange for the full writeup. A prior version here called
     // router.refresh() right after push() (even tried wrapping both in one

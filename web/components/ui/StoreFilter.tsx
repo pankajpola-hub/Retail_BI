@@ -145,6 +145,7 @@ export function MultiSelectFilter({
   clearAsEmptyParam = false,
   searchable = false,
   counts,
+  onCommit,
 }: {
   paramName: string;
   options: string[];
@@ -191,6 +192,16 @@ export function MultiSelectFilter({
    * the plain label, unchanged.
    */
   counts?: Record<string, number>;
+  /**
+   * Intercepts the commit (2026-09-05). When supplied, this filter builds the
+   * SAME URLSearchParams it would have navigated to and hands it over instead
+   * of calling router.push, so a block that fetches its own data through a
+   * Server Action can react without a page navigation. It also skips the
+   * TopProgressBar signal — that bar means "the page is navigating", which is
+   * exactly what this path does NOT do; the block shows its own local pending
+   * state instead. Absent (every pre-existing caller), behaviour is unchanged.
+   */
+  onCommit?: (params: URLSearchParams) => void;
 }) {
   const labelFor = (value: string) => labels?.[value] ?? value;
   const router = useRouter();
@@ -217,12 +228,16 @@ export function MultiSelectFilter({
     // The checkbox popover's Apply/outside-click commit is a <button>/click
     // deep in a dropdown, not a link or <select> — the closest listeners
     // TopProgressBar already has — so it needs its own explicit signal.
-    window.dispatchEvent(new Event("progressbar:start"));
+    if (!onCommit) window.dispatchEvent(new Event("progressbar:start"));
     const params = new URLSearchParams(searchParams.toString());
     if (values.length === 0) {
       if (clearAsEmptyParam) params.set(paramName, "");
       else params.delete(paramName);
     } else params.set(paramName, values.join(","));
+    if (onCommit) {
+      onCommit(params);
+      return;
+    }
     // See StoreFilter's onChange above for why there's no router.refresh()
     // — this is the component behind the "Sinhgad Road still shows Undri's
     // numbers" report: the filter WAS applying (confirmed live: URL
