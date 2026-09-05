@@ -265,6 +265,89 @@ export function computeAgentRowsFromLines(lines: SaleLineRow[]): LineAgentRow[] 
 }
 
 // ---------------------------------------------------------------------------
+// Fresh / EOSS classification
+// ---------------------------------------------------------------------------
+
+/**
+ * The ERP rounds to whole rupees, which lands real "FLAT 50% OFF" lines at
+ * 49.94%-50.00% of gross. 0025 widened the threshold to 0.495 to absorb that
+ * and every Fresh/Discounted view since (0032, 0058) carries the same number.
+ * Do NOT "tidy" this to 0.5 — see 0025's header.
+ */
+const EOSS_DISCOUNT_RATIO = 0.495;
+
+/**
+ * Is this ONE line EOSS (what /targets calls "Discounted")?
+ *
+ * Copied from core.app_settings.fresh_disc_classification_source's DEFAULT
+ * 'discount_ratio' branch (0058, which is 0023 + 0025's tolerance):
+ *
+ *   gross_amount = 0 OR discount_amount / gross_amount < 0.495  -> Fresh
+ *   otherwise                                                   -> Discounted
+ *
+ * The other branch, 'scheme_lookup', is an admin-configurable alternative set
+ * on the Targets page and is deliberately NOT implemented here: it needs
+ * raw_logic.scheme_lookup joined per item_code, which this view does not
+ * carry. If that setting is ever switched on, these columns will disagree with
+ * the Targets tracker — stated here rather than discovered later.
+ *
+ * discount_amount is NOT a column on sales.vw_ebo_sale_attribute_lines and
+ * does not need to be. The canonical definition everywhere in this schema
+ * (0094's vw_ebo_sales_lines, which 0058 reads) is
+ * `gross_amount - coalesce(net_amount, gross_amount)`, and this view's
+ * net_amount column is ALREADY `coalesce(st.net_amount, st.gross_amount)`
+ * (0092) — so gross - net computed here is that expression exactly, not an
+ * approximation of it. Adding a stored column would have been a second
+ * definition of a pure function of two columns already present.
+ *
+ * CLASSIFICATION IS PER LINE, then summed — never "sum the range, then
+ * classify". A range whose overall discount is 40% can still be half EOSS
+ * units, and the aggregate would hide every one of them.
+ */
+export function isEossLine(l: SaleLineRow): boolean {
+  const gross = numOf(l.gross_amount);
+  if (gross === 0) return false;
+  const discount = gross - numOf(l.net_amount);
+  return discount / gross >= EOSS_DISCOUNT_RATIO;
+}
+
+export type QtySplit = { freshQty: number; eossQty: number; totalQty: number };
+
+/**
+ * Fresh / EOSS / Total unit split for a line set.
+ *
+ * RETURN LINES ARE EXCLUDED, NOT NETTED — a deliberate choice, per the brief's
+ * instruction to decide rather than default. Two reasons:
+ *
+ *   1. `totalQty` here must equal the "Qty" column these three replace, and
+ *      that column has ALWAYS been SALE-only (computeTotalsFromLines,
+ *      lineRollups' accumulate(), vw_ebo_sales_daily's own sale_quantity).
+ *      Netting returns in would silently move an existing published number
+ *      while appearing to only add two columns beside it.
+ *   2. A return's Fresh/EOSS bucket is not reliably its original sale's. The
+ *      credited amount can differ from the sold amount, so a return line's own
+ *      discount ratio can classify it into the opposite bucket from the unit
+ *      it is reversing — netting it would then ADD a unit to one bucket while
+ *      removing one from the other. There is no bill-to-original-bill link in
+ *      this view to do it correctly.
+ *
+ * This does mean a heavy-return window shows a Total qty above the units that
+ * stayed sold. That is exactly what the existing Qty column already showed;
+ * the money columns beside it (net, all bill types) still net returns off.
+ */
+export function computeQtySplitFromLines(lines: SaleLineRow[]): QtySplit {
+  let freshQty = 0;
+  let eossQty = 0;
+  for (const l of lines) {
+    if (!isSale(l)) continue;
+    const q = numOf(l.total_quantity);
+    if (isEossLine(l)) eossQty += q;
+    else freshQty += q;
+  }
+  return { freshQty, eossQty, totalQty: freshQty + eossQty };
+}
+
+// ---------------------------------------------------------------------------
 // Daily trend + headline totals
 // ---------------------------------------------------------------------------
 

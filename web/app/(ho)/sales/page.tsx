@@ -27,7 +27,7 @@ import {
 import { computeFootfallInsights, type ConversionRow, type CompletenessRow } from "@/lib/network/footfall";
 import { MatrixCell, TrafficSalesCell } from "@/components/ui/FootfallMatrixCells";
 import { Pill } from "@/components/ui/Pill";
-import { PeriodSalesFacetedTable, type PeriodFacetedRow } from "./PeriodSalesFacetedTable";
+import { PeriodSalesFacetedTable, grainForRange, type PeriodFacetedRow } from "./PeriodSalesFacetedTable";
 import { EcommChannelFacetedTable, type EcommChannelRow } from "./EcommChannelFacetedTable";
 import { ProductAttributeSalesTable } from "./ProductAttributeSalesTable";
 import type { SaleAttributeLineRow } from "@/lib/sales/attributeBreakdown";
@@ -45,6 +45,7 @@ import {
   computeHourlyFromLines,
   computeLeagueFromLines,
   computeSchemeFromLines,
+  computeQtySplitFromLines,
   computeTotalsFromLines,
   computeTrendFromLines,
 } from "@/lib/sales/lineAggregates";
@@ -116,7 +117,12 @@ const SHARED_ATTR_PREFIX = "attr_";
  * four controls for the block. See resolveTableScope's fallback rule.
  */
 const SHARED_BLOCK_PREFIX = SHARED_ATTR_PREFIX;
-const PERIOD_TABLE_PREFIX = "periodTable_";
+// "periodTable_" split in two (2026-09-05). TREND_TABLE_PREFIX keeps the old
+// name so any bookmarked ?periodTable_from=... still lands on the trend table,
+// which is the half that kept the old behaviour; the comparison half is new
+// and gets a new namespace.
+const TREND_TABLE_PREFIX = "periodTable_";
+const COMPARE_TABLE_PREFIX = "compareTable_";
 const AGENT_TABLE_PREFIX = "agentTable_";
 const ATTR_TABLE_PREFIX = "attrTable_";
 const FOOTFALL_PREFIX = "footfall_";
@@ -736,9 +742,23 @@ async function loadTableLines(
 const storesInLines = (lines: SaleLineRow[]) =>
   [...new Set(lines.map((l) => l.store_id).filter((s): s is string => Boolean(s)))].sort();
 
+/** Inclusive day count of a range — what the trend table's opening grain is chosen from. */
+const rangeDays = (from: string, to: string) =>
+  Math.max(1, Math.round((new Date(`${to}T00:00:00Z`).getTime() - new Date(`${from}T00:00:00Z`).getTime()) / 86400000) + 1);
+
 /**
- * "Sales value & quantity by period — EBO", now self-contained: its own
- * Location, Period, comparison period and attribute filter, its own query.
+ * "Sales trend by period — EBO" (2026-09-05, item 1, first half of the old
+ * PeriodTableSection): consecutive periods within ONE range, with the
+ * period-over-period change between ADJACENT ROWS. Own Location, Period and
+ * attribute filter, its own query.
+ *
+ * NO COMPARISON RANGE, deliberately — this is the fix, not an omission. The
+ * old single table carried both readings at once: rows bucketed by calendar
+ * period with a row-to-row "Net change %", AND a range-vs-range compare strip.
+ * Reading a full month's row against a 4-day partial month's row produced the
+ * reported "-94.4%", which is arithmetically correct and answers a question
+ * nobody asked. Range-vs-range moved to "Period comparison" below, which has
+ * no calendar buckets at all, so the two readings can no longer be confused.
  *
  * The four grain builders in lib/sales/aggregate.ts are reused UNCHANGED —
  * lib/sales/lineRollups.ts folds the filtered lines back into the exact row
@@ -749,9 +769,9 @@ const storesInLines = (lines: SaleLineRow[]) =>
  * views, sort, subtotal footers) is untouched: only where its rows come from
  * has changed.
  */
-async function PeriodTableSection({
+async function TrendTableSection({
   supabase,
-  scope,
+  scope: rawScope,
   storeNames,
   storeOptions,
   today,
@@ -762,7 +782,12 @@ async function PeriodTableSection({
   storeOptions: string[];
   today: Date;
 }) {
-  const { options, filtered, filteredCompare } = await loadTableLines(supabase, scope, "sales:period_table");
+  // Comparison is forced off for this table, including the inherited
+  // page-level one — otherwise a page-level compare range would silently
+  // re-introduce the second reading this split exists to remove, and would
+  // also cost a second line-grain fetch nothing renders.
+  const scope = { ...rawScope, compareFrom: null, compareTo: null, comparing: false };
+  const { options, filtered } = await loadTableLines(supabase, scope, "sales:trend_table");
 
   const todayStr = isoDate(today);
   const todayMonthStart = todayStr.slice(0, 7) + "-01";
@@ -810,13 +835,86 @@ async function PeriodTableSection({
   };
 
   const cur = buildFor(filtered);
-  const cmp = scope.comparing ? computeTotalsFromLines(filteredCompare) : null;
-  const curTotals = computeTotalsFromLines(filtered);
 
   return (
-    <SectionCard icon={<CalendarRange className="h-4 w-4" />} title="Sales value & quantity by period — EBO">
+    <SectionCard
+      icon={<CalendarRange className="h-4 w-4" />}
+      title="Sales trend by period — EBO"
+      subtitle="Consecutive periods inside ONE range. The change column compares each row with the row above it (DoD / WoW / MoM / YoY) — for a range-vs-range comparison use the Period comparison table below."
+    >
       <TableScopeBar
-        paramPrefix={PERIOD_TABLE_PREFIX}
+        paramPrefix={TREND_TABLE_PREFIX}
+        from={scope.from}
+        to={scope.to}
+        compareFrom={null}
+        compareTo={null}
+        storeOptions={storeOptions}
+        storeLabels={Object.fromEntries(storeNames)}
+        storeFilters={scope.storeFilters}
+        selection={scope.selection}
+        options={options}
+        overridden={scope.overridden}
+        showCompare={false}
+      />
+      <PeriodSalesFacetedTable
+        daily={cur.daily}
+        weekly={cur.weekly}
+        monthly={cur.monthly}
+        yearly={cur.yearly}
+        pageKey="sales_trend"
+        defaultGrain={grainForRange(rangeDays(scope.from, scope.to))}
+      />
+    </SectionCard>
+  );
+}
+
+/**
+ * "Period comparison — EBO" (2026-09-05, item 1, second half): a genuine
+ * Current-range vs Compare-range reading, and NOTHING ELSE.
+ *
+ * No grain toggle and no calendar buckets AT ALL — that is the whole design.
+ * A whole-range sum on each side means a full month vs a 4-day month can only
+ * ever read as "this range's total vs that range's total", which is what the
+ * user actually meant when the old table's adjacent-row change column answered
+ * a different question with a confident-looking "-94.4%".
+ *
+ * BOTH RANGES ARE SCOPED BY THE SAME ATTRIBUTE SELECTION (scope.selection,
+ * applied to both line sets by loadTableLines) — a hard requirement, not a
+ * nicety: comparing "DRESSES this month" against "everything last month"
+ * would be a wrong number with nothing visibly broken.
+ *
+ * The rows are TableCompareStrip, the same total-vs-total shape the other
+ * tables' compare strips already render, rather than a new table component:
+ * one total row is the default the brief asked for, and a fifth bespoke
+ * rendering of "two totals side by side" would be one more thing to keep in
+ * step with DeltaBadge's pp/invert conventions.
+ */
+async function PeriodComparisonSection({
+  supabase,
+  scope,
+  storeNames,
+  storeOptions,
+}: {
+  supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
+  scope: ReturnType<typeof resolveTableScope>;
+  storeNames: Map<string, string>;
+  storeOptions: string[];
+}) {
+  const { options, filtered, filteredCompare } = await loadTableLines(supabase, scope, "sales:period_comparison");
+  const curTotals = computeTotalsFromLines(filtered);
+  const curSplit = computeQtySplitFromLines(filtered);
+  const cmpTotals = scope.comparing ? computeTotalsFromLines(filteredCompare) : null;
+  const cmpSplit = scope.comparing ? computeQtySplitFromLines(filteredCompare) : null;
+
+  return (
+    <SectionCard
+      icon={<CalendarRange className="h-4 w-4" />}
+      title="Period comparison — EBO"
+      subtitle="Whole-range total vs whole-range total. Never bucketed by calendar period, so a full month and a part month compare as the two totals they are."
+      className="mt-6"
+    >
+      <TableScopeBar
+        paramPrefix={COMPARE_TABLE_PREFIX}
         from={scope.from}
         to={scope.to}
         compareFrom={scope.compareFrom}
@@ -827,9 +925,41 @@ async function PeriodTableSection({
         selection={scope.selection}
         options={options}
         overridden={scope.overridden}
+        compareHint="Both ranges are narrowed by the SAME attribute filter above, so the comparison stays like-for-like."
       />
-      {cmp && <TableCompareStrip current={curTotals} comparison={cmp} compareFrom={scope.compareFrom as string} compareTo={scope.compareTo as string} />}
-      <PeriodSalesFacetedTable daily={cur.daily} weekly={cur.weekly} monthly={cur.monthly} yearly={cur.yearly} />
+      {cmpTotals && cmpSplit ? (
+        <>
+          <TableCompareStrip
+            current={curTotals}
+            comparison={cmpTotals}
+            compareFrom={scope.compareFrom as string}
+            compareTo={scope.compareTo as string}
+          />
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <KpiCard
+              label="Fresh qty"
+              value={curSplit.freshQty.toLocaleString("en-IN")}
+              delta={<DeltaBadge current={curSplit.freshQty} previous={cmpSplit.freshQty} baselineLabel={`vs ${cmpSplit.freshQty.toLocaleString("en-IN")}`} />}
+            />
+            <KpiCard
+              label="EOSS qty"
+              value={curSplit.eossQty.toLocaleString("en-IN")}
+              delta={<DeltaBadge current={curSplit.eossQty} previous={cmpSplit.eossQty} baselineLabel={`vs ${cmpSplit.eossQty.toLocaleString("en-IN")}`} />}
+            />
+            <KpiCard
+              label="Total qty"
+              value={curSplit.totalQty.toLocaleString("en-IN")}
+              delta={<DeltaBadge current={curSplit.totalQty} previous={cmpSplit.totalQty} baselineLabel={`vs ${cmpSplit.totalQty.toLocaleString("en-IN")}`} />}
+              sub="Fresh + EOSS"
+            />
+          </div>
+        </>
+      ) : (
+        <p className="border border-line-soft bg-surface-2 px-3 py-6 text-center text-[12.5px] text-ink-3">
+          Set a <strong>Compare</strong> range above (Previous period, Previous year, or any custom range) to see this
+          range&apos;s totals against it.
+        </p>
+      )}
     </SectionCard>
   );
 }
@@ -1786,15 +1916,28 @@ export default async function SalesPage({
               own query, and streams in its own Suspense boundary — so one
               table's wide date range cannot hold up the others. An untouched
               table still follows the page scope; see resolveTableScope. */}
-          <SectionErrorBoundary label="Period table">
+          <SectionErrorBoundary label="Sales trend by period">
             <Suspense fallback={<ProductAttributeSkeleton />}>
               <div className="mt-6">
-                <PeriodTableSection
+                <TrendTableSection
                   supabase={supabase}
-                  scope={resolveTableScope(searchParams, PERIOD_TABLE_PREFIX, pageScope)}
+                  scope={resolveTableScope(searchParams, TREND_TABLE_PREFIX, pageScope)}
                   storeNames={storeNames}
                   storeOptions={storeOptionIds}
                   today={today}
+                />
+              </div>
+            </Suspense>
+          </SectionErrorBoundary>
+
+          <SectionErrorBoundary label="Period comparison">
+            <Suspense fallback={<ProductAttributeSkeleton />}>
+              <div className="mt-6">
+                <PeriodComparisonSection
+                  supabase={supabase}
+                  scope={resolveTableScope(searchParams, COMPARE_TABLE_PREFIX, pageScope)}
+                  storeNames={storeNames}
+                  storeOptions={storeOptionIds}
                 />
               </div>
             </Suspense>

@@ -147,9 +147,25 @@ function networkGroupLast(rows: GridRow[]): GridRow[] {
   return network.length > 0 ? [...rest, ...network] : rows;
 }
 
-type Grain = "daily" | "weekly" | "monthly" | "yearly";
+export type Grain = "daily" | "weekly" | "monthly" | "yearly";
 const GRAIN_LABELS: Record<Grain, string> = { daily: "Daily", weekly: "Weekly", monthly: "Monthly", yearly: "Yearly" };
 const GRAINS: Grain[] = ["daily", "weekly", "monthly", "yearly"];
+
+/**
+ * Which grain to OPEN on for a range of `days` — a starting point, never a
+ * restriction. Every tab stays clickable at every range size: a 7-day range
+ * shown Yearly is a legitimate thing to ask for (one row, the FY-to-date
+ * slice of it), and hard-disabling tabs would take that away to prevent
+ * nothing. The thresholds are the point at which the NEXT grain up stops
+ * producing a readable number of rows (≈14 daily rows, ≈13 weekly, ≈13
+ * monthly) rather than a rule about the data.
+ */
+export function grainForRange(days: number): Grain {
+  if (days <= 14) return "daily";
+  if (days <= 92) return "weekly";
+  if (days <= 400) return "monthly";
+  return "yearly";
+}
 
 /** WoW/DoD/MoM/YoY% cell — trend glyph alongside color, not color alone. */
 function ChangeCell({ value }: { value: number | null }) {
@@ -179,11 +195,20 @@ export function PeriodSalesFacetedTable({
   monthly,
   yearly,
   pageKey = PAGE_KEY,
+  defaultGrain = "weekly",
 }: {
   daily: PeriodFacetedRow[];
   weekly: PeriodFacetedRow[];
   monthly: PeriodFacetedRow[];
   yearly: PeriodFacetedRow[];
+  /**
+   * Which tab to OPEN on. Defaults to "weekly" — what this table always did,
+   * so the Workspace caller is unaffected. /sales passes grainForRange(...)
+   * so a short range opens Daily instead of a 1-row Weekly view. It seeds
+   * useState only: the user's own tab click wins from then on, and no tab is
+   * ever disabled.
+   */
+  defaultGrain?: Grain;
   /**
    * Keys saved facet/group-by views (FacetFilterBar). Optional, defaults to
    * this file's own PAGE_KEY ("sales_period") so the one existing caller
@@ -195,7 +220,7 @@ export function PeriodSalesFacetedTable({
    */
   pageKey?: string;
 }) {
-  const [grain, setGrain] = useState<Grain>("weekly");
+  const [grain, setGrain] = useState<Grain>(defaultGrain);
   // Grouped by Store by default (2026-08-27): a flat list ran one store's
   // period rows straight into the next with no visual break. The user can
   // still drop or add group-by keys from the filter bar.

@@ -46,6 +46,7 @@ export function TableScopeBar({
   overridden,
   showAttributes = true,
   showLocation = true,
+  showCompare = true,
   compareHint,
 }: {
   paramPrefix: string;
@@ -71,6 +72,15 @@ export function TableScopeBar({
    */
   showAttributes?: boolean;
   showLocation?: boolean;
+  /**
+   * "Sales trend by period" opts out. That table's rows ARE consecutive
+   * periods and its change column is already period-over-period between
+   * adjacent rows — a second, range-vs-range comparison on the same table is
+   * what made the two readings impossible to tell apart (the "-94.4%" report:
+   * a full month against a 4-day sliver). Range-vs-range now lives in its own
+   * "Period comparison" table, which never buckets by calendar period at all.
+   */
+  showCompare?: boolean;
   /** Overrides the "Compare to…" copy where the baseline means something more specific. */
   compareHint?: string;
 }) {
@@ -116,13 +126,15 @@ export function TableScopeBar({
           <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-3">Period</div>
           <div className="flex flex-wrap items-center gap-2">
             <DateRangePicker from={from} to={to} paramPrefix={paramPrefix} />
-            <ComparisonDateRangePicker
-              from={from}
-              to={to}
-              compareFrom={compareFrom}
-              compareTo={compareTo}
-              paramPrefix={paramPrefix}
-            />
+            {showCompare && (
+              <ComparisonDateRangePicker
+                from={from}
+                to={to}
+                compareFrom={compareFrom}
+                compareTo={compareTo}
+                paramPrefix={paramPrefix}
+              />
+            )}
           </div>
           {compareHint && <p className="mt-1 text-[11px] text-ink-3">{compareHint}</p>}
         </div>
