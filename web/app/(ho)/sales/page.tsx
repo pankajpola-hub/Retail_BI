@@ -27,11 +27,10 @@ import {
 import { computeFootfallInsights, type ConversionRow, type CompletenessRow } from "@/lib/network/footfall";
 import { MatrixCell, TrafficSalesCell } from "@/components/ui/FootfallMatrixCells";
 import { Pill } from "@/components/ui/Pill";
-import { PeriodSalesFacetedTable, type PeriodFacetedRow } from "./PeriodSalesFacetedTable";
+import { PeriodSalesFacetedTable, grainForRange, type PeriodFacetedRow } from "./PeriodSalesFacetedTable";
 import { EcommChannelFacetedTable, type EcommChannelRow } from "./EcommChannelFacetedTable";
 import { ProductAttributeSalesTable } from "./ProductAttributeSalesTable";
 import type { SaleAttributeLineRow } from "@/lib/sales/attributeBreakdown";
-import { AttributeFilterBar } from "./AttributeFilterBar";
 import { HourlyWithComparison, SchemePenetrationBars, StoreLeagueComparison } from "./EboAttributeBlockViews";
 import {
   SALE_LINE_SELECT,
@@ -39,7 +38,6 @@ import {
   buildAttributeOptions,
   describeAttributeSelection,
   isAttributeSelectionEmpty,
-  parseAttributeSelection,
   type SaleLineRow,
 } from "@/lib/sales/attributeFilter";
 import {
@@ -51,8 +49,11 @@ import {
   computeTrendFromLines,
 } from "@/lib/sales/lineAggregates";
 import { linesToDailyRows, linesToWeeklyRows, linesToMonthlyRows } from "@/lib/sales/lineRollups";
-import { resolveTableScope } from "@/lib/sales/tableScope";
+import { resolveTableScope, type SearchParamsShape } from "@/lib/sales/tableScope";
 import { TableScopeBar } from "./TableScopeBar";
+import { TableCompareStrip } from "./TableCompareStrip";
+import { PeriodComparisonBlock } from "./PeriodComparisonBlock";
+import { loadPeriodComparison, type PageScopeInput } from "./actions";
 
 /**
  * Card wrapper (2026-08-26 polish pass) — same token pattern KpiCard
@@ -101,15 +102,29 @@ export const dynamic = "force-dynamic";
 /**
  * URL param prefixes, one per independent filter surface on this page.
  *
- * Four AttributeFilterBar instances and three self-contained tables all write
- * their state to the same URL, so each needs its own namespace or they clobber
- * each other. Same fix and same reasoning as movement/page.tsx's `mix_` prefix
+ * Every independently-filterable block writes its state to the same URL, so
+ * each needs its own namespace or they clobber each other. Same fix and same reasoning as movement/page.tsx's `mix_` prefix
  * — see AttributeFilterBar's header. Collected here rather than inlined so the
  * whole set is visible at once and a new one can't accidentally duplicate an
  * existing prefix.
  */
 const SHARED_ATTR_PREFIX = "attr_";
-const PERIOD_TABLE_PREFIX = "periodTable_";
+/**
+ * The shared block (Net sales by day / Hour of day / Store league / Scheme
+ * penetration) owns a full scope of its own — Location + Period + Compare +
+ * Attributes — rather than only the attribute bar SHARED_ATTR_PREFIX used to
+ * carry. SHARED_ATTR_PREFIX is kept as that block's prefix so a URL already
+ * carrying `attr_cat=...` keeps working; the new date/store/compare params
+ * land in the SAME namespace, which is what lets one TableScopeBar drive all
+ * four controls for the block. See resolveTableScope's fallback rule.
+ */
+const SHARED_BLOCK_PREFIX = SHARED_ATTR_PREFIX;
+// "periodTable_" split in two (2026-09-05). TREND_TABLE_PREFIX keeps the old
+// name so any bookmarked ?periodTable_from=... still lands on the trend table,
+// which is the half that kept the old behaviour; the comparison half is new
+// and gets a new namespace.
+const TREND_TABLE_PREFIX = "periodTable_";
+const COMPARE_TABLE_PREFIX = "compareTable_";
 const AGENT_TABLE_PREFIX = "agentTable_";
 const ATTR_TABLE_PREFIX = "attrTable_";
 const FOOTFALL_PREFIX = "footfall_";
@@ -568,33 +583,29 @@ function fetchSaleLines(
  * to stay usable. It also means changing a filter re-renders from one fetch
  * per window rather than issuing a new query per facet click.
  *
- * COMPARISON IS SCOPED TO THIS BLOCK. The comparison window drives only these
- * four displays; the period table, agent-wise, product-attribute and footfall
- * sections below each own their own comparison state and are unaffected by
- * this one.
+ * SCOPE IS SCOPED TO THIS BLOCK. Location, Period, Compare and Attributes are
+ * all this block's own (2026-09-05, item 3) — it used to take the PAGE-level
+ * dates and store selection as props and own only the attribute bar. The
+ * period table, agent-wise, product-attribute and footfall sections below each
+ * own their own and are unaffected by this one. ONE TableScopeBar drives all
+ * four sub-displays, deliberately: they are read as one block, and forking the
+ * bar per sub-display was explicitly not the merged design.
  */
 async function EboAttributeBlockSection({
   supabase,
-  applyStore,
-  from,
-  to,
-  compareFrom,
-  compareTo,
+  scope,
   storeNames,
+  storeOptions,
   paramPrefix,
-  selection,
 }: {
   supabase: ReturnType<typeof createClient> extends Promise<infer C> ? C : never;
-  applyStore: ApplyStore;
-  from: string;
-  to: string;
-  compareFrom: string | null;
-  compareTo: string | null;
+  scope: ReturnType<typeof resolveTableScope>;
   storeNames: Map<string, string>;
+  storeOptions: string[];
   paramPrefix: string;
-  selection: ReturnType<typeof parseAttributeSelection>;
 }) {
-  const comparing = Boolean(compareFrom && compareTo);
+  const { from, to, compareFrom, compareTo, comparing, selection } = scope;
+  const applyStore = applyStoreFor(scope.storeFilters);
 
   const [lines, compareLines] = await timeAll("sales:ebo_attribute_block", [
     fetchSaleLines(supabase, applyStore, from, to),
@@ -624,7 +635,21 @@ async function EboAttributeBlockSection({
 
   return (
     <>
-      <AttributeFilterBar paramPrefix={paramPrefix} selection={selection} options={options} />
+      {/* ONE bar for all four sub-displays — Location, Period, Compare and the
+          eight attribute facets, all in this block's own param namespace. */}
+      <TableScopeBar
+        paramPrefix={paramPrefix}
+        from={from}
+        to={to}
+        compareFrom={compareFrom}
+        compareTo={compareTo}
+        storeOptions={storeOptions}
+        storeLabels={Object.fromEntries(storeNames)}
+        storeFilters={scope.storeFilters}
+        selection={selection}
+        options={options}
+        overridden={scope.overridden}
+      />
 
       {/* States what the filter actually did, as a fact on screen rather than
           something to infer from the bar — same "Showing:" convention the
@@ -719,9 +744,23 @@ async function loadTableLines(
 const storesInLines = (lines: SaleLineRow[]) =>
   [...new Set(lines.map((l) => l.store_id).filter((s): s is string => Boolean(s)))].sort();
 
+/** Inclusive day count of a range — what the trend table's opening grain is chosen from. */
+const rangeDays = (from: string, to: string) =>
+  Math.max(1, Math.round((new Date(`${to}T00:00:00Z`).getTime() - new Date(`${from}T00:00:00Z`).getTime()) / 86400000) + 1);
+
 /**
- * "Sales value & quantity by period — EBO", now self-contained: its own
- * Location, Period, comparison period and attribute filter, its own query.
+ * "Sales trend by period — EBO" (2026-09-05, item 1, first half of the old
+ * PeriodTableSection): consecutive periods within ONE range, with the
+ * period-over-period change between ADJACENT ROWS. Own Location, Period and
+ * attribute filter, its own query.
+ *
+ * NO COMPARISON RANGE, deliberately — this is the fix, not an omission. The
+ * old single table carried both readings at once: rows bucketed by calendar
+ * period with a row-to-row "Net change %", AND a range-vs-range compare strip.
+ * Reading a full month's row against a 4-day partial month's row produced the
+ * reported "-94.4%", which is arithmetically correct and answers a question
+ * nobody asked. Range-vs-range moved to "Period comparison" below, which has
+ * no calendar buckets at all, so the two readings can no longer be confused.
  *
  * The four grain builders in lib/sales/aggregate.ts are reused UNCHANGED —
  * lib/sales/lineRollups.ts folds the filtered lines back into the exact row
@@ -732,9 +771,9 @@ const storesInLines = (lines: SaleLineRow[]) =>
  * views, sort, subtotal footers) is untouched: only where its rows come from
  * has changed.
  */
-async function PeriodTableSection({
+async function TrendTableSection({
   supabase,
-  scope,
+  scope: rawScope,
   storeNames,
   storeOptions,
   today,
@@ -745,7 +784,12 @@ async function PeriodTableSection({
   storeOptions: string[];
   today: Date;
 }) {
-  const { options, filtered, filteredCompare } = await loadTableLines(supabase, scope, "sales:period_table");
+  // Comparison is forced off for this table, including the inherited
+  // page-level one — otherwise a page-level compare range would silently
+  // re-introduce the second reading this split exists to remove, and would
+  // also cost a second line-grain fetch nothing renders.
+  const scope = { ...rawScope, compareFrom: null, compareTo: null, comparing: false };
+  const { options, filtered } = await loadTableLines(supabase, scope, "sales:trend_table");
 
   const todayStr = isoDate(today);
   const todayMonthStart = todayStr.slice(0, 7) + "-01";
@@ -781,6 +825,8 @@ async function PeriodTableSection({
           discountPct: w.gross > 0 ? (w.discount / w.gross) * 100 : null,
           bills: w.bills,
           qty: w.qty,
+          freshQty: w.freshQty,
+          eossQty: w.eossQty,
           atv: w.bills > 0 ? w.net / w.bills : null,
           netChangePct: w.netChangePct,
           qtyChangePct: w.qtyChangePct,
@@ -793,27 +839,82 @@ async function PeriodTableSection({
   };
 
   const cur = buildFor(filtered);
-  const cmp = scope.comparing ? computeTotalsFromLines(filteredCompare) : null;
-  const curTotals = computeTotalsFromLines(filtered);
 
   return (
-    <SectionCard icon={<CalendarRange className="h-4 w-4" />} title="Sales value & quantity by period — EBO">
+    <SectionCard
+      icon={<CalendarRange className="h-4 w-4" />}
+      title="Sales trend by period — EBO"
+      subtitle="Consecutive periods inside ONE range. The change column compares each row with the row above it (DoD / WoW / MoM / YoY) — for a range-vs-range comparison use the Period comparison table below."
+    >
       <TableScopeBar
-        paramPrefix={PERIOD_TABLE_PREFIX}
+        paramPrefix={TREND_TABLE_PREFIX}
         from={scope.from}
         to={scope.to}
-        compareFrom={scope.compareFrom}
-        compareTo={scope.compareTo}
+        compareFrom={null}
+        compareTo={null}
         storeOptions={storeOptions}
         storeLabels={Object.fromEntries(storeNames)}
         storeFilters={scope.storeFilters}
         selection={scope.selection}
         options={options}
         overridden={scope.overridden}
+        showCompare={false}
       />
-      {cmp && <TableCompareStrip current={curTotals} comparison={cmp} compareFrom={scope.compareFrom as string} compareTo={scope.compareTo as string} />}
-      <PeriodSalesFacetedTable daily={cur.daily} weekly={cur.weekly} monthly={cur.monthly} yearly={cur.yearly} />
+      <PeriodSalesFacetedTable
+        daily={cur.daily}
+        weekly={cur.weekly}
+        monthly={cur.monthly}
+        yearly={cur.yearly}
+        pageKey="sales_trend"
+        defaultGrain={grainForRange(rangeDays(scope.from, scope.to))}
+        // These rows came from LINE grain (lineRollups), so each line was
+        // classified Fresh/EOSS before it was summed — the split is real here.
+        showQtySplit
+      />
     </SectionCard>
+  );
+}
+/**
+ * "Period comparison — EBO" (2026-09-05, items 1 + 4): a genuine
+ * Current-range vs Compare-range reading, and NOTHING ELSE.
+ *
+ * No grain toggle and no calendar buckets AT ALL — that is the whole design.
+ * A whole-range sum on each side means a full month vs a 4-day month can only
+ * ever read as "this range's total vs that range's total", which is what the
+ * user actually meant when the old table's adjacent-row change column answered
+ * a different question with a confident-looking "-94.4%".
+ *
+ * BOTH RANGES ARE SCOPED BY THE SAME ATTRIBUTE SELECTION — a hard requirement,
+ * not a nicety: comparing "DRESSES this month" against "everything last month"
+ * would be a wrong number with nothing visibly broken.
+ *
+ * THIS IS THE ONE CLIENT-FETCHED BLOCK ON THE PAGE (item 4). All this server
+ * component does is produce the block's INITIAL data — through the very same
+ * Server Action the block calls on every later filter change, so there is one
+ * definition of this block's data rather than a server one and a client one.
+ * See PeriodComparisonBlock.tsx and actions.ts for the pattern and its
+ * trade-offs; every other block on this page is still searchParams-driven.
+ */
+async function PeriodComparisonSection({
+  searchParams,
+  pageScope,
+  storeNames,
+  storeOptions,
+}: {
+  searchParams: SearchParamsShape;
+  pageScope: PageScopeInput;
+  storeNames: Map<string, string>;
+  storeOptions: string[];
+}) {
+  const initial = await loadPeriodComparison(searchParams, COMPARE_TABLE_PREFIX, pageScope);
+  return (
+    <PeriodComparisonBlock
+      initial={initial}
+      prefix={COMPARE_TABLE_PREFIX}
+      pageScope={pageScope}
+      storeOptions={storeOptions}
+      storeLabels={Object.fromEntries(storeNames)}
+    />
   );
 }
 
@@ -863,67 +964,6 @@ async function AgentTableSection({
       )}
       <AgentSalesFacetedTable rows={agentRows} storeNames={Object.fromEntries(storeNames)} />
     </SectionCard>
-  );
-}
-
-/**
- * Totals strip shown above a self-contained table while ITS OWN comparison is
- * active. Recomputed from summed parts for both windows by the same function
- * (computeTotalsFromLines), never a second parallel formula — the rule
- * rollUpCore and computeSalesTotals already follow for the page-level strips.
- */
-function TableCompareStrip({
-  current,
-  comparison,
-  compareFrom,
-  compareTo,
-}: {
-  current: ReturnType<typeof computeTotalsFromLines>;
-  comparison: ReturnType<typeof computeTotalsFromLines>;
-  compareFrom: string;
-  compareTo: string;
-}) {
-  return (
-    <div className="mb-3">
-      <p className="mb-2 text-[11.5px] text-ink-3">
-        This table only — vs {compareFrom} – {compareTo}
-      </p>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <KpiCard
-          label="Net sales"
-          value={INR(current.net)}
-          delta={<DeltaBadge current={current.net} previous={comparison.net} baselineLabel={`vs ${INR(comparison.net)}`} />}
-        />
-        <KpiCard
-          label="Sale bills"
-          value={current.bills.toLocaleString("en-IN")}
-          delta={<DeltaBadge current={current.bills} previous={comparison.bills} baselineLabel={`vs ${comparison.bills.toLocaleString("en-IN")}`} />}
-        />
-        <KpiCard
-          label="Units"
-          value={current.qty.toLocaleString("en-IN")}
-          delta={<DeltaBadge current={current.qty} previous={comparison.qty} baselineLabel={`vs ${comparison.qty.toLocaleString("en-IN")}`} />}
-        />
-        <KpiCard
-          label="ATV"
-          value={current.atv !== null ? INR(current.atv) : "—"}
-          delta={<DeltaBadge current={current.atv} previous={comparison.atv} baselineLabel={comparison.atv !== null ? `vs ${INR(comparison.atv)}` : "vs —"} />}
-        />
-        <KpiCard
-          label="Discount %"
-          value={current.discountPct !== null ? `${current.discountPct.toFixed(1)}%` : "—"}
-          delta={
-            <DeltaBadge
-              current={current.discountPct}
-              previous={comparison.discountPct}
-              mode="pp"
-              invert
-              baselineLabel={comparison.discountPct !== null ? `vs ${comparison.discountPct.toFixed(1)}%` : "vs —"}
-            />
-          }
-        />
-      </div>
-    </div>
   );
 }
 
@@ -1740,14 +1780,10 @@ export default async function SalesPage({
               <div className="mt-4">
                 <EboAttributeBlockSection
                   supabase={supabase}
-                  applyStore={applyStore}
-                  from={from}
-                  to={to}
-                  compareFrom={compareFrom}
-                  compareTo={compareTo}
+                  scope={resolveTableScope(searchParams, SHARED_BLOCK_PREFIX, pageScope)}
                   storeNames={storeNames}
-                  paramPrefix={SHARED_ATTR_PREFIX}
-                  selection={parseAttributeSelection(searchParams, SHARED_ATTR_PREFIX)}
+                  storeOptions={storeOptionIds}
+                  paramPrefix={SHARED_BLOCK_PREFIX}
                 />
               </div>
             </Suspense>
@@ -1773,15 +1809,28 @@ export default async function SalesPage({
               own query, and streams in its own Suspense boundary — so one
               table's wide date range cannot hold up the others. An untouched
               table still follows the page scope; see resolveTableScope. */}
-          <SectionErrorBoundary label="Period table">
+          <SectionErrorBoundary label="Sales trend by period">
             <Suspense fallback={<ProductAttributeSkeleton />}>
               <div className="mt-6">
-                <PeriodTableSection
+                <TrendTableSection
                   supabase={supabase}
-                  scope={resolveTableScope(searchParams, PERIOD_TABLE_PREFIX, pageScope)}
+                  scope={resolveTableScope(searchParams, TREND_TABLE_PREFIX, pageScope)}
                   storeNames={storeNames}
                   storeOptions={storeOptionIds}
                   today={today}
+                />
+              </div>
+            </Suspense>
+          </SectionErrorBoundary>
+
+          <SectionErrorBoundary label="Period comparison">
+            <Suspense fallback={<ProductAttributeSkeleton />}>
+              <div className="mt-6">
+                <PeriodComparisonSection
+                  searchParams={searchParams}
+                  pageScope={pageScope}
+                  storeNames={storeNames}
+                  storeOptions={storeOptionIds}
                 />
               </div>
             </Suspense>

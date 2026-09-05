@@ -56,11 +56,21 @@ export function AttributeFilterBar({
   selection,
   options,
   label = "Attributes",
+  onCommit,
 }: {
   paramPrefix: string;
   selection: AttributeSelection;
   options: AttributeOptions;
   label?: string;
+  /**
+   * Intercepts every commit this bar makes — each facet's MultiSelectFilter
+   * and the "Clear attributes" button — handing over the URLSearchParams it
+   * would have navigated to instead (2026-09-05). Used by /sales' client-
+   * fetched blocks so an attribute change re-fetches ONE block through a
+   * Server Action rather than re-suspending the whole page's Server Component
+   * tree. Absent, this bar navigates exactly as it always has.
+   */
+  onCommit?: (params: URLSearchParams) => void;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -74,9 +84,13 @@ export function AttributeFilterBar({
    * page-level date/store scope.
    */
   function clearAll() {
-    window.dispatchEvent(new Event("progressbar:start"));
+    if (!onCommit) window.dispatchEvent(new Event("progressbar:start"));
     const params = new URLSearchParams(searchParams.toString());
     for (const facet of ATTRIBUTE_FACETS) params.delete(`${paramPrefix}${facet.param}`);
+    if (onCommit) {
+      onCommit(params);
+      return;
+    }
     // push() only, no refresh() — see StoreFilter's onChange for the race
     // that a bare refresh() after push() reintroduces.
     router.push(`${pathname}?${params.toString()}`);
@@ -113,6 +127,7 @@ export function AttributeFilterBar({
             allLabel="All"
             searchable={facet.searchable}
             counts={Object.fromEntries(entries)}
+            onCommit={onCommit}
           />
         );
       })}
