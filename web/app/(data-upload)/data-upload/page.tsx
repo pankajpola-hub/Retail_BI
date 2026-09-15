@@ -110,7 +110,7 @@ export default async function DataUploadPage() {
       type: "channel_summary",
       title: "Sale Summary (channel sales)",
       helperText:
-        "Monthly pre-aggregated wholesale/distribution-channel sales — agents, distributors, LFS, MBO, ecommerce marketplaces. One row per branch × month × party × channel; re-uploading a month updates it, never duplicates. Feeds /sale-summary.",
+        "Weekly pre-aggregated wholesale/distribution-channel sales — agents, distributors, LFS, MBO, ecommerce marketplaces. Required columns: branch_name_OG, branch_name, bill_week, week_dates, bill_month, party_name, channel_name, channel_type, channel_model, total_quantity, gross_amount, net_amount. One row per branch × month × week × party × channel × channel model; re-uploading updates matching rows, never duplicates. Feeds /sale-summary.",
     },
   ];
 

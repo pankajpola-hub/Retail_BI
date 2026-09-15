@@ -285,7 +285,12 @@ export async function POST(request: Request, { params }: { params: { id: string 
       const isLastBatch = offset + batchSize >= valid.length;
       const payload = slice.map((r) => ({
         branch_name: r.branchName,
+        branch_name_og: r.branchNameOg,
         bill_month: r.billMonth,
+        bill_week: r.billWeek,
+        week_dates: r.weekDates,
+        week_start: r.weekStart,
+        week_end: r.weekEnd,
         party_name: r.partyName,
         channel_name: r.channelName,
         channel_type: r.channelType,

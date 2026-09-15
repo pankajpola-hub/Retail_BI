@@ -21,7 +21,17 @@
 export type ChannelSalesRow = {
   id: number;
   branch_name: string;
+  /** Raw pre-outlet-code source branch tag (0104) — traceability only, never used for filtering/grouping. branch_name is canonical. */
+  branch_name_og: string | null;
   bill_month: string; // 'YYYY-MM-DD', always the 1st of the month
+  /** Week number, resets each financial year (Week 1 = first week of April) — only unique paired with bill_month. */
+  bill_week: number;
+  /** Raw "startDay-endDay" label as given by the source file, e.g. "30-05". */
+  week_dates: string;
+  /** Derived real start date of this week (0104) — see parseChannelSummaryWorkbook's deriveWeekRange. */
+  week_start: string;
+  /** Derived real end date of this week (0104). */
+  week_end: string;
   party_name: string;
   channel_name: string;
   channel_type: string | null;
@@ -32,6 +42,33 @@ export type ChannelSalesRow = {
 };
 
 export const num = (v: number | string) => (typeof v === "string" ? Number(v) : v);
+
+/**
+ * Plain April-March financial-year arithmetic, e.g. "2026-03-15" -> "FY2025-26",
+ * "2026-04-01" -> "FY2026-27". Deliberately NOT a join to core.retail_calendar
+ * — that table is only populated 2023-01-01 through 2028-12-31, and this
+ * page's data starts April 2021.
+ */
+export function financialYearOf(dateStr: string): string {
+  const [yStr, moStr] = dateStr.split("-");
+  const y = Number(yStr);
+  const mo = Number(moStr);
+  return mo >= 4 ? `FY${y}-${String(y + 1).slice(-2)}` : `FY${y - 1}-${String(y).slice(-2)}`;
+}
+
+/**
+ * Unambiguous week label for a facet/group-by — "Week 52" alone repeats
+ * every financial year, so the real date range is included, e.g.
+ * "Week 52 (30 Mar - 5 Apr 2026)".
+ */
+export function weekLabelOf(r: Pick<ChannelSalesRow, "bill_week" | "week_start" | "week_end">): string {
+  const fmt = (d: string) => {
+    const dt = new Date(`${d}T00:00:00Z`);
+    return dt.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+  };
+  const endYear = r.week_end.slice(0, 4);
+  return `Week ${r.bill_week} (${fmt(r.week_start)} - ${fmt(r.week_end)} ${endYear})`;
+}
 
 export type ChannelSalesKpis = {
   totalNet: number;

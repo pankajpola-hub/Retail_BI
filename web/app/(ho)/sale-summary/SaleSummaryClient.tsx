@@ -10,6 +10,7 @@ import {
   computeBreakdown,
   computeMonthlyTrend,
   num,
+  weekLabelOf,
   type ChannelSalesRow,
   type BreakdownRow,
 } from "@/lib/saleSummary/aggregate";
@@ -154,6 +155,11 @@ export function SaleSummaryClient({
       { key: "branch", label: "Branch", get: (r) => r.branch_name },
       { key: "channelType", label: "Channel Type", get: (r) => r.channel_type },
       { key: "channelModel", label: "Channel Model", get: (r) => r.channel_model },
+      // "Week N" alone repeats every financial year (Week 1 = first week of
+      // April) — weekLabelOf includes the real date range so options within
+      // the currently-selected month range are unambiguous (2026-09-15,
+      // "week wise filter").
+      { key: "week", label: "Week", get: (r) => weekLabelOf(r) },
     ],
     []
   );
@@ -185,6 +191,7 @@ export function SaleSummaryClient({
       { key: "branch", label: "Branch" },
       { key: "channelType", label: "Channel Type" },
       { key: "channelModel", label: "Channel Model" },
+      { key: "week", label: "Week" },
     ],
     []
   );

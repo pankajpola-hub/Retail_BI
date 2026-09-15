@@ -63,7 +63,8 @@ async function ChannelSalesSection({
   // .order() is required, not decoration: .range()-paginated calls are only
   // a correct partition of the table if the server-side ordering is stable
   // across the separate REST calls.
-  const selectCols = "id, branch_name, bill_month, party_name, channel_name, channel_type, channel_model, total_quantity, gross_amount, net_amount";
+  const selectCols =
+    "id, branch_name, branch_name_og, bill_month, bill_week, week_dates, week_start, week_end, party_name, channel_name, channel_type, channel_model, total_quantity, gross_amount, net_amount";
 
   const rowsPromise = fetchAllRows<ChannelSalesRow>(
     () =>
@@ -165,11 +166,11 @@ export default async function SaleSummaryPage({
         <h1 className="font-serif text-2xl">Sale Summary</h1>
         <p className="mt-1 max-w-2xl text-[12.5px] text-ink-3">
           Wholesale / distribution-channel sales — agents, distributors, LFS (Shoppers Stop, Lifestyle), MBO, and
-          ecommerce marketplaces. Sourced from a monthly pre-aggregated upload, not day-level bills — see{" "}
+          ecommerce marketplaces. Sourced from a weekly pre-aggregated upload, not day-level bills — see{" "}
           <a href="/data-upload" className="underline">
             Data Upload
           </a>{" "}
-          to add a month.
+          to add new weeks.
         </p>
       </div>
 

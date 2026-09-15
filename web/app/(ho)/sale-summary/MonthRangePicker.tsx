@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
-import { currentYm, shiftMonth } from "@/lib/saleSummary/month";
+import { currentYm, shiftMonth, financialYearRange, recentFinancialYears } from "@/lib/saleSummary/month";
 
 /**
  * Month-grain sibling of DateRangePicker.tsx, built specifically for this
@@ -26,6 +26,19 @@ const PRESETS: Preset[] = [
   { label: "Last 12 months", range: (now) => [shiftMonth(now, -11), now] },
   { label: "Year to date", range: (now) => [`${now.slice(0, 4)}-01`, now] },
 ];
+
+// Financial-year presets (2026-09-15, "Year wise" filter) — a full April-March
+// range in one click, matching this app's own FY convention elsewhere. Built
+// from `now` rather than hardcoded so the list never goes stale.
+function financialYearPresets(nowYm: string): Preset[] {
+  return recentFinancialYears(nowYm, 6).map((fy) => ({
+    label: fy,
+    range: () => {
+      const { fromMonth, toMonth } = financialYearRange(fy);
+      return [fromMonth, toMonth];
+    },
+  }));
+}
 
 export function MonthRangePicker({ fromMonth, toMonth }: { fromMonth: string; toMonth: string }) {
   const [open, setOpen] = useState(false);
@@ -77,8 +90,24 @@ export function MonthRangePicker({ fromMonth, toMonth }: { fromMonth: string; to
 
       {open && (
         <div className="absolute right-0 z-10 mt-1 flex w-[320px] border border-line bg-surface shadow-lg">
-          <ul className="w-[150px] border-r border-line-soft py-2">
+          <ul className="max-h-[280px] w-[150px] overflow-y-auto border-r border-line-soft py-2">
             {PRESETS.map((p) => (
+              <li key={p.label}>
+                <button
+                  className="w-full px-3 py-1.5 text-left text-[13px] text-ink-2 hover:bg-surface-2"
+                  onClick={() => {
+                    const [a, b] = p.range(now);
+                    apply(a, b);
+                  }}
+                >
+                  {p.label}
+                </button>
+              </li>
+            ))}
+            <li className="mt-1 border-t border-line-soft px-3 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-ink-3">
+              Financial year
+            </li>
+            {financialYearPresets(now).map((p) => (
               <li key={p.label}>
                 <button
                   className="w-full px-3 py-1.5 text-left text-[13px] text-ink-2 hover:bg-surface-2"

@@ -37,3 +37,26 @@ export function monthToExclusiveUpperBound(ym: string): string {
 export function ymLessOrEqual(a: string, b: string): boolean {
   return a <= b;
 }
+
+/** "2026-01" -> "FY2025-26", "2026-04" -> "FY2026-27" (April-March financial year). */
+export function financialYearOfYm(ym: string): string {
+  const [y, m] = ym.split("-").map(Number);
+  return (m as number) >= 4 ? `FY${y}-${String((y as number) + 1).slice(-2)}` : `FY${(y as number) - 1}-${String(y).slice(-2)}`;
+}
+
+/** "FY2025-26" -> { fromMonth: "2025-04", toMonth: "2026-03" }. */
+export function financialYearRange(fy: string): { fromMonth: string; toMonth: string } {
+  const m = fy.match(/^FY(\d{4})-\d{2}$/);
+  const startYear = Number(m?.[1]);
+  return { fromMonth: `${startYear}-04`, toMonth: `${startYear + 1}-03` };
+}
+
+/** The current FY plus the `count - 1` before it, most recent first — e.g. ["FY2026-27", "FY2025-26", "FY2024-25", ...]. */
+export function recentFinancialYears(nowYm: string, count: number): string[] {
+  const curFy = financialYearOfYm(nowYm);
+  const startYear = Number(curFy.match(/^FY(\d{4})/)?.[1]);
+  return Array.from({ length: count }, (_, i) => {
+    const y = startYear - i;
+    return `FY${y}-${String(y + 1).slice(-2)}`;
+  });
+}
