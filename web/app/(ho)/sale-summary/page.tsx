@@ -10,6 +10,8 @@ import { SaleSummaryClient } from "./SaleSummaryClient";
 import { SaleSummaryShell } from "./SaleSummaryShell";
 import type { ChannelSalesRow } from "@/lib/saleSummary/aggregate";
 import { currentYm, shiftMonth, monthToFirstOfMonthDate, monthToExclusiveUpperBound } from "@/lib/saleSummary/month";
+import { financialYearsPresent, buildFyHierarchyRows } from "@/lib/saleSummary/fyHierarchy";
+import { FyHierarchyTable } from "./FyHierarchyTable";
 
 export const dynamic = "force-dynamic";
 
@@ -117,6 +119,59 @@ async function ChannelSalesSection({
   );
 }
 
+/**
+ * "All years at a glance" — Channel Model / Type / Name rows with a Qty +
+ * Gross (taxable) column pair PER FINANCIAL YEAR (2026-09-15, per Pankaj's
+ * own mockup). Deliberately independent of the page's fromMonth/toMonth
+ * filter/facets below — reads the FULL table, own query, own Suspense
+ * boundary, so this one section's full-history fetch never holds up
+ * ChannelSalesSection's filtered one (or vice versa). See
+ * lib/saleSummary/fyHierarchy.ts's header for why financial year is derived
+ * from bill_month rather than week_start/week_end.
+ *
+ * Minimal SELECT (no id/branch/party/week columns) — this fetch already
+ * pages through the whole table (43,956+ rows at last count), no reason to
+ * carry columns this table never reads.
+ */
+async function FyOverviewSection() {
+  const supabase = await createClient();
+  const rows = await fetchAllRows<Pick<ChannelSalesRow, "bill_month" | "channel_model" | "channel_type" | "channel_name" | "total_quantity" | "gross_amount">>(
+    () =>
+      supabase
+        .schema("sales")
+        .from("vw_channel_sales_summary")
+        .select("bill_month, channel_model, channel_type, channel_name, total_quantity, gross_amount")
+        .order("bill_month", { ascending: true })
+        .order("id", { ascending: true }) as unknown as QueryChain<
+        Pick<ChannelSalesRow, "bill_month" | "channel_model" | "channel_type" | "channel_name" | "total_quantity" | "gross_amount">
+      >
+  );
+
+  const financialYears = financialYearsPresent(rows as ChannelSalesRow[]);
+  const hierarchyRows = buildFyHierarchyRows(rows as ChannelSalesRow[], financialYears);
+
+  return (
+    <div>
+      <h2 className="text-[13px] font-semibold text-ink">All years — Channel Model / Type / Name</h2>
+      <p className="mt-1 text-[11.5px] text-ink-3">
+        Full history, every financial year on file — not affected by the date filter below.
+      </p>
+      <div className="mt-2">
+        <FyHierarchyTable rows={hierarchyRows} financialYears={financialYears} />
+      </div>
+    </div>
+  );
+}
+
+function FyOverviewSkeleton() {
+  return (
+    <div>
+      <SectionLabelSkeleton />
+      <TableSkeleton rows={6} cols={7} />
+    </div>
+  );
+}
+
 function ChannelSalesSkeleton() {
   return (
     <>
@@ -172,6 +227,14 @@ export default async function SaleSummaryPage({
           </a>{" "}
           to add new weeks.
         </p>
+      </div>
+
+      <div className="mt-6">
+        <SectionErrorBoundary label="All years overview">
+          <Suspense fallback={<FyOverviewSkeleton />}>
+            <FyOverviewSection />
+          </Suspense>
+        </SectionErrorBoundary>
       </div>
 
       {
