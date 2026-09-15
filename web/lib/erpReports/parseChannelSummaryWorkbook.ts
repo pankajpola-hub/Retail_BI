@@ -172,21 +172,29 @@ export function deriveWeekRange(weekDatesRaw: string, billMonth: string): { week
   const mo = Number(moStr); // 1-indexed
   if (!Number.isInteger(y) || !Number.isInteger(mo)) return null;
 
+  // Built via a real Date, not string zero-padding of the raw day numbers —
+  // "day 29 of February" doesn't exist in a non-leap year (confirmed live:
+  // "MAR 2022, Week 14, 29-04" means the previous month is February 2022,
+  // which has no 29th). Date.UTC naturally overflows an out-of-range day
+  // into the next month (Feb 29 in a non-leap year becomes 1 March) — the
+  // correct calendar-arithmetic reading, not a guess. It also rolls a
+  // negative/zero month index back a year (Date.UTC(2026, -1, 1) is
+  // December 2025), which is what "the month before billMonth" needs across
+  // a January -> December rollover.
+  const ymd = (year: number, month1: number, day: number): string => {
+    const d = new Date(Date.UTC(year, month1 - 1, day));
+    return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+  };
+
   if (startDay > endDay) {
-    // JS Date rolls a negative/zero month index back into the prior year —
-    // Date.UTC(2026, -1, 1) is December 2025, exactly the "month before
-    // billMonth" this needs, including across a January -> December rollover.
-    const prev = new Date(Date.UTC(y, mo - 2, 1));
-    const prevY = prev.getUTCFullYear();
-    const prevM = prev.getUTCMonth() + 1;
     return {
-      weekStart: `${prevY}-${pad2(prevM)}-${pad2(startDay)}`,
-      weekEnd: `${y}-${pad2(mo)}-${pad2(endDay)}`,
+      weekStart: ymd(y, mo - 1, startDay),
+      weekEnd: ymd(y, mo, endDay),
     };
   }
   return {
-    weekStart: `${y}-${pad2(mo)}-${pad2(startDay)}`,
-    weekEnd: `${y}-${pad2(mo)}-${pad2(endDay)}`,
+    weekStart: ymd(y, mo, startDay),
+    weekEnd: ymd(y, mo, endDay),
   };
 }
 
