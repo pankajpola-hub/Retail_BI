@@ -216,7 +216,7 @@ export default async function SaleSummaryPage({
   return (
     <main className="py-6">
       <div>
-        <h1 className="font-serif text-2xl">Sale Summary</h1>
+        <h1 className="font-serif text-2xl">Sale Summary - BoD</h1>
         <p className="mt-1 max-w-2xl text-[12.5px] text-ink-3">
           Wholesale / distribution-channel sales — agents, distributors, LFS (Shoppers Stop, Lifestyle), MBO, and
           ecommerce marketplaces. Sourced from a weekly pre-aggregated upload, not day-level bills — see{" "}
