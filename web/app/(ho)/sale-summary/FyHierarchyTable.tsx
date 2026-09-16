@@ -4,8 +4,10 @@ import { useMemo, useState } from "react";
 import { ChevronRight, ChevronDown } from "lucide-react";
 import type { ColDef, ColGroupDef, ICellRendererParams, RowStyle } from "ag-grid-community";
 import { DataGrid } from "@/components/ui/DataGrid";
-import type { FyHierarchyRow } from "@/lib/saleSummary/fyHierarchy";
+import type { FyHierarchyRow, FyCell } from "@/lib/saleSummary/fyHierarchy";
 import { fmtInrAbbrev, fmtCount } from "@/lib/saleSummary/format";
+
+const GRAND_TOTAL_ID = "grand-total";
 
 const LEVEL_ROW_STYLE: Record<0 | 1 | 2, RowStyle> = {
   0: { background: "var(--surface-2)", fontWeight: 700, borderTop: "2px solid var(--line)" },
@@ -27,6 +29,17 @@ const LEVEL_ROW_STYLE: Record<0 | 1 | 2, RowStyle> = {
  * per FY, AG Grid Community's own grouped-header support — not an
  * Enterprise feature) give the merged year header cells the reference
  * mockup showed.
+ *
+ * Two totals (2026-09-16, per Pankaj: "Subtotal in header and at right side
+ * end"):
+ *  - A GRAND TOTAL ROW pinned to the top via AG Grid's pinnedTopRowData —
+ *    sits directly under the column headers, network-wide Qty/Gross per FY.
+ *    Summed from the level-0 (Channel Model) rows, which are themselves
+ *    already full per-model sums, so adding them across models double-counts
+ *    nothing.
+ *  - A "Total" column GROUP appended after every FY group — each row's own
+ *    Qty/Gross summed ACROSS all financial years, so a row's full-history
+ *    total is readable without adding up every FY column by eye.
  */
 export function FyHierarchyTable({ rows, financialYears }: { rows: FyHierarchyRow[]; financialYears: string[] }) {
   const [expandedTypes, setExpandedTypes] = useState<Set<string>>(new Set());
@@ -50,6 +63,21 @@ export function FyHierarchyTable({ rows, financialYears }: { rows: FyHierarchyRo
     [rows, expandedTypes]
   );
 
+  // Network-wide total per FY, summed from the level-0 (Channel Model) rows
+  // — each already a full per-model sum, so this double-counts nothing.
+  const grandTotalRow = useMemo<FyHierarchyRow>(() => {
+    const byFy: Record<string, FyCell> = {};
+    for (const fy of financialYears) byFy[fy] = { qty: 0, gross: 0 };
+    for (const r of rows) {
+      if (r.level !== 0) continue;
+      for (const fy of financialYears) {
+        byFy[fy]!.qty += r.byFy[fy]?.qty ?? 0;
+        byFy[fy]!.gross += r.byFy[fy]?.gross ?? 0;
+      }
+    }
+    return { id: GRAND_TOTAL_ID, level: 0, label: "Grand Total", channelModel: "", channelType: null, channelName: null, childCount: 0, byFy };
+  }, [rows, financialYears]);
+
   const columnDefs = useMemo<(ColDef<FyHierarchyRow> | ColGroupDef<FyHierarchyRow>)[]>(() => {
     const labelCol: ColDef<FyHierarchyRow> = {
       field: "label",
@@ -60,6 +88,9 @@ export function FyHierarchyTable({ rows, financialYears }: { rows: FyHierarchyRo
       cellRenderer: (p: ICellRendererParams<FyHierarchyRow>) => {
         const row = p.data;
         if (!row) return null;
+        if (row.id === GRAND_TOTAL_ID) {
+          return <span className="font-semibold">{row.label}</span>;
+        }
         const canExpand = row.level === 1 && row.childCount > 0;
         const isExpanded = expandedTypes.has(row.id);
         return (
@@ -110,12 +141,42 @@ export function FyHierarchyTable({ rows, financialYears }: { rows: FyHierarchyRo
       ] as ColDef<FyHierarchyRow>[],
     }));
 
-    return [labelCol, ...fyGroups];
+    // Right-side-end "Total" column group — each row's Qty/Gross summed
+    // across every FY, so the full-history total per row doesn't need to be
+    // added up across the FY columns by eye.
+    const totalGroup: ColGroupDef<FyHierarchyRow> = {
+      headerName: "Total",
+      children: [
+        {
+          colId: "total:qty",
+          headerName: "Qty",
+          width: 100,
+          sortable: false,
+          cellClass: "text-right font-mono font-semibold",
+          headerClass: "text-right",
+          valueGetter: (p) => financialYears.reduce((s, fy) => s + (p.data?.byFy[fy]?.qty ?? 0), 0),
+          valueFormatter: (p) => fmtCount(p.value as number),
+        },
+        {
+          colId: "total:gross",
+          headerName: "Gross (taxable)",
+          width: 130,
+          sortable: false,
+          cellClass: "text-right font-mono font-semibold",
+          headerClass: "text-right",
+          valueGetter: (p) => financialYears.reduce((s, fy) => s + (p.data?.byFy[fy]?.gross ?? 0), 0),
+          valueFormatter: (p) => fmtInrAbbrev(p.value as number),
+        },
+      ] as ColDef<FyHierarchyRow>[],
+    };
+
+    return [labelCol, ...fyGroups, totalGroup];
   }, [expandedTypes, financialYears]);
 
   return (
     <DataGrid<FyHierarchyRow>
       rowData={visibleRows}
+      pinnedTopRowData={[grandTotalRow]}
       columnDefs={columnDefs}
       getRowStyle={(p) => LEVEL_ROW_STYLE[(p.data?.level ?? 2) as 0 | 1 | 2]}
       getRowId={(p) => p.data.id}
