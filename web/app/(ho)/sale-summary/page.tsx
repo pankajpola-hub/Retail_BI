@@ -5,6 +5,7 @@ import { requirePageAccess } from "@/lib/auth/roles";
 import { KpiGridSkeleton, ChartSkeleton, TableSkeleton, SectionLabelSkeleton } from "@/components/ui/Skeleton";
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
 import { MonthRangePicker } from "./MonthRangePicker";
+import { FyMultiSelectFilter } from "./FyMultiSelectFilter";
 import { ComparisonMonthRangePicker } from "./ComparisonMonthRangePicker";
 import { SaleSummaryClient } from "./SaleSummaryClient";
 import { SaleSummaryShell } from "./SaleSummaryShell";
@@ -255,6 +256,7 @@ export default async function SaleSummaryPage({
           }
           <div className="flex flex-wrap items-center gap-2">
             <MonthRangePicker fromMonth={fromMonth} toMonth={toMonth} />
+            <FyMultiSelectFilter fromMonth={fromMonth} toMonth={toMonth} />
             <ComparisonMonthRangePicker
               fromMonth={fromMonth}
               toMonth={toMonth}

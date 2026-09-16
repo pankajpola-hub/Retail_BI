@@ -69,6 +69,12 @@ export function MonthRangePicker({ fromMonth, toMonth }: { fromMonth: string; to
     const params = new URLSearchParams(searchParams.toString());
     params.set("fromMonth", a);
     params.set("toMonth", b);
+    // A plain <button onClick> -> router.push() isn't an <a> click, a
+    // <select> change, or a form submit, so TopProgressBar's own automatic
+    // detection never sees it (2026-09-16, per Pankaj: "processing bar
+    // should run... till results appear") — dispatched explicitly, same
+    // convention MultiSelectFilter/StoreFilter already use.
+    window.dispatchEvent(new Event("progressbar:start"));
     // push() only, no refresh() — same reasoning DateRangePicker.tsx's own
     // apply() documents: every range change is a new querystring, always a
     // cache miss, so Next already fetches fresh data for it.

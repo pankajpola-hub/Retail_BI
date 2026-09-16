@@ -94,6 +94,10 @@ export function ComparisonMonthRangePicker({
       params.delete("compareFromMonth");
       params.delete("compareToMonth");
     }
+    // Same reason MonthRangePicker dispatches this: a plain <button
+    // onClick> -> router.push() isn't a link/select/form-submit, so
+    // TopProgressBar's automatic detection never sees it on its own.
+    window.dispatchEvent(new Event("progressbar:start"));
     router.push(`${pathname}?${params.toString()}`);
     setOpen(false);
   }
