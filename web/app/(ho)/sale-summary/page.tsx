@@ -10,7 +10,7 @@ import { SaleSummaryClient } from "./SaleSummaryClient";
 import { SaleSummaryShell } from "./SaleSummaryShell";
 import type { ChannelSalesRow } from "@/lib/saleSummary/aggregate";
 import { currentYm, shiftMonth, monthToFirstOfMonthDate, monthToExclusiveUpperBound } from "@/lib/saleSummary/month";
-import { financialYearsPresent, buildFyHierarchyRows } from "@/lib/saleSummary/fyHierarchy";
+import { financialYearsFromAgg, buildFyHierarchyRowsFromAgg, type FyAggRow } from "@/lib/saleSummary/fyHierarchy";
 import { FyHierarchyTable } from "./FyHierarchyTable";
 
 export const dynamic = "force-dynamic";
@@ -123,38 +123,35 @@ async function ChannelSalesSection({
  * "All years at a glance" — Channel Model / Type / Name rows with a Qty +
  * Gross (taxable) column pair PER FINANCIAL YEAR (2026-09-15, per Pankaj's
  * own mockup). Deliberately independent of the page's fromMonth/toMonth
- * filter/facets below — reads the FULL table, own query, own Suspense
- * boundary, so this one section's full-history fetch never holds up
- * ChannelSalesSection's filtered one (or vice versa). See
- * lib/saleSummary/fyHierarchy.ts's header for why financial year is derived
- * from bill_month rather than week_start/week_end.
+ * filter/facets above — reads the FULL history, own query, own Suspense
+ * boundary.
  *
- * Minimal SELECT (no id/branch/party/week columns) — this fetch already
- * pages through the whole table (43,956+ rows at last count), no reason to
- * carry columns this table never reads.
+ * READS THE PRE-AGGREGATED sales.vw_channel_sales_fy_summary (migration
+ * 0106), NOT the raw per-transaction table. The first version of this
+ * section fetched every raw row (43,956+ at last count) via fetchAllRows —
+ * whose SEQUENTIAL ~1000-row-per-page loop meant ~44 round trips to the
+ * Supabase pooler before the page could even start rendering — just to
+ * re-sum it in Node. The view does that SUM/GROUP BY in Postgres instead,
+ * returning at most a few hundred rows (one per real combination that ever
+ * had data) in a single request. See 0106's own header for the full story.
  */
 async function FyOverviewSection() {
   const supabase = await createClient();
-  const rows = await fetchAllRows<Pick<ChannelSalesRow, "bill_month" | "channel_model" | "channel_type" | "channel_name" | "total_quantity" | "gross_amount">>(
-    () =>
-      supabase
-        .schema("sales")
-        .from("vw_channel_sales_summary")
-        .select("bill_month, channel_model, channel_type, channel_name, total_quantity, gross_amount")
-        .order("bill_month", { ascending: true })
-        .order("id", { ascending: true }) as unknown as QueryChain<
-        Pick<ChannelSalesRow, "bill_month" | "channel_model" | "channel_type" | "channel_name" | "total_quantity" | "gross_amount">
-      >
-  );
+  const { data, error } = await supabase
+    .schema("sales")
+    .from<FyAggRow>("vw_channel_sales_fy_summary")
+    .select("financial_year, channel_model, channel_type, channel_name, qty, gross");
+  if (error) throw new Error(error.message);
+  const rows = data ?? [];
 
-  const financialYears = financialYearsPresent(rows as ChannelSalesRow[]);
-  const hierarchyRows = buildFyHierarchyRows(rows as ChannelSalesRow[], financialYears);
+  const financialYears = financialYearsFromAgg(rows);
+  const hierarchyRows = buildFyHierarchyRowsFromAgg(rows, financialYears);
 
   return (
     <div>
       <h2 className="text-[13px] font-semibold text-ink">All years — Channel Model / Type / Name</h2>
       <p className="mt-1 text-[11.5px] text-ink-3">
-        Full history, every financial year on file — not affected by the date filter below.
+        Full history, every financial year on file — not affected by the date filter above.
       </p>
       <div className="mt-2">
         <FyHierarchyTable rows={hierarchyRows} financialYears={financialYears} />
@@ -229,14 +226,6 @@ export default async function SaleSummaryPage({
         </p>
       </div>
 
-      <div className="mt-6">
-        <SectionErrorBoundary label="All years overview">
-          <Suspense fallback={<FyOverviewSkeleton />}>
-            <FyOverviewSection />
-          </Suspense>
-        </SectionErrorBoundary>
-      </div>
-
       {
         // Frozen date filter (2026-08-31, per Pankaj: "freeze the date filter
         // at the top so scrolled data can be referable"). AppShell's own
@@ -288,6 +277,16 @@ export default async function SaleSummaryPage({
           </SectionErrorBoundary>
         </div>
       </SaleSummaryShell>
+
+      {/* "All years" overview (2026-09-16, moved to the bottom per Pankaj) —
+          own query, own Suspense boundary, independent of the filter above. */}
+      <div className="mt-10">
+        <SectionErrorBoundary label="All years overview">
+          <Suspense fallback={<FyOverviewSkeleton />}>
+            <FyOverviewSection />
+          </Suspense>
+        </SectionErrorBoundary>
+      </div>
     </main>
   );
 }

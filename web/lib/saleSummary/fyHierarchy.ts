@@ -1,27 +1,23 @@
 /**
  * Channel Model -> Channel Type -> Channel Name hierarchy, PIVOTED by
  * Financial Year (2026-09-15) — the "all years at a glance" table Pankaj
- * asked for, sitting above the page's own month-range-filtered content.
+ * asked for, sitting at the bottom of the page below its own month-range-
+ * filtered content.
  *
- * Deliberately independent of the page's date-range/facet state: the whole
- * point is a full-history year-over-year read, so this reads the ENTIRE
- * table (all financial years present), not whatever range MonthRangePicker
- * currently has selected. Same hierarchy grain as hierarchy.ts's hierarchy
- * (Model -> Type -> Channel Name, leaf = channel_name not party_name), but
- * each node carries one {qty, gross} cell PER financial year rather than a
- * single flat sum — and only qty/gross (taxable), no net and no growth%,
- * per Pankaj's own ask ("year wise qty - gross Val (Taxable) only").
+ * Reads sales.vw_channel_sales_fy_summary (migration 0106), NOT the raw
+ * per-row sales.vw_channel_sales_summary — that view already does the
+ * SUM(qty)/SUM(gross) GROUP BY (financial_year, channel_model, channel_type,
+ * channel_name) in Postgres. Building this same table from raw rows meant
+ * fetching the whole history (43,956+ rows at last count) through
+ * fetchAllRows' sequential ~1000-row-per-page loop — tens of round trips —
+ * just to re-sum it in Node; the pre-aggregated view returns at most a few
+ * hundred rows in one request. See 0106's own header for the full story.
  *
- * Financial year is derived from bill_month, not week_start/week_end —
- * a row that was already MERGED across the fiscal-year boundary (see
- * parseChannelSummaryWorkbook.ts's mergeDuplicateKeyRows) has no way to be
- * split back into "the March portion" and "the April portion"; bill_month
- * is the source file's own convention for which side that whole week counts
- * toward, so this stays consistent with it rather than re-deriving a
- * different answer from the day-level dates.
+ * Only qty/gross (taxable), no net and no growth% — per Pankaj's own ask
+ * ("year wise qty - gross Val (Taxable) only").
  */
 
-import { financialYearOf, num, type ChannelSalesRow } from "./aggregate";
+import { num } from "./aggregate";
 
 export type FyCell = { qty: number; gross: number };
 
@@ -38,29 +34,24 @@ export type FyHierarchyRow = {
   byFy: Record<string, FyCell>;
 };
 
+/** One row of sales.vw_channel_sales_fy_summary (0106) — already grouped, not per-transaction. */
+export type FyAggRow = {
+  financial_year: string;
+  channel_model: string;
+  channel_type: string;
+  channel_name: string;
+  qty: number | string;
+  gross: number | string;
+};
+
 /** Every distinct financial year present in `rows`, chronological ascending (oldest first). */
-export function financialYearsPresent(rows: ChannelSalesRow[]): string[] {
-  const set = new Set(rows.map((r) => financialYearOf(r.bill_month)));
+export function financialYearsFromAgg(rows: FyAggRow[]): string[] {
   // "FY2021-22" sorts correctly as a plain string — the 4-digit start year is
   // always in the same position and zero-padded by construction.
-  return [...set].sort();
+  return [...new Set(rows.map((r) => r.financial_year))].sort();
 }
 
 const emptyCell = (): FyCell => ({ qty: 0, gross: 0 });
-
-function addRowInto(cell: FyCell, r: ChannelSalesRow): void {
-  cell.qty += num(r.total_quantity);
-  cell.gross += num(r.gross_amount);
-}
-
-function ensureFyCell(byFy: Map<string, FyCell>, fy: string): FyCell {
-  let c = byFy.get(fy);
-  if (!c) {
-    c = emptyCell();
-    byFy.set(fy, c);
-  }
-  return c;
-}
 
 /** Sums a node's cells across every FY — the ranking basis for "biggest first" sort, same convention hierarchy.ts's net-descending sort uses (gross is this table's only value column). */
 const totalGross = (byFy: Map<string, FyCell>): number => [...byFy.values()].reduce((s, c) => s + c.gross, 0);
@@ -71,37 +62,51 @@ function toRecord(byFy: Map<string, FyCell>, financialYears: string[]): Record<s
   return rec;
 }
 
-export function buildFyHierarchyRows(rows: ChannelSalesRow[], financialYears: string[]): FyHierarchyRow[] {
+/** Builds the Model -> Type -> Name tree from already-grouped rows (one row = one (fy, model, type, name) cell — no further row-level summing needed). */
+export function buildFyHierarchyRowsFromAgg(rows: FyAggRow[], financialYears: string[]): FyHierarchyRow[] {
   type TypeBucket = { channelType: string; byFy: Map<string, FyCell>; names: Map<string, Map<string, FyCell>> };
   type ModelBucket = { channelModel: string; byFy: Map<string, FyCell>; types: Map<string, TypeBucket> };
   const models = new Map<string, ModelBucket>();
 
   for (const r of rows) {
-    const channelModel = r.channel_model || "(no channel model)";
-    const channelType = r.channel_type || "(no channel type)";
-    const channelName = r.channel_name || "(blank)";
-    const fy = financialYearOf(r.bill_month);
+    const channelModel = r.channel_model;
+    const channelType = r.channel_type;
+    const channelName = r.channel_name;
+    const fy = r.financial_year;
+    const cell: FyCell = { qty: num(r.qty), gross: num(r.gross) };
 
     let model = models.get(channelModel);
     if (!model) {
       model = { channelModel, byFy: new Map(), types: new Map() };
       models.set(channelModel, model);
     }
-    addRowInto(ensureFyCell(model.byFy, fy), r);
+    const modelCell = model.byFy.get(fy) ?? emptyCell();
+    modelCell.qty += cell.qty;
+    modelCell.gross += cell.gross;
+    model.byFy.set(fy, modelCell);
 
     let type = model.types.get(channelType);
     if (!type) {
       type = { channelType, byFy: new Map(), names: new Map() };
       model.types.set(channelType, type);
     }
-    addRowInto(ensureFyCell(type.byFy, fy), r);
+    const typeCell = type.byFy.get(fy) ?? emptyCell();
+    typeCell.qty += cell.qty;
+    typeCell.gross += cell.gross;
+    type.byFy.set(fy, typeCell);
 
+    // Leaf grain is already (fy, model, type, name) in the source view, so
+    // there's at most one row per name+fy — but a leaf can still appear
+    // more than once across fys, hence still a Map keyed by fy here too.
     let name = type.names.get(channelName);
     if (!name) {
       name = new Map<string, FyCell>();
       type.names.set(channelName, name);
     }
-    addRowInto(ensureFyCell(name, fy), r);
+    const nameCell = name.get(fy) ?? emptyCell();
+    nameCell.qty += cell.qty;
+    nameCell.gross += cell.gross;
+    name.set(fy, nameCell);
   }
 
   const out: FyHierarchyRow[] = [];

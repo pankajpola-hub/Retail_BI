@@ -44,19 +44,6 @@ export type ChannelSalesRow = {
 export const num = (v: number | string) => (typeof v === "string" ? Number(v) : v);
 
 /**
- * Plain April-March financial-year arithmetic, e.g. "2026-03-15" -> "FY2025-26",
- * "2026-04-01" -> "FY2026-27". Deliberately NOT a join to core.retail_calendar
- * — that table is only populated 2023-01-01 through 2028-12-31, and this
- * page's data starts April 2021.
- */
-export function financialYearOf(dateStr: string): string {
-  const [yStr, moStr] = dateStr.split("-");
-  const y = Number(yStr);
-  const mo = Number(moStr);
-  return mo >= 4 ? `FY${y}-${String(y + 1).slice(-2)}` : `FY${y - 1}-${String(y).slice(-2)}`;
-}
-
-/**
  * Unambiguous week label for a facet/group-by — "Week 52" alone repeats
  * every financial year, so the real date range is included, e.g.
  * "Week 52 (30 Mar - 5 Apr 2026)".
